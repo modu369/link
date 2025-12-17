@@ -53,41 +53,43 @@ render_topbar($branding);
                 </table>
             </section>
 
-            <section class="card">
-                <div class="section-title"><h3>小时分布</h3><span class="muted">按选择的日期范围聚合</span></div>
-                <table>
-                    <thead><tr><th>小时</th><th>PV</th><th>UV</th><th>IP</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($data['hourly'] as $row): ?>
-                        <tr>
-                            <td><?= htmlspecialchars($row['hour'], ENT_QUOTES, 'UTF-8') ?></td>
-                            <td><?= (int) $row['views'] ?></td>
-                            <td><?= (int) $row['uniques'] ?></td>
-                            <td><?= (int) $row['ips'] ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </section>
+            <div class="card-row">
+                <section class="card">
+                    <div class="section-title"><h3>小时分布</h3><span class="muted">按选择的日期范围聚合</span></div>
+                    <table>
+                        <thead><tr><th>小时</th><th>PV</th><th>UV</th><th>IP</th></tr></thead>
+                        <tbody>
+                        <?php foreach ($data['hourly'] as $row): ?>
+                            <tr>
+                                <td><?= htmlspecialchars($row['hour'], ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><?= (int) $row['views'] ?></td>
+                                <td><?= (int) $row['uniques'] ?></td>
+                                <td><?= (int) $row['ips'] ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </section>
 
-            <section class="card">
-                <div class="section-title">
-                    <h3>地域分布</h3>
-                    <a class="filter-btn" href="/region.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
-                </div>
-                <table>
-                    <thead><tr><th>地域</th><th>PV</th><th>IP</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($data['regions'] as $row): ?>
-                        <tr>
-                            <td><?= htmlspecialchars($row['region'], ENT_QUOTES, 'UTF-8') ?></td>
-                            <td><?= (int) $row['views'] ?></td>
-                            <td><?= (int) $row['ips'] ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </section>
+                <section class="card">
+                    <div class="section-title">
+                        <h3>地域分布</h3>
+                        <a class="filter-btn" href="/region.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
+                    </div>
+                    <table>
+                        <thead><tr><th>地域</th><th>PV</th><th>IP</th></tr></thead>
+                        <tbody>
+                        <?php foreach ($data['regions'] as $row): ?>
+                            <tr>
+                                <td><?= htmlspecialchars($row['region'], ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><?= (int) $row['views'] ?></td>
+                                <td><?= (int) $row['ips'] ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </section>
+            </div>
 
             <section class="card">
                 <div class="section-title">
@@ -100,14 +102,14 @@ render_topbar($branding);
                     </div>
                     <div style="flex:1;min-width:200px;">
                         <div class="metric-row">
-                            <div class="metric"><div class="muted">电脑端 PV</div><div class="value"><?= (int) $data['devices']['desktop']['views'] ?></div></div>
                             <div class="metric"><div class="muted">电脑端 IP</div><div class="value"><?= (int) $data['devices']['desktop']['ips'] ?></div></div>
-                            <div class="metric"><div class="muted">移动端 PV</div><div class="value"><?= (int) $data['devices']['mobile']['views'] ?></div></div>
                             <div class="metric"><div class="muted">移动端 IP</div><div class="value"><?= (int) $data['devices']['mobile']['ips'] ?></div></div>
+                            <div class="metric"><div class="muted">电脑端 PV</div><div class="value"><?= (int) $data['devices']['desktop']['views'] ?></div></div>
+                            <div class="metric"><div class="muted">移动端 PV</div><div class="value"><?= (int) $data['devices']['mobile']['views'] ?></div></div>
                         </div>
                     </div>
                 </div>
-                <div class="section-title" style="margin-top:12px;"><h4 style="margin:0;">浏览器 TOP</h4></div>
+                <div class="section-title" style="margin-top:12px;"><h4 style="margin:0;">浏览器 TOP（IP）</h4></div>
                 <canvas id="browserBar" height="140"></canvas>
                 <table>
                     <thead><tr><th>浏览器</th><th>PV</th><th>IP</th></tr></thead>
@@ -123,70 +125,74 @@ render_topbar($branding);
                 </table>
             </section>
 
-            <section class="card">
-                <div class="section-title">
-                    <h3>新老访客</h3>
-                    <a class="filter-btn" href="/audience.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
-                </div>
-                <div class="metric-row">
-                    <div class="metric"><div class="muted">新访客</div><div class="value"><?= (int) $data['new_vs_returning']['new'] ?></div></div>
-                    <div class="metric"><div class="muted">回访访客</div><div class="value"><?= (int) $data['new_vs_returning']['returning'] ?></div></div>
-                </div>
-            </section>
-
-            <section class="card">
-                <div class="section-title">
-                    <h3>来路</h3>
-                    <div style="display:flex;gap:8px;">
-                        <a class="filter-btn" href="/search_engine.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">搜索引擎</a>
-                        <a class="filter-btn" href="/external.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">外部链接</a>
+            <div class="card-row">
+                <section class="card">
+                    <div class="section-title">
+                        <h3>来路</h3>
+                        <div style="display:flex;gap:8px;">
+                            <a class="filter-btn" href="/search_engine.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">搜索引擎</a>
+                            <a class="filter-btn" href="/external.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">外部链接</a>
+                        </div>
                     </div>
-                </div>
-                <table>
-                    <thead><tr><th>来源</th><th>PV</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($data['top_referrers'] as $row): ?>
-                        <tr><td><?= htmlspecialchars($row['referrer'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['views'] ?></td></tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </section>
+                    <table>
+                        <thead><tr><th>来源</th><th>IP</th></tr></thead>
+                        <tbody>
+                        <?php foreach ($data['top_referrers'] as $row): ?>
+                            <tr><td><?= htmlspecialchars($row['referrer'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['ips'] ?></td></tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </section>
 
-            <section class="card">
-                <div class="section-title">
-                    <h3>受访页</h3>
-                    <a class="filter-btn" href="/pages.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
-                </div>
-                <table>
-                    <thead><tr><th>页面</th><th>PV</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($data['top_pages'] as $row): ?>
-                        <tr><td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['views'] ?></td></tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </section>
+                <section class="card">
+                    <div class="section-title">
+                        <h3>受访页</h3>
+                        <a class="filter-btn" href="/pages.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
+                    </div>
+                    <table>
+                        <thead><tr><th>页面</th><th>IP</th></tr></thead>
+                        <tbody>
+                        <?php foreach ($data['top_pages'] as $row): ?>
+                            <tr><td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['ips'] ?></td></tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </section>
+            </div>
 
-            <section class="card">
-                <div class="section-title">
-                    <h3>入口页（前10名）</h3>
-                    <a class="filter-btn" href="/entry.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
-                </div>
-                <table>
-                    <thead><tr><th>入口页</th><th>PV</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($data['entry_pages'] as $row): ?>
-                        <tr><td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['views'] ?></td></tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </section>
+            <div class="card-row">
+                <section class="card">
+                    <div class="section-title">
+                        <h3>新老访客</h3>
+                        <a class="filter-btn" href="/audience.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
+                    </div>
+                    <div class="metric-row">
+                        <div class="metric"><div class="muted">新访客</div><div class="value"><?= (int) $data['new_vs_returning']['new'] ?></div></div>
+                        <div class="metric"><div class="muted">回访访客</div><div class="value"><?= (int) $data['new_vs_returning']['returning'] ?></div></div>
+                    </div>
+                </section>
+
+                <section class="card">
+                    <div class="section-title">
+                        <h3>入口页（前10名）</h3>
+                        <a class="filter-btn" href="/entry.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
+                    </div>
+                    <table>
+                        <thead><tr><th>入口页</th><th>PV</th></tr></thead>
+                        <tbody>
+                        <?php foreach ($data['entry_pages'] as $row): ?>
+                            <tr><td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['views'] ?></td></tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </section>
+            </div>
 
             <script>
                 const dailyData = <?= json_encode($data['daily'], JSON_UNESCAPED_UNICODE) ?>;
                 const ctxDaily = document.getElementById('dailyTrendChart');
                 if (ctxDaily && window.Chart) {
-                    const gPV = ctxDaily.getContext('2d').createLinearGradient(0, 0, 0, 200);
+                const gPV = ctxDaily.getContext('2d').createLinearGradient(0, 0, 0, 200);
                     gPV.addColorStop(0, '#1690ff');
                     gPV.addColorStop(1, '#73c1ff');
                     const gUV = ctxDaily.getContext('2d').createLinearGradient(0, 0, 0, 200);
@@ -196,13 +202,13 @@ render_topbar($branding);
                     gIP.addColorStop(0, '#73c1ff');
                     gIP.addColorStop(1, '#d1ecff');
                     new Chart(ctxDaily, {
-                        type: 'bar',
+                        type: 'line',
                         data: {
                             labels: dailyData.map(d => d.day),
                             datasets: [
-                                {label:'PV', data: dailyData.map(d => Number(d.views)), backgroundColor:gPV},
-                                {label:'UV', data: dailyData.map(d => Number(d.uniques)), backgroundColor:gUV},
-                                {label:'IP', data: dailyData.map(d => Number(d.ip_count)), backgroundColor:gIP}
+                                {label:'PV', data: dailyData.map(d => Number(d.views)), borderColor:'#1690ff', backgroundColor:gPV, tension:0.35, fill:true},
+                                {label:'UV', data: dailyData.map(d => Number(d.uniques)), borderColor:'#4dadff', backgroundColor:gUV, tension:0.35, fill:true},
+                                {label:'IP', data: dailyData.map(d => Number(d.ip_count)), borderColor:'#73c1ff', backgroundColor:gIP, tension:0.35, fill:true}
                             ]
                         },
                         options: {responsive:true, plugins:{legend:{position:'top'}, tooltip:{mode:'index', intersect:false}}, scales:{x:{stacked:false}, y:{beginAtZero:true}}}
@@ -210,8 +216,8 @@ render_topbar($branding);
                 }
 
                 const deviceData = [
-                    {label:'电脑端', value: <?= (int) $data['devices']['desktop']['views'] ?>, color:'#1690ff'},
-                    {label:'移动端', value: <?= (int) $data['devices']['mobile']['views'] ?>, color:'#73c1ff'}
+                    {label:'电脑端', value: <?= (int) $data['devices']['desktop']['ips'] ?>, color:'#1690ff'},
+                    {label:'移动端', value: <?= (int) $data['devices']['mobile']['ips'] ?>, color:'#73c1ff'}
                 ];
                 const ctxDevice = document.getElementById('devicePie');
                 if (ctxDevice && window.Chart) {
@@ -228,16 +234,14 @@ render_topbar($branding);
                 const browserRows = <?= json_encode($data['browsers'], JSON_UNESCAPED_UNICODE) ?>;
                 const ctxBrowser = document.getElementById('browserBar');
                 if (ctxBrowser && window.Chart) {
-                    const gBrowser = ctxBrowser.getContext('2d').createLinearGradient(0, 0, 0, 160);
-                    gBrowser.addColorStop(0, '#1690ff');
-                    gBrowser.addColorStop(1, '#b6e0ff');
+                    const palette = ['#1690ff','#73c1ff','#4dd0e1','#7c4dff','#ff8a65','#ffd166','#06d6a0','#ef476f','#9c27b0','#26c6da'];
                     new Chart(ctxBrowser, {
-                        type:'bar',
+                        type:'pie',
                         data:{
                             labels: browserRows.map(r=>r.browser || '未知'),
-                            datasets:[{label:'PV', data: browserRows.map(r=>Number(r.views)), backgroundColor:gBrowser}]
+                            datasets:[{label:'IP', data: browserRows.map(r=>Number(r.ips)), backgroundColor: browserRows.map((_,i)=>palette[i % palette.length])}]
                         },
-                        options:{plugins:{legend:{display:false}, datalabels:{display:false}}, scales:{y:{beginAtZero:true}}}
+                        options:{plugins:{legend:{position:'bottom'}}}
                     });
                 }
             </script>

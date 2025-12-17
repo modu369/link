@@ -41,7 +41,34 @@ render_topbar($branding);
                     <?php endif; ?>
                     </tbody>
                 </table>
+                <div style="margin-top:14px; display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
+                    <div style="min-width:240px; flex:1;">
+                        <div class="muted" style="margin-bottom:6px;">IP 占比（前 8 项）</div>
+                        <canvas id="enginePie" height="220"></canvas>
+                    </div>
+                </div>
             </section>
+            <script>
+                (function(){
+                    const engines = <?= json_encode(array_slice($data['engines'] ?? [],0,8), JSON_UNESCAPED_UNICODE) ?>;
+                    const palette = ['#1690ff','#73c1ff','#4dd0e1','#7c4dff','#ff8a65','#ffd166','#06d6a0','#ef476f'];
+                    const ctx = document.getElementById('enginePie');
+                    if(ctx && window.Chart){
+                        new Chart(ctx, {
+                            type:'pie',
+                            data:{
+                                labels: engines.map(e=>e.engine || '未知'),
+                                datasets:[{
+                                    data: engines.map(e=>Number(e.ips || 0)),
+                                    backgroundColor: engines.map((_,i)=>palette[i % palette.length]),
+                                    borderWidth: 0
+                                }]
+                            },
+                            options:{plugins:{legend:{position:'bottom'}}}
+                        });
+                    }
+                })();
+            </script>
         <?php endif; ?>
     </main>
 </div>

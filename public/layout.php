@@ -59,6 +59,7 @@ function render_head(string $title = '统计后台'): void
             .metric-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
             .metric { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card-gradient); color: #0f172a; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); }
             .metric .value { font-size: 22px; font-weight: 700; }
+            .card-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; align-items: start; }
             table { width: 100%; border-collapse: collapse; }
             th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: left; }
             th { color: var(--muted); font-weight: 600; }

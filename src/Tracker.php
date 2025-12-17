@@ -966,7 +966,7 @@ class Tracker
                     WHEN ip_address IS NULL OR ip_address = '' THEN '未知'
                     WHEN ip_address LIKE '10.%' OR ip_address LIKE '192.168.%' OR ip_address LIKE '172.1%.' THEN '内网'
                     WHEN ip_address LIKE '127.%' THEN '本地回环'
-                    ELSE CONCAT('网段 ', SUBSTRING_INDEX(ip_address, '.', 2))
+                    ELSE CONCAT('网段 ', SUBSTRING_INDEX(ip_address, '.', 3))
                 END as region, ip_hash
                 FROM pageviews
                 WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
