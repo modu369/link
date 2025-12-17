@@ -7,6 +7,7 @@ class Tracker
         private Redis $redis
     ) {
         $this->ensurePageviewSchema();
+        $this->ensureShareSchema();
     }
 
     public function createSite(string $name, string $domain): array
@@ -107,7 +108,7 @@ class Tracker
         ]);
     }
 
-    public function getOverview(int $siteId, string $range = '7d'): array
+    public function getOverview(int $siteId, string $range = 'today'): array
     {
         return [
             'totals' => $this->getTotals($siteId, $range),
@@ -124,7 +125,7 @@ class Tracker
         ];
     }
 
-    public function getContentData(int $siteId, string $range = '7d'): array
+    public function getContentData(int $siteId, string $range = 'today'): array
     {
         return [
             'top_pages' => $this->getTopPages($siteId, $range),
@@ -133,28 +134,28 @@ class Tracker
         ];
     }
 
-    public function getKeywordData(int $siteId, string $range = '7d'): array
+    public function getKeywordData(int $siteId, string $range = 'today'): array
     {
         return [
             'keywords' => $this->getKeywords($siteId, $range),
         ];
     }
 
-    public function getBotData(int $siteId, string $range = '7d'): array
+    public function getBotData(int $siteId, string $range = 'today'): array
     {
         return [
             'bot' => $this->getBotTraffic($siteId, $range),
         ];
     }
 
-    public function getMobileData(int $siteId, string $range = '7d'): array
+    public function getMobileData(int $siteId, string $range = 'today'): array
     {
         return [
             'breakdown' => $this->getMobileBreakdown($siteId, $range),
         ];
     }
 
-    public function getVisitorEnv(int $siteId, string $range = '7d'): array
+    public function getVisitorEnv(int $siteId, string $range = 'today'): array
     {
         return [
             'devices' => $this->getDeviceBreakdown($siteId, $range),
@@ -162,42 +163,42 @@ class Tracker
         ];
     }
 
-    public function getRegionData(int $siteId, string $range = '7d'): array
+    public function getRegionData(int $siteId, string $range = 'today'): array
     {
         return [
             'regions' => $this->getRegionStats($siteId, $range),
         ];
     }
 
-    public function getIspData(int $siteId, string $range = '7d'): array
+    public function getIspData(int $siteId, string $range = 'today'): array
     {
         return [
             'isps' => $this->getIspStats($siteId, $range),
         ];
     }
 
-    public function getAudienceData(int $siteId, string $range = '7d'): array
+    public function getAudienceData(int $siteId, string $range = 'today'): array
     {
         return [
             'new_vs_returning' => $this->getNewVsReturning($siteId, $range),
         ];
     }
 
-    public function getReferrerData(int $siteId, string $range = '7d'): array
+    public function getReferrerData(int $siteId, string $range = 'today'): array
     {
         return [
             'referrers' => $this->getTopReferrers($siteId, $range),
         ];
     }
 
-    public function getEntryData(int $siteId, string $range = '7d'): array
+    public function getEntryData(int $siteId, string $range = 'today'): array
     {
         return [
             'entries' => $this->getEntryPages($siteId, $range, 100),
         ];
     }
 
-    public function getPageData(int $siteId, string $range = '7d'): array
+    public function getPageData(int $siteId, string $range = 'today'): array
     {
         return [
             'pages' => $this->getTopPages($siteId, $range, 100),
@@ -595,6 +596,19 @@ class Tracker
         $ensureIndex('idx_site_ip', 'site_id, ip_hash, occurred_at');
     }
 
+    private function ensureShareSchema(): void
+    {
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS share_pages (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                token VARCHAR(64) NOT NULL UNIQUE,
+                site_ids TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+    }
+
     private function getMobileBreakdown(int $siteId, string $range): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
@@ -683,7 +697,7 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT browser, SUM(views) as views, COUNT(DISTINCT ip_hash) as ips FROM (
+            "SELECT browser, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips FROM (
                 SELECT CASE
                     WHEN user_agent LIKE '%Chrome%' AND user_agent NOT LIKE '%Edg%' THEN 'Chrome'
                     WHEN user_agent LIKE '%Edg%' THEN 'Edge'
@@ -693,7 +707,6 @@ class Tracker
                     WHEN user_agent LIKE '%MSIE%' OR user_agent LIKE '%Trident%' THEN 'IE'
                     ELSE '其他浏览器'
                 END as browser,
-                user_agent,
                 ip_hash
                 FROM pageviews
                 WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
@@ -857,6 +870,25 @@ class Tracker
         return $statement->fetchAll();
     }
 
+    public function rangeWindow(string $range): array
+    {
+        $now = new DateTimeImmutable('now');
+        $ranges = [
+            'today' => $now->setTime(0, 0),
+            'yesterday' => $now->modify('-1 day')->setTime(0, 0),
+            '7d' => $now->modify('-6 day')->setTime(0, 0),
+            '30d' => $now->modify('-29 day')->setTime(0, 0),
+        ];
+
+        $start = $ranges[$range] ?? $ranges['today'];
+        $end = ($range === 'yesterday') ? $now->setTime(0, 0) : $now;
+
+        return [
+            'start' => $start->format('Y-m-d H:i:s'),
+            'end' => $end->format('Y-m-d H:i:s'),
+        ];
+    }
+
     private function rangeClause(string $range, bool $forceLowerBound = false, bool $hourly = false): array
     {
         $params = [];
@@ -870,7 +902,7 @@ class Tracker
             '30d' => $now->modify('-29 day')->setTime(0, 0),
         ];
 
-        $start = $ranges[$range] ?? $ranges['7d'];
+        $start = $ranges[$range] ?? $ranges['today'];
 
         if ($range === 'yesterday') {
             $end = $now->setTime(0, 0);
@@ -886,6 +918,105 @@ class Tracker
         }
 
         return [$sql, $params];
+    }
+
+    public function createSharePage(string $name, array $siteIds): array
+    {
+        $siteIds = array_values(array_unique(array_filter(array_map('intval', $siteIds))));
+        if (empty($siteIds)) {
+            throw new InvalidArgumentException('请选择至少一个域名');
+        }
+
+        $token = bin2hex(random_bytes(12));
+        $statement = $this->db->prepare(
+            'INSERT INTO share_pages (name, token, site_ids, created_at) VALUES (:name, :token, :site_ids, NOW())'
+        );
+        $statement->execute([
+            ':name' => $name,
+            ':token' => $token,
+            ':site_ids' => json_encode($siteIds),
+        ]);
+
+        return [
+            'id' => (int) $this->db->lastInsertId(),
+            'name' => $name,
+            'token' => $token,
+            'site_ids' => $siteIds,
+        ];
+    }
+
+    public function getSharePages(): array
+    {
+        $query = $this->db->query('SELECT id, name, token, site_ids, created_at FROM share_pages ORDER BY created_at DESC');
+        $pages = $query->fetchAll();
+
+        foreach ($pages as &$page) {
+            $page['site_ids'] = json_decode($page['site_ids'], true) ?? [];
+        }
+
+        return $pages;
+    }
+
+    public function deleteSharePage(int $id): void
+    {
+        $stmt = $this->db->prepare('DELETE FROM share_pages WHERE id = :id');
+        $stmt->execute([':id' => $id]);
+    }
+
+    public function getShareByToken(string $token): ?array
+    {
+        $stmt = $this->db->prepare('SELECT id, name, token, site_ids, created_at FROM share_pages WHERE token = :token LIMIT 1');
+        $stmt->execute([':token' => $token]);
+        $share = $stmt->fetch();
+        if (!$share) {
+            return null;
+        }
+
+        $share['site_ids'] = json_decode($share['site_ids'], true) ?? [];
+
+        return $share;
+    }
+
+    public function getShareReport(string $token, string $range = 'today'): ?array
+    {
+        $share = $this->getShareByToken($token);
+        if (!$share || empty($share['site_ids'])) {
+            return null;
+        }
+
+        [$rangeSql, $params] = $this->rangeClause($range);
+        $placeholders = implode(',', array_fill(0, count($share['site_ids']), '?'));
+        $statement = $this->db->prepare(
+            "SELECT COALESCE(canonical_host, '未知域名') as domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
+                SUM(is_mobile) as mobile_views, COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
+            FROM pageviews
+            WHERE site_id IN ({$placeholders}) AND is_bot = 0 {$rangeSql}
+            GROUP BY canonical_host
+            ORDER BY views DESC"
+        );
+
+        $statement->execute(array_merge($share['site_ids'], array_values($params)));
+        $rows = $statement->fetchAll();
+
+        $totals = [
+            'domain' => '汇总',
+            'views' => 0,
+            'ips' => 0,
+            'mobile_views' => 0,
+            'mobile_ips' => 0,
+        ];
+
+        foreach ($rows as $row) {
+            $totals['views'] += (int) $row['views'];
+            $totals['ips'] += (int) $row['ips'];
+            $totals['mobile_views'] += (int) $row['mobile_views'];
+            $totals['mobile_ips'] += (int) $row['mobile_ips'];
+        }
+
+        return [
+            'share' => $share,
+            'rows' => array_merge([$totals], $rows),
+        ];
     }
 
     public function deleteSite(int $siteId): void

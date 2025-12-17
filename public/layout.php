@@ -40,8 +40,12 @@ function render_head(string $title = '统计后台'): void
             .nav .site-name { font-size: 18px; font-weight: 700; margin: 0 0 4px; }
             .nav .site-domain { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
             .nav select { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 12px; }
-            .nav .group-title { margin: 14px 0 8px; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; }
-            .nav a { display: block; padding: 10px 12px; border-radius: 10px; text-decoration: none; color: #0f172a; font-weight: 600; border: 1px solid transparent; }
+            .nav-section { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; overflow: hidden; }
+            .nav-toggle { width: 100%; text-align: left; background: #f8fafc; border: none; padding: 10px 12px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+            .nav-toggle span { color: var(--muted); font-weight: 600; font-size: 13px; }
+            .nav-links { display: none; padding: 6px 0; }
+            .nav-section.open .nav-links { display: block; }
+            .nav a { display: block; padding: 10px 12px; border-radius: 10px; text-decoration: none; color: #0f172a; font-weight: 600; border: 1px solid transparent; margin: 4px 8px; }
             .nav a.active { background: #0f172a; color: #fff; border-color: #0f172a; }
             .content { display: grid; gap: 12px; }
             .filters { display: flex; gap: 10px; align-items: center; justify-content: flex-end; }
@@ -92,22 +96,64 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
                 <option value="<?= htmlspecialchars($active, ENT_QUOTES, 'UTF-8') ?>.php?site=<?= (int) $site['id'] ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>" <?= ($siteId === (int) $site['id']) ? 'selected' : '' ?>><?= htmlspecialchars($site['name'], ENT_QUOTES, 'UTF-8') ?></option>
             <?php endforeach; ?>
         </select>
-        <div class="group-title">功能</div>
-        <a class="<?= $active === 'overview' ? 'active' : '' ?>" href="/overview.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">总览</a>
-        <a class="<?= $active === 'content' ? 'active' : '' ?>" href="/content.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">内容</a>
-        <a class="<?= $active === 'keyword' ? 'active' : '' ?>" href="/keyword.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">关键词</a>
-        <a class="<?= $active === 'mobile' ? 'active' : '' ?>" href="/mobile.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">移动端</a>
-        <a class="<?= $active === 'bot' ? 'active' : '' ?>" href="/bot.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">蜘蛛</a>
-        <div class="group-title">访问者信息</div>
-        <a class="<?= $active === 'env' ? 'active' : '' ?>" href="/env.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">系统环境概览</a>
-        <a class="<?= $active === 'region' ? 'active' : '' ?>" href="/region.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">地域分布</a>
-        <a class="<?= $active === 'isp' ? 'active' : '' ?>" href="/isp.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">运营商</a>
-        <a class="<?= $active === 'audience' ? 'active' : '' ?>" href="/audience.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">新老访客</a>
-        <a class="<?= $active === 'referrer' ? 'active' : '' ?>" href="/referrer.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">来路详情</a>
-        <a class="<?= $active === 'pages' ? 'active' : '' ?>" href="/pages.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">受访页</a>
-        <a class="<?= $active === 'entry' ? 'active' : '' ?>" href="/entry.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">入口页</a>
-        <div class="group-title">返回</div>
-        <a href="/sites.php">域名列表</a>
+        <?php
+        $sections = [
+            'core' => [
+                'title' => '功能',
+                'items' => [
+                    ['key' => 'overview', 'label' => '总览', 'href' => "/overview.php?site={$siteId}&range={$range}"],
+                    ['key' => 'content', 'label' => '内容', 'href' => "/content.php?site={$siteId}&range={$range}"],
+                    ['key' => 'keyword', 'label' => '关键词', 'href' => "/keyword.php?site={$siteId}&range={$range}"],
+                    ['key' => 'mobile', 'label' => '移动端', 'href' => "/mobile.php?site={$siteId}&range={$range}"],
+                    ['key' => 'bot', 'label' => '蜘蛛', 'href' => "/bot.php?site={$siteId}&range={$range}"],
+                ],
+            ],
+            'visitor' => [
+                'title' => '访问者信息',
+                'items' => [
+                    ['key' => 'env', 'label' => '系统环境概览', 'href' => "/env.php?site={$siteId}&range={$range}"],
+                    ['key' => 'region', 'label' => '地域分布', 'href' => "/region.php?site={$siteId}&range={$range}"],
+                    ['key' => 'isp', 'label' => '运营商', 'href' => "/isp.php?site={$siteId}&range={$range}"],
+                    ['key' => 'audience', 'label' => '新老访客', 'href' => "/audience.php?site={$siteId}&range={$range}"],
+                    ['key' => 'referrer', 'label' => '来路详情', 'href' => "/referrer.php?site={$siteId}&range={$range}"],
+                    ['key' => 'pages', 'label' => '受访页', 'href' => "/pages.php?site={$siteId}&range={$range}"],
+                    ['key' => 'entry', 'label' => '入口页', 'href' => "/entry.php?site={$siteId}&range={$range}"],
+                ],
+            ],
+            'back' => [
+                'title' => '返回',
+                'items' => [
+                    ['key' => 'sites', 'label' => '域名列表', 'href' => '/sites.php'],
+                ],
+            ],
+        ];
+
+        foreach ($sections as $sectionKey => $section):
+            $open = in_array($active, array_column($section['items'], 'key'), true);
+            ?>
+            <div class="nav-section <?= $open ? 'open' : '' ?>" data-section="<?= $sectionKey ?>">
+                <button class="nav-toggle" type="button" aria-expanded="<?= $open ? 'true' : 'false' ?>">
+                    <?= htmlspecialchars($section['title'], ENT_QUOTES, 'UTF-8') ?>
+                    <span>▼</span>
+                </button>
+                <div class="nav-links">
+                    <?php foreach ($section['items'] as $item): ?>
+                        <a class="<?= $active === $item['key'] ? 'active' : '' ?>" href="<?= htmlspecialchars($item['href'], ENT_QUOTES, 'UTF-8') ?>">
+                            <?= htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8') ?>
+                        </a>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+        <?php endforeach; ?>
+        <script>
+            document.querySelectorAll('.nav-section .nav-toggle').forEach(function(btn){
+                btn.addEventListener('click', function(){
+                    var section = btn.closest('.nav-section');
+                    var open = section.classList.toggle('open');
+                    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+                });
+            });
+        </script>
     </aside>
     <?php
 }

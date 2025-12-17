@@ -3,6 +3,7 @@ require __DIR__ . '/init.php';
 require __DIR__ . '/layout.php';
 
 $error = null;
+$shareError = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -29,9 +30,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
     }
+
+    if ($action === 'share_create') {
+        $name = trim($_POST['share_name'] ?? '');
+        $selectedSites = $_POST['share_sites'] ?? [];
+        try {
+            $tracker->createSharePage($name ?: '分享页', $selectedSites);
+            header('Location: /sites.php');
+            exit;
+        } catch (Throwable $e) {
+            $shareError = $e->getMessage();
+        }
+    }
+
+    if ($action === 'share_delete') {
+        $shareId = (int) ($_POST['share_id'] ?? 0);
+        if ($shareId > 0) {
+            $tracker->deleteSharePage($shareId);
+            header('Location: /sites.php');
+            exit;
+        }
+    }
 }
 
 $sites = $tracker->getSites();
+$sharePages = $tracker->getSharePages();
 
 render_head('域名列表 - 统计后台');
 render_topbar($config);
@@ -85,5 +108,60 @@ render_topbar($config);
             <?php endforeach; ?>
         <?php endif; ?>
     </div>
+
+    <section class="card">
+        <div class="section-title">
+            <h2>统计分享页</h2>
+            <span class="pill">生成分享链接，选择要汇总的域名</span>
+        </div>
+        <?php if ($shareError): ?><p style="color:#ef4444; margin-top:0;"><?= htmlspecialchars($shareError, ENT_QUOTES, 'UTF-8') ?></p><?php endif; ?>
+        <?php if (empty($sites)): ?>
+            <p class="muted" style="margin:0;">请先添加至少一个域名后再生成分享页。</p>
+        <?php else: ?>
+            <form method="post" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;align-items:end;">
+                <input type="hidden" name="action" value="share_create">
+                <div class="form-control" style="margin:0;">
+                    <label>分享页名称</label>
+                    <input type="text" name="share_name" placeholder="我的分享页" />
+                </div>
+                <div class="form-control" style="margin:0;">
+                    <label>选择域名（可多选）</label>
+                    <div style="display:flex;flex-wrap:wrap;gap:8px;">
+                        <?php foreach ($sites as $site): ?>
+                            <label style="display:flex;align-items:center;gap:6px;font-size:13px;">
+                                <input type="checkbox" name="share_sites[]" value="<?= (int) $site['id'] ?>">
+                                <?= htmlspecialchars($site['name'], ENT_QUOTES, 'UTF-8') ?>
+                            </label>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+                <div><button type="submit">创建分享页</button></div>
+            </form>
+        <?php endif; ?>
+
+        <div style="margin-top:16px;" class="site-grid">
+            <?php if (empty($sharePages)): ?>
+                <div class="card" style="grid-column:1/-1;">
+                    <p class="muted" style="margin:0;">暂无分享页，创建后可复制链接对外展示数据。</p>
+                </div>
+            <?php else: ?>
+                <?php foreach ($sharePages as $page): ?>
+                    <div class="site-card">
+                        <div class="name">分享：<?= htmlspecialchars($page['name'], ENT_QUOTES, 'UTF-8') ?></div>
+                        <div class="meta">包含站点：<?= implode('、', array_map('intval', $page['site_ids'])) ?></div>
+                        <div class="meta">链接：<a href="/share.php?token=<?= htmlspecialchars($page['token'], ENT_QUOTES, 'UTF-8') ?>" target="_blank">点击查看</a></div>
+                        <div class="actions">
+                            <code style="margin:0;">/share.php?token=<?= htmlspecialchars($page['token'], ENT_QUOTES, 'UTF-8') ?></code>
+                            <form method="post" style="margin:0;">
+                                <input type="hidden" name="action" value="share_delete">
+                                <input type="hidden" name="share_id" value="<?= (int) $page['id'] ?>">
+                                <button type="submit" class="ghost">删除</button>
+                            </form>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+    </section>
 </div>
 <?php render_footer(); ?>

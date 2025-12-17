@@ -42,7 +42,7 @@ foreach ($sites as $site) {
 }
 
 $allowedRanges = ['today', 'yesterday', '7d', '30d'];
-$range = $_GET['range'] ?? '7d';
+$range = $_GET['range'] ?? 'today';
 if (!in_array($range, $allowedRanges, true)) {
-    $range = '7d';
+    $range = 'today';
 }
