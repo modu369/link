@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS pageviews (
     path TEXT,
     referrer TEXT,
     user_agent TEXT,
+    ip_address VARCHAR(45),
     ip_hash CHAR(64),
     session_id VARCHAR(64),
     duration_seconds INT DEFAULT 0,
@@ -27,6 +28,7 @@ CREATE TABLE IF NOT EXISTS pageviews (
     INDEX idx_site_bot (site_id, is_bot, occurred_at),
     INDEX idx_site_mobile (site_id, is_mobile, occurred_at),
     INDEX idx_site_host (site_id, canonical_host, occurred_at),
+    INDEX idx_site_ip (site_id, ip_hash, occurred_at),
     INDEX idx_site_session (site_id, session_id),
     CONSTRAINT fk_pageviews_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

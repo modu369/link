@@ -24,17 +24,18 @@ render_topbar($config);
             </section>
 
             <section class="card">
-                <div class="section-title"><h3>抓取记录</h3><span class="muted">最新 100 条</span></div>
+                <div class="section-title"><h3>抓取记录</h3><span class="muted">最新 200 条</span></div>
                 <table>
-                    <thead><tr><th>页面</th><th>UA</th><th>时间</th></tr></thead>
+                    <thead><tr><th>抓取页面</th><th>搜索引擎</th><th>UA</th><th>时间</th></tr></thead>
                     <tbody>
                     <?php if (empty($data['bot'])): ?>
-                        <tr><td colspan="3" class="muted">暂无蜘蛛抓取</td></tr>
+                        <tr><td colspan="4" class="muted">暂无蜘蛛抓取</td></tr>
                     <?php else: ?>
                         <?php foreach ($data['bot'] as $row): ?>
                             <tr>
                                 <td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td>
-                                <td class="muted" style="max-width:340px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                                <td><?= htmlspecialchars($row['engine'], ENT_QUOTES, 'UTF-8') ?></td>
+                                <td class="muted" style="max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
                                     <?= htmlspecialchars($row['user_agent'], ENT_QUOTES, 'UTF-8') ?>
                                 </td>
                                 <td><?= htmlspecialchars($row['occurred_at'], ENT_QUOTES, 'UTF-8') ?></td>

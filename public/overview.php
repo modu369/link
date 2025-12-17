@@ -21,7 +21,6 @@ render_topbar($config);
                     </div>
                     <?php render_range_filters($allowedRanges, $range, 'overview', (int) $selectedSite['id']); ?>
                 </div>
-                <code class="inline">&lt;script src="<?= rtrim($config['app']['base_url'], '/') ?>/js/tracker.js" data-site="<?= htmlspecialchars($selectedSite['tracking_id'], ENT_QUOTES, 'UTF-8') ?>"&gt;&lt;/script&gt;</code>
             </section>
 
             <section class="metric-row">
@@ -65,6 +64,107 @@ render_topbar($config);
                             <td><?= (int) $row['uniques'] ?></td>
                             <td><?= (int) $row['ips'] ?></td>
                         </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </section>
+
+            <section class="card">
+                <div class="section-title">
+                    <h3>地域分布</h3>
+                    <a class="filter-btn" href="/region.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
+                </div>
+                <table>
+                    <thead><tr><th>地域</th><th>PV</th><th>IP</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($data['regions'] as $row): ?>
+                        <tr>
+                            <td><?= htmlspecialchars($row['region'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td><?= (int) $row['views'] ?></td>
+                            <td><?= (int) $row['ips'] ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </section>
+
+            <section class="card">
+                <div class="section-title">
+                    <h3>访问终端设备</h3>
+                    <a class="filter-btn" href="/env.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
+                </div>
+                <div class="metric-row">
+                    <div class="metric"><div class="muted">电脑端 PV</div><div class="value"><?= (int) $data['devices']['desktop']['views'] ?></div></div>
+                    <div class="metric"><div class="muted">电脑端 IP</div><div class="value"><?= (int) $data['devices']['desktop']['ips'] ?></div></div>
+                    <div class="metric"><div class="muted">移动端 PV</div><div class="value"><?= (int) $data['devices']['mobile']['views'] ?></div></div>
+                    <div class="metric"><div class="muted">移动端 IP</div><div class="value"><?= (int) $data['devices']['mobile']['ips'] ?></div></div>
+                </div>
+                <div class="section-title" style="margin-top:12px;"><h4 style="margin:0;">浏览器 TOP</h4></div>
+                <table>
+                    <thead><tr><th>浏览器</th><th>PV</th><th>IP</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($data['browsers'] as $row): ?>
+                        <tr>
+                            <td><?= htmlspecialchars($row['browser'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td><?= (int) $row['views'] ?></td>
+                            <td><?= (int) $row['ips'] ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </section>
+
+            <section class="card">
+                <div class="section-title">
+                    <h3>新老访客</h3>
+                    <a class="filter-btn" href="/audience.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
+                </div>
+                <div class="metric-row">
+                    <div class="metric"><div class="muted">新访客</div><div class="value"><?= (int) $data['new_vs_returning']['new'] ?></div></div>
+                    <div class="metric"><div class="muted">回访访客</div><div class="value"><?= (int) $data['new_vs_returning']['returning'] ?></div></div>
+                </div>
+            </section>
+
+            <section class="card">
+                <div class="section-title">
+                    <h3>来路</h3>
+                    <a class="filter-btn" href="/referrer.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
+                </div>
+                <table>
+                    <thead><tr><th>来源</th><th>PV</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($data['top_referrers'] as $row): ?>
+                        <tr><td><?= htmlspecialchars($row['referrer'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['views'] ?></td></tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </section>
+
+            <section class="card">
+                <div class="section-title">
+                    <h3>受访页</h3>
+                    <a class="filter-btn" href="/pages.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
+                </div>
+                <table>
+                    <thead><tr><th>页面</th><th>PV</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($data['top_pages'] as $row): ?>
+                        <tr><td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['views'] ?></td></tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </section>
+
+            <section class="card">
+                <div class="section-title">
+                    <h3>入口页（前10名）</h3>
+                    <a class="filter-btn" href="/entry.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
+                </div>
+                <table>
+                    <thead><tr><th>入口页</th><th>PV</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($data['entry_pages'] as $row): ?>
+                        <tr><td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['views'] ?></td></tr>
                     <?php endforeach; ?>
                     </tbody>
                 </table>

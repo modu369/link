@@ -98,6 +98,14 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
         <a class="<?= $active === 'keyword' ? 'active' : '' ?>" href="/keyword.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">关键词</a>
         <a class="<?= $active === 'mobile' ? 'active' : '' ?>" href="/mobile.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">移动端</a>
         <a class="<?= $active === 'bot' ? 'active' : '' ?>" href="/bot.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">蜘蛛</a>
+        <div class="group-title">访问者信息</div>
+        <a class="<?= $active === 'env' ? 'active' : '' ?>" href="/env.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">系统环境概览</a>
+        <a class="<?= $active === 'region' ? 'active' : '' ?>" href="/region.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">地域分布</a>
+        <a class="<?= $active === 'isp' ? 'active' : '' ?>" href="/isp.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">运营商</a>
+        <a class="<?= $active === 'audience' ? 'active' : '' ?>" href="/audience.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">新老访客</a>
+        <a class="<?= $active === 'referrer' ? 'active' : '' ?>" href="/referrer.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">来路详情</a>
+        <a class="<?= $active === 'pages' ? 'active' : '' ?>" href="/pages.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">受访页</a>
+        <a class="<?= $active === 'entry' ? 'active' : '' ?>" href="/entry.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">入口页</a>
         <div class="group-title">返回</div>
         <a href="/sites.php">域名列表</a>
     </aside>

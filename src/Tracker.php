@@ -85,8 +85,8 @@ class Tracker
         }
 
         $statement = $this->db->prepare(
-            'INSERT INTO pageviews (site_id, host, canonical_host, path, referrer, user_agent, ip_hash, session_id, duration_seconds, page_count, keyword, is_mobile, is_bot, is_unique, occurred_at) VALUES
-            (:site_id, :host, :canonical_host, :path, :referrer, :user_agent, :ip_hash, :session_id, :duration_seconds, :page_count, :keyword, :is_mobile, :is_bot, :is_unique, NOW())'
+            'INSERT INTO pageviews (site_id, host, canonical_host, path, referrer, user_agent, ip_address, ip_hash, session_id, duration_seconds, page_count, keyword, is_mobile, is_bot, is_unique, occurred_at) VALUES
+            (:site_id, :host, :canonical_host, :path, :referrer, :user_agent, :ip_address, :ip_hash, :session_id, :duration_seconds, :page_count, :keyword, :is_mobile, :is_bot, :is_unique, NOW())'
         );
         $statement->execute([
             ':site_id' => $site['id'],
@@ -95,6 +95,7 @@ class Tracker
             ':path' => $path,
             ':referrer' => $payload['referrer'] ?? null,
             ':user_agent' => $userAgent,
+            ':ip_address' => $ip,
             ':ip_hash' => $ipHash,
             ':session_id' => $sessionId,
             ':duration_seconds' => $duration,
@@ -113,6 +114,13 @@ class Tracker
             'daily' => $this->getDailyStats($siteId, $range),
             'hourly' => $this->getHourlyStats($siteId, $range),
             'predictions' => $this->getPredictions($siteId),
+            'regions' => $this->getRegionStats($siteId, $range, 10),
+            'devices' => $this->getDeviceBreakdown($siteId, $range),
+            'browsers' => $this->getBrowserBreakdown($siteId, $range, 6),
+            'new_vs_returning' => $this->getNewVsReturning($siteId, $range),
+            'top_referrers' => $this->getTopReferrers($siteId, $range),
+            'top_pages' => $this->getTopPages($siteId, $range, 10),
+            'entry_pages' => $this->getEntryPages($siteId, $range, 10),
         ];
     }
 
@@ -143,6 +151,56 @@ class Tracker
     {
         return [
             'breakdown' => $this->getMobileBreakdown($siteId, $range),
+        ];
+    }
+
+    public function getVisitorEnv(int $siteId, string $range = '7d'): array
+    {
+        return [
+            'devices' => $this->getDeviceBreakdown($siteId, $range),
+            'browsers' => $this->getBrowserBreakdown($siteId, $range),
+        ];
+    }
+
+    public function getRegionData(int $siteId, string $range = '7d'): array
+    {
+        return [
+            'regions' => $this->getRegionStats($siteId, $range),
+        ];
+    }
+
+    public function getIspData(int $siteId, string $range = '7d'): array
+    {
+        return [
+            'isps' => $this->getIspStats($siteId, $range),
+        ];
+    }
+
+    public function getAudienceData(int $siteId, string $range = '7d'): array
+    {
+        return [
+            'new_vs_returning' => $this->getNewVsReturning($siteId, $range),
+        ];
+    }
+
+    public function getReferrerData(int $siteId, string $range = '7d'): array
+    {
+        return [
+            'referrers' => $this->getTopReferrers($siteId, $range),
+        ];
+    }
+
+    public function getEntryData(int $siteId, string $range = '7d'): array
+    {
+        return [
+            'entries' => $this->getEntryPages($siteId, $range, 100),
+        ];
+    }
+
+    public function getPageData(int $siteId, string $range = '7d'): array
+    {
+        return [
+            'pages' => $this->getTopPages($siteId, $range, 100),
         ];
     }
 
@@ -196,7 +254,7 @@ class Tracker
         return $statement->fetchAll();
     }
 
-    private function getTopPages(int $siteId, string $range): array
+    private function getTopPages(int $siteId, string $range, int $limit = 50): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
@@ -205,7 +263,7 @@ class Tracker
             WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
             GROUP BY path
             ORDER BY views DESC
-            LIMIT 50"
+            LIMIT {$limit}"
         );
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
@@ -223,6 +281,28 @@ class Tracker
             ORDER BY views DESC
             LIMIT 50"
         );
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+        return $statement->fetchAll();
+    }
+
+    private function getEntryPages(int $siteId, string $range, int $limit = 20): array
+    {
+        [$rangeSql, $params] = $this->rangeClause($range, true);
+        $statement = $this->db->prepare(
+            "SELECT path, COUNT(*) as views
+            FROM (
+                SELECT MIN(id) as first_id, session_id
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
+                GROUP BY session_id
+            ) s
+            JOIN pageviews p ON p.id = s.first_id
+            GROUP BY path
+            ORDER BY views DESC
+            LIMIT {$limit}"
+        );
+
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         return $statement->fetchAll();
@@ -247,16 +327,44 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT keyword, COUNT(*) as views
+            "SELECT keyword,
+                COALESCE(NULLIF(SUBSTRING_INDEX(SUBSTRING_INDEX(referrer, '/', 3), '//', -1), ''), '直接访问') as engine,
+                COALESCE(path, '/') as path,
+                COUNT(*) as views
             FROM pageviews
             WHERE site_id = :site_id AND keyword IS NOT NULL AND keyword != '' AND is_bot = 0 {$rangeSql}
-            GROUP BY keyword
+            GROUP BY keyword, engine, path
             ORDER BY views DESC
-            LIMIT 100"
+            LIMIT 500"
         );
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
-        return $statement->fetchAll();
+        $rows = $statement->fetchAll();
+        $keywords = [];
+
+        foreach ($rows as $row) {
+            $keyword = $row['keyword'];
+            if (!isset($keywords[$keyword])) {
+                $keywords[$keyword] = [
+                    'keyword' => $keyword,
+                    'views' => 0,
+                    'engines' => [],
+                    'entry' => $row['path'],
+                ];
+            }
+
+            $keywords[$keyword]['views'] += (int) $row['views'];
+            $keywords[$keyword]['engines'][] = $this->identifySearchEngine($row['engine']);
+
+            if ($row['views'] >= $keywords[$keyword]['views']) {
+                $keywords[$keyword]['entry'] = $row['path'];
+            }
+        }
+
+        return array_values(array_map(function ($item) {
+            $item['engines'] = implode(' / ', array_unique($item['engines']));
+            return $item;
+        }, $keywords));
     }
 
     private function getBotTraffic(int $siteId, string $range): array
@@ -267,11 +375,16 @@ class Tracker
             FROM pageviews
             WHERE site_id = :site_id AND is_bot = 1 {$rangeSql}
             ORDER BY occurred_at DESC
-            LIMIT 100"
+            LIMIT 200"
         );
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
-        return $statement->fetchAll();
+        $rows = $statement->fetchAll();
+        foreach ($rows as &$row) {
+            $row['engine'] = $this->identifySearchEngine($row['user_agent'], $row['referrer']);
+        }
+
+        return $rows;
     }
 
     private function getVisitAverages(int $siteId, string $range): array
@@ -475,9 +588,11 @@ class Tracker
         $ensureColumn('is_bot', 'TINYINT(1) DEFAULT 0');
         $ensureColumn('is_unique', 'TINYINT(1) DEFAULT 0');
         $ensureColumn('occurred_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
+        $ensureColumn('ip_address', 'VARCHAR(45)');
 
         $ensureIndex('idx_site_host', 'site_id, canonical_host, occurred_at');
         $ensureIndex('idx_site_mobile', 'site_id, is_mobile, occurred_at');
+        $ensureIndex('idx_site_ip', 'site_id, ip_hash, occurred_at');
     }
 
     private function getMobileBreakdown(int $siteId, string $range): array
@@ -511,6 +626,150 @@ class Tracker
         }
 
         return array_merge([$totals], $rows);
+    }
+
+    private function identifySearchEngine(?string $ua, ?string $referrer = null): string
+    {
+        $haystack = strtolower(($ua ?? '') . ' ' . ($referrer ?? ''));
+
+        $map = [
+            '百度' => ['baidu', 'baiduspider'],
+            'Google' => ['google', 'adsbot'],
+            'Bing' => ['bing', 'bingbot'],
+            '360搜索' => ['360spider', 'so.com'],
+            '神马' => ['sm.cn', 'yisouspider'],
+            '搜狗' => ['sogou', 'sosospider'],
+            '头条' => ['toutiao', 'bytedance'],
+        ];
+
+        foreach ($map as $label => $needles) {
+            foreach ($needles as $needle) {
+                if (str_contains($haystack, strtolower($needle))) {
+                    return $label;
+                }
+            }
+        }
+
+        return '其他来源';
+    }
+
+    private function getDeviceBreakdown(int $siteId, string $range): array
+    {
+        [$rangeSql, $params] = $this->rangeClause($range);
+        $statement = $this->db->prepare(
+            "SELECT SUM(is_mobile = 0) as desktop_views, SUM(is_mobile = 1) as mobile_views,
+                COUNT(DISTINCT IF(is_mobile = 0, ip_hash, NULL)) as desktop_ips,
+                COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
+            FROM pageviews
+            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}"
+        );
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+        $row = $statement->fetch();
+
+        return [
+            'desktop' => [
+                'views' => (int) ($row['desktop_views'] ?? 0),
+                'ips' => (int) ($row['desktop_ips'] ?? 0),
+            ],
+            'mobile' => [
+                'views' => (int) ($row['mobile_views'] ?? 0),
+                'ips' => (int) ($row['mobile_ips'] ?? 0),
+            ],
+        ];
+    }
+
+    private function getBrowserBreakdown(int $siteId, string $range, int $limit = 10): array
+    {
+        [$rangeSql, $params] = $this->rangeClause($range);
+        $statement = $this->db->prepare(
+            "SELECT browser, SUM(views) as views, COUNT(DISTINCT ip_hash) as ips FROM (
+                SELECT CASE
+                    WHEN user_agent LIKE '%Chrome%' AND user_agent NOT LIKE '%Edg%' THEN 'Chrome'
+                    WHEN user_agent LIKE '%Edg%' THEN 'Edge'
+                    WHEN user_agent LIKE '%Firefox%' THEN 'Firefox'
+                    WHEN user_agent LIKE '%Safari%' AND user_agent NOT LIKE '%Chrome%' THEN 'Safari'
+                    WHEN user_agent LIKE '%Opera%' OR user_agent LIKE '%OPR%' THEN 'Opera'
+                    WHEN user_agent LIKE '%MSIE%' OR user_agent LIKE '%Trident%' THEN 'IE'
+                    ELSE '其他浏览器'
+                END as browser,
+                user_agent,
+                ip_hash
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+            ) t
+            GROUP BY browser
+            ORDER BY views DESC
+            LIMIT {$limit}"
+        );
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+        return $statement->fetchAll();
+    }
+
+    private function getRegionStats(int $siteId, string $range, int $limit = 50): array
+    {
+        [$rangeSql, $params] = $this->rangeClause($range);
+        $statement = $this->db->prepare(
+            "SELECT region, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips FROM (
+                SELECT CASE
+                    WHEN ip_address IS NULL OR ip_address = '' THEN '未知'
+                    WHEN ip_address LIKE '10.%' OR ip_address LIKE '192.168.%' OR ip_address LIKE '172.1%.' THEN '内网'
+                    WHEN ip_address LIKE '127.%' THEN '本地回环'
+                    ELSE CONCAT('网段 ', SUBSTRING_INDEX(ip_address, '.', 2))
+                END as region, ip_hash
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+            ) t
+            GROUP BY region
+            ORDER BY views DESC
+            LIMIT {$limit}"
+        );
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+        return $statement->fetchAll();
+    }
+
+    private function getIspStats(int $siteId, string $range, int $limit = 50): array
+    {
+        [$rangeSql, $params] = $this->rangeClause($range);
+        $statement = $this->db->prepare(
+            "SELECT isp, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips FROM (
+                SELECT CASE
+                    WHEN ip_address LIKE '100.%' OR ip_address LIKE '39.%' THEN '中国移动(推测)'
+                    WHEN ip_address LIKE '101.%' OR ip_address LIKE '36.%' THEN '中国电信(推测)'
+                    WHEN ip_address LIKE '42.%' OR ip_address LIKE '58.%' THEN '中国联通(推测)'
+                    WHEN ip_address LIKE '10.%' OR ip_address LIKE '192.168.%' THEN '内网'
+                    ELSE '未知运营商'
+                END as isp,
+                ip_hash
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+            ) t
+            GROUP BY isp
+            ORDER BY views DESC
+            LIMIT {$limit}"
+        );
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+        return $statement->fetchAll();
+    }
+
+    private function getNewVsReturning(int $siteId, string $range): array
+    {
+        [$rangeSql, $params] = $this->rangeClause($range);
+        $statement = $this->db->prepare(
+            "SELECT SUM(is_unique) as new_users, COUNT(*) - SUM(is_unique) as returning
+            FROM pageviews
+            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}"
+        );
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $row = $statement->fetch();
+
+        return [
+            'new' => (int) ($row['new_users'] ?? 0),
+            'returning' => (int) ($row['returning'] ?? 0),
+        ];
     }
 
     private function extractKeyword(?string $referrer): ?string
