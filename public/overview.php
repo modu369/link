@@ -28,12 +28,25 @@ render_topbar($branding);
     .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; align-items: stretch; }
     .pill-tag { background: #deedfb; color: #1690ff; padding: 4px 10px; border-radius: 999px; font-weight: 700; border: 1px solid var(--border); }
     .chart-wrap { position: relative; width: 100%; }
-    .trend-wrap canvas { height: 320px !important; width: 100% !important; }
+    .trend-wrap canvas {
+        width: 100% !important;
+        height: 280px !important;
+        max-height: 340px;
+    }
     .table-wrap { max-height: 320px; overflow: auto; }
     .trend-controls { display:flex; gap:8px; align-items:center; }
     .trend-toggle button { border:1px solid var(--border); background:#deedfb; color:#1690ff; padding:6px 10px; border-radius:8px; cursor:pointer; font-weight:700; }
     .trend-toggle button.active { background:#1690ff; color:#fff; }
-    .browser-pie { max-width: 260px; margin: 0 auto; display: flex; justify-content: center; }
+    .browser-pie {
+        max-width: 320px;
+        margin: 0 auto;
+        display: flex;
+        justify-content: center;
+    }
+    .browser-pie canvas {
+        width: 100% !important;
+        height: 200px !important;
+    }
 </style>
 <div class="data-layout">
     <?php render_sidebar($sites, $siteId, $selectedSite, 'overview', $range); ?>
@@ -77,7 +90,7 @@ render_topbar($branding);
                         <button data-metric="views">PV</button>
                     </div>
                 </div>
-                <div class="chart-wrap trend-wrap"><canvas id="dailyTrendChart" height="80"></canvas></div>
+                <div class="chart-wrap trend-wrap"><canvas id="dailyTrendChart"></canvas></div>
             </section>
 
             <div class="grid-2">

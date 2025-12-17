@@ -449,6 +449,7 @@ class Tracker
     private function getTopReferrers(int $siteId, string $range): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
+        $domains = $this->getAllSiteDomains($siteId);
         $statement = $this->db->prepare(
             "SELECT referrer, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
             FROM pageviews
@@ -459,7 +460,60 @@ class Tracker
         );
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
-        return $statement->fetchAll();
+        $rows = $statement->fetchAll();
+
+        if ($domains) {
+            $rows = array_values(array_filter($rows, function ($row) use ($domains) {
+                return !$this->isOwnReferrer($row['referrer'] ?? '', $domains);
+            }));
+        }
+
+        return $rows;
+    }
+
+    private function getAllSiteDomains(int $siteId): array
+    {
+        $domains = [];
+        $site = $this->getSite($siteId);
+        if ($site && !empty($site['domain'])) {
+            $domains[] = $this->canonicalHost($site['domain']);
+        }
+
+        foreach ($this->getSiteDomains($siteId) as $row) {
+            if (!empty($row['domain'])) {
+                $domains[] = $this->canonicalHost($row['domain']);
+            }
+        }
+
+        $domains = array_filter(array_unique($domains));
+
+        return array_values($domains);
+    }
+
+    private function isOwnReferrer(string $referrer, array $domains): bool
+    {
+        if (!$referrer || !$domains) {
+            return false;
+        }
+
+        $host = parse_url($referrer, PHP_URL_HOST) ?? '';
+        if (!$host) {
+            $host = $referrer;
+        }
+        $host = strtolower(trim($host));
+
+        foreach ($domains as $domain) {
+            $domain = strtolower($domain);
+            if (!$domain) {
+                continue;
+            }
+
+            if ($host === $domain || preg_match('/(^|\.)' . preg_quote($domain, '/') . '$/i', $host)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function getEntryPages(int $siteId, string $range, int $limit = 20): array
