@@ -186,14 +186,23 @@ render_topbar($branding);
                 const dailyData = <?= json_encode($data['daily'], JSON_UNESCAPED_UNICODE) ?>;
                 const ctxDaily = document.getElementById('dailyTrendChart');
                 if (ctxDaily && window.Chart) {
+                    const gPV = ctxDaily.getContext('2d').createLinearGradient(0, 0, 0, 200);
+                    gPV.addColorStop(0, '#1690ff');
+                    gPV.addColorStop(1, '#73c1ff');
+                    const gUV = ctxDaily.getContext('2d').createLinearGradient(0, 0, 0, 200);
+                    gUV.addColorStop(0, '#4dadff');
+                    gUV.addColorStop(1, '#b6e0ff');
+                    const gIP = ctxDaily.getContext('2d').createLinearGradient(0, 0, 0, 200);
+                    gIP.addColorStop(0, '#73c1ff');
+                    gIP.addColorStop(1, '#d1ecff');
                     new Chart(ctxDaily, {
                         type: 'bar',
                         data: {
                             labels: dailyData.map(d => d.day),
                             datasets: [
-                                {label:'PV', data: dailyData.map(d => Number(d.views)), backgroundColor:'rgba(37,99,235,0.65)'},
-                                {label:'UV', data: dailyData.map(d => Number(d.uniques)), backgroundColor:'rgba(14,165,233,0.65)'},
-                                {label:'IP', data: dailyData.map(d => Number(d.ip_count)), backgroundColor:'rgba(16,185,129,0.65)'}
+                                {label:'PV', data: dailyData.map(d => Number(d.views)), backgroundColor:gPV},
+                                {label:'UV', data: dailyData.map(d => Number(d.uniques)), backgroundColor:gUV},
+                                {label:'IP', data: dailyData.map(d => Number(d.ip_count)), backgroundColor:gIP}
                             ]
                         },
                         options: {responsive:true, plugins:{legend:{position:'top'}, tooltip:{mode:'index', intersect:false}}, scales:{x:{stacked:false}, y:{beginAtZero:true}}}
@@ -201,8 +210,8 @@ render_topbar($branding);
                 }
 
                 const deviceData = [
-                    {label:'电脑端', value: <?= (int) $data['devices']['desktop']['views'] ?>, color:'#2563eb'},
-                    {label:'移动端', value: <?= (int) $data['devices']['mobile']['views'] ?>, color:'#f59e0b'}
+                    {label:'电脑端', value: <?= (int) $data['devices']['desktop']['views'] ?>, color:'#1690ff'},
+                    {label:'移动端', value: <?= (int) $data['devices']['mobile']['views'] ?>, color:'#73c1ff'}
                 ];
                 const ctxDevice = document.getElementById('devicePie');
                 if (ctxDevice && window.Chart) {
@@ -219,11 +228,14 @@ render_topbar($branding);
                 const browserRows = <?= json_encode($data['browsers'], JSON_UNESCAPED_UNICODE) ?>;
                 const ctxBrowser = document.getElementById('browserBar');
                 if (ctxBrowser && window.Chart) {
+                    const gBrowser = ctxBrowser.getContext('2d').createLinearGradient(0, 0, 0, 160);
+                    gBrowser.addColorStop(0, '#1690ff');
+                    gBrowser.addColorStop(1, '#b6e0ff');
                     new Chart(ctxBrowser, {
                         type:'bar',
                         data:{
                             labels: browserRows.map(r=>r.browser || '未知'),
-                            datasets:[{label:'PV', data: browserRows.map(r=>Number(r.views)), backgroundColor:'#10b981'}]
+                            datasets:[{label:'PV', data: browserRows.map(r=>Number(r.views)), backgroundColor:gBrowser}]
                         },
                         options:{plugins:{legend:{display:false}, datalabels:{display:false}}, scales:{y:{beginAtZero:true}}}
                     });

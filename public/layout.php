@@ -11,24 +11,24 @@ function render_head(string $title = '统计后台'): void
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <style>
             :root {
-                --primary: #2563eb;
-                --primary-2: #0ea5e9;
-                --primary-3: #10b981;
-                --muted: #64748b;
-                --border: #e2e8f0;
-                --bg: #f8fafc;
-                --card-gradient: linear-gradient(135deg, #e0f2fe 0%, #eef2ff 100%);
+                --primary: #1690ff;
+                --primary-2: #4dadff;
+                --primary-3: #73c1ff;
+                --muted: #4a6480;
+                --border: #c5dcf5;
+                --bg: #deedfb;
+                --card-gradient: linear-gradient(135deg, #deedfb 0%, #f5f9ff 100%);
             }
             body { margin: 0; font-family: 'Inter','PingFang SC',sans-serif; background: var(--bg); color: #0f172a; }
             header { background: #fff; padding: 18px 28px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 5; box-shadow: 0 8px 24px rgba(37,99,235,0.06); }
             .brand { font-size: 20px; font-weight: 700; }
             .muted { color: var(--muted); }
-            .card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 12px 30px rgba(37, 99, 235, 0.06); }
+            .card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 12px 30px rgba(22, 144, 255, 0.12); }
             h2, h3 { margin: 0 0 12px; }
             .form-control { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
             input[type="text"], input[type="password"] { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); font-size: 14px; }
-            button { padding: 10px 14px; border: none; border-radius: 8px; cursor: pointer; background: linear-gradient(120deg, var(--primary), var(--primary-2)); color: #fff; font-weight: 700; box-shadow: 0 10px 30px rgba(37, 99, 235, 0.2); }
-            button.ghost { background: #fff; color: #0f172a; border: 1px solid var(--border); }
+            button { padding: 10px 14px; border: none; border-radius: 8px; cursor: pointer; background: #deedfb; color: #1690ff; font-weight: 700; box-shadow: 0 10px 24px rgba(22, 144, 255, 0.18); border: 1px solid var(--border); }
+            button.ghost { background: #fff; color: #1690ff; border: 1px solid var(--border); }
             .top-bar { display: flex; gap: 10px; align-items: center; }
             .logout { color: #ef4444; text-decoration: none; font-weight: 600; }
             .sites-layout { padding: 22px 24px 32px; display: grid; gap: 16px; }
@@ -38,24 +38,24 @@ function render_head(string $title = '统计后台'): void
             .site-card .meta { color: var(--muted); font-size: 12px; }
             .site-card code { background: #0f172a; color: #e2e8f0; padding: 10px; display: block; border-radius: 8px; margin: 10px 0; font-size: 12px; word-break: break-all; }
             .site-card .actions { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
-            .site-card .enter { text-decoration: none; color: #0f172a; font-weight: 700; }
+            .site-card .enter { text-decoration: none; color: #1690ff; font-weight: 700; }
             .data-layout { display: grid; grid-template-columns: 240px 1fr; gap: 16px; padding: 22px 24px 32px; align-items: start; }
-            .nav { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 12px 30px rgba(37, 99, 235, 0.06); position: sticky; top: 90px; }
+            .nav { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 12px 30px rgba(22, 144, 255, 0.12); position: sticky; top: 90px; }
             .nav .site-name { font-size: 18px; font-weight: 700; margin: 0 0 4px; }
             .nav .site-domain { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
             .nav select { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 12px; }
             .nav-section { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; overflow: hidden; }
-            .nav-toggle { width: 100%; text-align: left; background: #f8fafc; border: none; padding: 10px 12px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; cursor: pointer; color: #0f172a; }
-            .nav-toggle span { color: var(--muted); font-weight: 600; font-size: 13px; }
+            .nav-toggle { width: 100%; text-align: left; background: #deedfb; border: none; padding: 10px 12px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; cursor: pointer; color: #1690ff; }
+            .nav-toggle span { color: #1690ff; font-weight: 600; font-size: 13px; }
             .nav-links { display: none; padding: 6px 0; }
             .nav-section.open .nav-links { display: block; }
-            .nav a { display: block; padding: 10px 12px; border-radius: 10px; text-decoration: none; color: #0f172a; font-weight: 600; border: 1px solid transparent; margin: 4px 8px; }
-            .nav a.active { background: #0f172a; color: #fff; border-color: #0f172a; }
-            .nav .return-link { display: block; margin-top: 12px; text-align: center; padding: 10px 12px; border-radius: 10px; background: #f1f5f9; font-weight: 700; color: #0f172a; text-decoration: none; border: 1px dashed var(--border); }
+            .nav a { display: block; padding: 10px 12px; border-radius: 10px; text-decoration: none; color: #1690ff; font-weight: 600; border: 1px solid transparent; margin: 4px 8px; }
+            .nav a.active { background: #1690ff; color: #fff; border-color: #1690ff; box-shadow: 0 8px 18px rgba(22,144,255,0.18); }
+            .nav .return-link { display: block; margin-top: 12px; text-align: center; padding: 10px 12px; border-radius: 10px; background: #deedfb; font-weight: 700; color: #1690ff; text-decoration: none; border: 1px dashed var(--border); }
             .content { display: grid; gap: 12px; }
             .filters { display: flex; gap: 10px; align-items: center; justify-content: flex-end; }
-            .filter-btn { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #fff; cursor: pointer; font-weight: 600; color: #0f172a; text-decoration: none; }
-            .filter-btn.active { background: #0f172a; color: #fff; border-color: #0f172a; }
+            .filter-btn { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #deedfb; cursor: pointer; font-weight: 600; color: #1690ff; text-decoration: none; }
+            .filter-btn.active { background: #1690ff; color: #fff; border-color: #1690ff; box-shadow: 0 8px 18px rgba(22,144,255,0.18); }
             .metric-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
             .metric { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card-gradient); color: #0f172a; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); }
             .metric .value { font-size: 22px; font-weight: 700; }
