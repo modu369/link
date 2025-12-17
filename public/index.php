@@ -1,19 +1,31 @@
 <?php
 session_start();
 
+require __DIR__ . '/../src/Database.php';
+require __DIR__ . '/../src/RedisClient.php';
+require __DIR__ . '/../src/Tracker.php';
+
 $config = require __DIR__ . '/../config/config.php';
-$auth = $config['app']['admin'];
 $loginError = null;
+
+try {
+    $db = Database::connection($config['db']);
+    $redis = RedisClient::connection($config['redis']);
+    $tracker = new Tracker($db, $redis, $config);
+} catch (Throwable $e) {
+    $loginError = '服务暂不可用，请稍后再试';
+}
 
 if (($_GET['action'] ?? '') === 'logout') {
     session_destroy();
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login' && isset($tracker)) {
     $user = trim($_POST['user'] ?? '');
     $pass = trim($_POST['pass'] ?? '');
-    if ($user === $auth['user'] && $pass === $auth['pass']) {
+    if ($tracker->verifyAdminCredentials($user, $pass, $config['app']['admin'])) {
         $_SESSION['admin_logged_in'] = true;
+        $_SESSION['admin_user'] = $tracker->getAdminAccount($config['app']['admin'])['user'];
         header('Location: /sites.php');
         exit;
     }

@@ -4,17 +4,23 @@ class Tracker
 {
     private int $retentionDays = 0;
     private int $cleanupHour = 3;
+    private array $adminDefaults = ['user' => 'admin', 'pass' => 'admin123'];
+    private array $retentionDefaults = ['days' => 0, 'cleanup_hour' => 3];
 
     public function __construct(
         private PDO $db,
         private Redis $redis,
         private array $options = []
     ) {
-        $this->retentionDays = max(0, (int) ($this->options['days'] ?? 0));
-        $this->cleanupHour = min(23, max(0, (int) ($this->options['cleanup_hour'] ?? 3)));
+        $this->adminDefaults = $this->options['app']['admin'] ?? $this->options['admin'] ?? $this->adminDefaults;
+        $this->retentionDefaults = $this->options['retention'] ?? $this->retentionDefaults;
+        $this->retentionDays = max(0, (int) ($this->retentionDefaults['days'] ?? 0));
+        $this->cleanupHour = min(23, max(0, (int) ($this->retentionDefaults['cleanup_hour'] ?? 3)));
 
         $this->ensurePageviewSchema();
         $this->ensureShareSchema();
+        $this->ensureSettingsSchema();
+        $this->hydrateRetention();
         $this->maybeCleanupRetention();
     }
 
@@ -299,7 +305,7 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT path, COUNT(*) as views
+            "SELECT path, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
             FROM pageviews
             WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
             GROUP BY path
@@ -315,7 +321,7 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT referrer, COUNT(*) as views
+            "SELECT referrer, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
             FROM pageviews
             WHERE site_id = :site_id AND referrer IS NOT NULL AND referrer != '' AND is_bot = 0 {$rangeSql}
             GROUP BY referrer
@@ -331,7 +337,7 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range, true);
         $statement = $this->db->prepare(
-            "SELECT path, COUNT(*) as views
+            "SELECT path, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
             FROM (
                 SELECT MIN(id) as first_id, session_id
                 FROM pageviews
@@ -648,6 +654,41 @@ class Tracker
         );
     }
 
+    private function ensureSettingsSchema(): void
+    {
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS settings (
+                setting_key VARCHAR(64) PRIMARY KEY,
+                setting_value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+
+        // 种子管理员账号
+        $existingAdmin = $this->getSetting('admin');
+        if (!$existingAdmin && !empty($this->adminDefaults['user'])) {
+            $this->setSetting('admin', [
+                'user' => $this->adminDefaults['user'],
+                'pass_hash' => password_hash($this->adminDefaults['pass'] ?? 'admin123', PASSWORD_BCRYPT),
+            ]);
+        }
+
+        // 种子数据保留策略
+        if (!$this->getSetting('retention')) {
+            $this->setSetting('retention', [
+                'days' => (int) ($this->retentionDefaults['days'] ?? 0),
+                'cleanup_hour' => (int) ($this->retentionDefaults['cleanup_hour'] ?? 3),
+            ]);
+        }
+    }
+
+    private function hydrateRetention(): void
+    {
+        $retention = $this->getRetentionSettings($this->retentionDefaults);
+        $this->retentionDays = max(0, (int) ($retention['days'] ?? 0));
+        $this->cleanupHour = min(23, max(0, (int) ($retention['cleanup_hour'] ?? 3)));
+    }
+
     private function getMobileBreakdown(int $siteId, string $range): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
@@ -890,7 +931,11 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT SUM(is_unique) as new_users, COUNT(*) - SUM(is_unique) as returning
+            "SELECT 
+                SUM(is_unique) as new_users,
+                COUNT(*) - SUM(is_unique) as returning,
+                COUNT(DISTINCT CASE WHEN is_unique = 1 THEN ip_hash END) as new_ips,
+                COUNT(DISTINCT CASE WHEN is_unique = 0 THEN ip_hash END) as returning_ips
             FROM pageviews
             WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}"
         );
@@ -900,6 +945,8 @@ class Tracker
         return [
             'new' => (int) ($row['new_users'] ?? 0),
             'returning' => (int) ($row['returning'] ?? 0),
+            'new_ips' => (int) ($row['new_ips'] ?? 0),
+            'returning_ips' => (int) ($row['returning_ips'] ?? 0),
         ];
     }
 
@@ -1038,6 +1085,101 @@ class Tracker
         return [$sql, $params];
     }
 
+    private function getSetting(string $key): ?array
+    {
+        $stmt = $this->db->prepare('SELECT setting_value FROM settings WHERE setting_key = :key LIMIT 1');
+        $stmt->execute([':key' => $key]);
+        $value = $stmt->fetchColumn();
+
+        return $value ? (json_decode($value, true) ?: null) : null;
+    }
+
+    private function setSetting(string $key, array $value): void
+    {
+        $stmt = $this->db->prepare(
+            'INSERT INTO settings (setting_key, setting_value, updated_at) VALUES (:key, :value, NOW())
+             ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = NOW()'
+        );
+        $stmt->execute([
+            ':key' => $key,
+            ':value' => json_encode($value, JSON_UNESCAPED_UNICODE),
+        ]);
+    }
+
+    public function getAdminAccount(array $fallback): array
+    {
+        $stored = $this->getSetting('admin');
+        if ($stored && !empty($stored['user']) && !empty($stored['pass_hash'])) {
+            return $stored;
+        }
+
+        $fallbackUser = $fallback['user'] ?? $this->adminDefaults['user'];
+        $fallbackPass = $fallback['pass'] ?? $this->adminDefaults['pass'];
+        $hash = password_hash($fallbackPass, PASSWORD_BCRYPT);
+
+        $payload = ['user' => $fallbackUser, 'pass_hash' => $hash];
+        $this->setSetting('admin', $payload);
+
+        return $payload;
+    }
+
+    public function updateAdminAccount(string $user, string $password): array
+    {
+        $payload = [
+            'user' => $user,
+            'pass_hash' => password_hash($password, PASSWORD_BCRYPT),
+        ];
+        $this->setSetting('admin', $payload);
+
+        return $payload;
+    }
+
+    public function verifyAdminCredentials(string $user, string $password, array $fallback): bool
+    {
+        $account = $this->getAdminAccount($fallback);
+        if ($user !== ($account['user'] ?? '')) {
+            return false;
+        }
+
+        if (!empty($account['pass_hash'])) {
+            return password_verify($password, $account['pass_hash']);
+        }
+
+        return false;
+    }
+
+    public function getRetentionSettings(array $fallback): array
+    {
+        $stored = $this->getSetting('retention') ?? [];
+        $merged = array_merge($fallback, $stored);
+        $merged['days'] = max(0, (int) ($merged['days'] ?? 0));
+        $merged['cleanup_hour'] = min(23, max(0, (int) ($merged['cleanup_hour'] ?? 3)));
+
+        return $merged;
+    }
+
+    public function updateRetentionSettings(int $days, int $hour): array
+    {
+        $payload = [
+            'days' => max(0, $days),
+            'cleanup_hour' => min(23, max(0, $hour)),
+        ];
+        $this->setSetting('retention', $payload);
+        $this->hydrateRetention();
+
+        return $payload;
+    }
+
+    public function manualCleanup(int $days): void
+    {
+        if ($days <= 0) {
+            return;
+        }
+
+        $stmt = $this->db->prepare('DELETE FROM pageviews WHERE occurred_at < DATE_SUB(NOW(), INTERVAL :days DAY)');
+        $stmt->execute([':days' => $days]);
+    }
+
     public function createSharePage(string $name, array $siteIds): array
     {
         $siteIds = array_values(array_unique(array_filter(array_map('intval', $siteIds))));
@@ -1068,8 +1210,26 @@ class Tracker
         $query = $this->db->query('SELECT id, name, token, site_ids, created_at FROM share_pages ORDER BY created_at DESC');
         $pages = $query->fetchAll();
 
+        $idList = [];
         foreach ($pages as &$page) {
             $page['site_ids'] = json_decode($page['site_ids'], true) ?? [];
+            $idList = array_merge($idList, $page['site_ids']);
+        }
+
+        $siteNames = [];
+        if (!empty($idList)) {
+            $placeholders = implode(',', array_fill(0, count($idList), '?'));
+            $stmt = $this->db->prepare("SELECT id, name FROM sites WHERE id IN ({$placeholders})");
+            $stmt->execute($idList);
+            foreach ($stmt->fetchAll() as $row) {
+                $siteNames[(int) $row['id']] = $row['name'];
+            }
+        }
+
+        foreach ($pages as &$page) {
+            $page['site_names'] = array_values(array_filter(array_map(function ($id) use ($siteNames) {
+                return $siteNames[(int) $id] ?? null;
+            }, $page['site_ids'])));
         }
 
         return $pages;
@@ -1103,17 +1263,24 @@ class Tracker
         }
 
         [$rangeSql, $params] = $this->rangeClause($range);
-        $placeholders = implode(',', array_fill(0, count($share['site_ids']), '?'));
+        $siteParams = [];
+        $placeholders = [];
+        foreach ($share['site_ids'] as $i => $sid) {
+            $key = ':sid' . $i;
+            $placeholders[] = $key;
+            $siteParams[$key] = (int) $sid;
+        }
+
         $statement = $this->db->prepare(
             "SELECT COALESCE(canonical_host, '未知域名') as domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
                 SUM(is_mobile) as mobile_views, COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
             FROM pageviews
-            WHERE site_id IN ({$placeholders}) AND is_bot = 0 {$rangeSql}
+            WHERE site_id IN (" . implode(',', $placeholders) . ") AND is_bot = 0 {$rangeSql}
             GROUP BY canonical_host
             ORDER BY views DESC"
         );
 
-        $statement->execute(array_merge($share['site_ids'], array_values($params)));
+        $statement->execute(array_merge($siteParams, $params));
         $rows = $statement->fetchAll();
 
         $totals = [

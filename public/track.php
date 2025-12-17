@@ -8,7 +8,7 @@ $config = require __DIR__ . '/../config/config.php';
 try {
     $db = Database::connection($config['db']);
     $redis = RedisClient::connection($config['redis']);
-    $tracker = new Tracker($db, $redis, $config['retention'] ?? []);
+    $tracker = new Tracker($db, $redis, $config);
 } catch (Throwable $e) {
     http_response_code(500);
     exit;

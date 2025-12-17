@@ -148,7 +148,7 @@ render_topbar($config);
                 <?php foreach ($sharePages as $page): ?>
                     <div class="site-card">
                         <div class="name">分享：<?= htmlspecialchars($page['name'], ENT_QUOTES, 'UTF-8') ?></div>
-                        <div class="meta">包含站点：<?= implode('、', array_map('intval', $page['site_ids'])) ?></div>
+                        <div class="meta">包含站点：<?= htmlspecialchars(implode('、', $page['site_names'] ?? []), ENT_QUOTES, 'UTF-8') ?></div>
                         <div class="meta">链接：<a href="/share.php?token=<?= htmlspecialchars($page['token'], ENT_QUOTES, 'UTF-8') ?>" target="_blank">点击查看</a></div>
                         <div class="actions">
                             <code style="margin:0;">/share.php?token=<?= htmlspecialchars($page['token'], ENT_QUOTES, 'UTF-8') ?></code>

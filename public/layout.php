@@ -41,7 +41,7 @@ function render_head(string $title = '统计后台'): void
             .nav .site-domain { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
             .nav select { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 12px; }
             .nav-section { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; overflow: hidden; }
-            .nav-toggle { width: 100%; text-align: left; background: #f8fafc; border: none; padding: 10px 12px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+            .nav-toggle { width: 100%; text-align: left; background: #f8fafc; border: none; padding: 10px 12px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; cursor: pointer; color: #0f172a; }
             .nav-toggle span { color: var(--muted); font-weight: 600; font-size: 13px; }
             .nav-links { display: none; padding: 6px 0; }
             .nav-section.open .nav-links { display: block; }
@@ -76,6 +76,7 @@ function render_topbar(array $config): void
             <div class="muted">多站点切换 / www 自动兼容 / 亿级数据索引优化</div>
         </div>
         <div class="top-bar">
+            <a class="logout" style="color:#0f172a;text-decoration:none;font-weight:700;" href="/user.php"><?= htmlspecialchars($_SESSION['admin_user'] ?? '管理员', ENT_QUOTES, 'UTF-8') ?></a>
             <span class="muted">基址 <?= htmlspecialchars($config['app']['base_url'], ENT_QUOTES, 'UTF-8') ?></span>
             <a class="logout" href="?action=logout">退出</a>
         </div>
@@ -99,11 +100,11 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
         <?php
         $sections = [
             'core' => [
-                'title' => '功能',
+                'title' => '概况',
                 'items' => [
                     ['key' => 'overview', 'label' => '总览', 'href' => "/overview.php?site={$siteId}&range={$range}"],
                     ['key' => 'trend', 'label' => '趋势分析', 'href' => "/trend.php?site={$siteId}&range={$range}"],
-                    ['key' => 'content', 'label' => '内容', 'href' => "/content.php?site={$siteId}&range={$range}"],
+                    ['key' => 'content', 'label' => '访问明细', 'href' => "/content.php?site={$siteId}&range={$range}"],
                     ['key' => 'mobile', 'label' => '移动端', 'href' => "/mobile.php?site={$siteId}&range={$range}"],
                     ['key' => 'bot', 'label' => '蜘蛛', 'href' => "/bot.php?site={$siteId}&range={$range}"],
                 ],
