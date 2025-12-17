@@ -434,12 +434,34 @@ class Tracker
 
     private function ensureCanonicalHostColumn(): void
     {
-        $query = $this->db->prepare("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pageviews' AND COLUMN_NAME = 'canonical_host'");
-        $query->execute();
-        $exists = (int) $query->fetchColumn();
+        $hostExistsQuery = $this->db->prepare(
+            "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pageviews' AND COLUMN_NAME = 'host'"
+        );
+        $hostExistsQuery->execute();
+        $hostExists = (int) $hostExistsQuery->fetchColumn() > 0;
 
-        if ($exists === 0) {
-            $this->db->exec("ALTER TABLE pageviews ADD COLUMN canonical_host VARCHAR(255) AFTER host");
+        if (!$hostExists) {
+            $this->db->exec("ALTER TABLE pageviews ADD COLUMN host VARCHAR(255) AFTER site_id");
+        }
+
+        $canonicalExistsQuery = $this->db->prepare(
+            "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pageviews' AND COLUMN_NAME = 'canonical_host'"
+        );
+        $canonicalExistsQuery->execute();
+        $canonicalExists = (int) $canonicalExistsQuery->fetchColumn() > 0;
+
+        if (!$canonicalExists) {
+            $position = $hostExists ? 'AFTER host' : 'AFTER site_id';
+            $this->db->exec("ALTER TABLE pageviews ADD COLUMN canonical_host VARCHAR(255) {$position}");
+        }
+
+        $indexExistsQuery = $this->db->prepare(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pageviews' AND INDEX_NAME = 'idx_site_host'"
+        );
+        $indexExistsQuery->execute();
+        $indexExists = (int) $indexExistsQuery->fetchColumn() > 0;
+
+        if (!$indexExists) {
             $this->db->exec("ALTER TABLE pageviews ADD INDEX idx_site_host (site_id, canonical_host, occurred_at)");
         }
     }
