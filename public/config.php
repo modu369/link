@@ -4,6 +4,7 @@ require __DIR__ . '/layout.php';
 
 $message = '';
 $error = '';
+$siteDomains = $selectedSite ? $tracker->getSiteDomains($siteId) : [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -15,6 +16,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $tracker->updateSite($siteId, $name, $domain);
             $message = '站点信息已更新';
             $sites = $tracker->getSites();
+            $siteDomains = $tracker->getSiteDomains($siteId);
             foreach ($sites as $site) {
                 if ((int) $site['id'] === (int) $siteId) {
                     $selectedSite = $site;
@@ -24,26 +26,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             $error = '请填写站点名称和域名';
         }
-    } elseif ($action === 'add_site') {
-        $name = trim($_POST['name'] ?? '');
+    } elseif ($action === 'add_domain' && $selectedSite) {
         $domain = trim($_POST['domain'] ?? '');
-        if ($name !== '' && $domain !== '') {
-            $tracker->createSite($name, $domain);
-            $message = '已创建新的站点';
-            $sites = $tracker->getSites();
+        if ($domain !== '') {
+            $tracker->addSiteDomain($siteId, $domain);
+            $message = '已添加新的可统计域名';
+            $siteDomains = $tracker->getSiteDomains($siteId);
         } else {
-            $error = '请填写站点名称和域名';
+            $error = '请填写域名';
         }
-    } elseif ($action === 'delete_site') {
-        $targetId = (int) ($_POST['site_id'] ?? 0);
-        if ($targetId > 0) {
-            $tracker->deleteSite($targetId);
-            if ($targetId === (int) $siteId) {
-                header('Location: /sites.php');
-                exit;
-            }
-            $message = '站点已删除';
-            $sites = $tracker->getSites();
+    } elseif ($action === 'delete_domain' && $selectedSite) {
+        $domainId = (int) ($_POST['domain_id'] ?? 0);
+        if ($domainId > 0) {
+            $tracker->deleteSiteDomain($siteId, $domainId);
+            $message = '域名已删除';
+            $siteDomains = $tracker->getSiteDomains($siteId);
         }
     }
 }
@@ -85,43 +82,41 @@ render_topbar($branding);
 
         <section class="card">
             <div class="section-title">
-                <h3 style="margin:0;">被统计的域名</h3>
-                <span class="muted">可快速添加或删除站点</span>
+                <h3 style="margin:0;">当前站点可统计域名</h3>
+                <span class="muted">可添加根域名、子域名或其他域名用于此站点统计</span>
             </div>
-            <form method="post" style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));align-items:end;">
-                <input type="hidden" name="action" value="add_site">
-                <div class="form-control">
-                    <label>站点名称</label>
-                    <input type="text" name="name" placeholder="如：官网" required>
-                </div>
-                <div class="form-control">
-                    <label>根域名</label>
-                    <input type="text" name="domain" placeholder="example.com" required>
-                </div>
-                <div>
-                    <button type="submit">添加站点</button>
-                </div>
-            </form>
+            <?php if ($selectedSite): ?>
+                <form method="post" style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));align-items:end;">
+                    <input type="hidden" name="action" value="add_domain">
+                    <div class="form-control">
+                        <label>域名</label>
+                        <input type="text" name="domain" placeholder="例如：blog.example.com" required>
+                    </div>
+                    <div>
+                        <button type="submit">添加域名</button>
+                    </div>
+                </form>
 
-            <table style="margin-top:14px;">
-                <thead><tr><th>名称</th><th>域名</th><th>操作</th></tr></thead>
-                <tbody>
-                <?php foreach ($sites as $site): ?>
-                    <tr>
-                        <td><?= htmlspecialchars($site['name'], ENT_QUOTES, 'UTF-8') ?></td>
-                        <td><?= htmlspecialchars($site['domain'], ENT_QUOTES, 'UTF-8') ?></td>
-                        <td style="display:flex;gap:8px;align-items:center;">
-                            <a class="pill" style="text-decoration:none;" href="/config.php?site=<?= (int) $site['id'] ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">配置</a>
-                            <form method="post" onsubmit="return confirm('确定删除该站点及其所有数据吗？');">
-                                <input type="hidden" name="action" value="delete_site">
-                                <input type="hidden" name="site_id" value="<?= (int) $site['id'] ?>">
-                                <button type="submit" class="ghost" style="color:#b91c1c;border-color:#fca5a5;">删除</button>
-                            </form>
-                        </td>
-                    </tr>
-                <?php endforeach; ?>
-                </tbody>
-            </table>
+                <table style="margin-top:14px;">
+                    <thead><tr><th>域名</th><th style="width:120px;">操作</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($siteDomains as $domain): ?>
+                        <tr>
+                            <td><?= htmlspecialchars($domain['domain'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td>
+                                <form method="post" onsubmit="return confirm('确定删除该域名吗？');" style="margin:0;">
+                                    <input type="hidden" name="action" value="delete_domain">
+                                    <input type="hidden" name="domain_id" value="<?= (int) $domain['id'] ?>">
+                                    <button type="submit" class="ghost" style="color:#b91c1c;border-color:#fca5a5;">删除</button>
+                                </form>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            <?php else: ?>
+                <div class="empty">请选择站点后管理域名。</div>
+            <?php endif; ?>
         </section>
     </main>
 </div>

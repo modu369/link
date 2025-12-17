@@ -42,7 +42,7 @@ $window = $tracker->rangeWindow($range);
 <body>
 <div class="wrap">
     <div class="card">
-        <h1>📊 网站统计面板（分享版）</h1>
+    <h1 style="text-align:center;">📊 网站统计面板（分享版）</h1>
         <?php if (!$data): ?>
             <p class="muted">链接无效或数据暂不可用。</p>
         <?php else: ?>

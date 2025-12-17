@@ -17,6 +17,7 @@ class Tracker
         $this->retentionDays = max(0, (int) ($this->retentionDefaults['days'] ?? 0));
         $this->cleanupHour = min(23, max(0, (int) ($this->retentionDefaults['cleanup_hour'] ?? 3)));
 
+        $this->ensureSiteDomainSchema();
         $this->ensurePageviewSchema();
         $this->ensureShareSchema();
         $this->ensureSettingsSchema();
@@ -37,8 +38,13 @@ class Tracker
             ':tracking_id' => $trackingId,
         ]);
 
+        $siteId = (int) $this->db->lastInsertId();
+        if ($normalizedDomain) {
+            $this->addSiteDomain($siteId, $normalizedDomain);
+        }
+
         return [
-            'id' => (int) $this->db->lastInsertId(),
+            'id' => $siteId,
             'name' => $name,
             'domain' => $normalizedDomain,
             'tracking_id' => $trackingId,
@@ -94,9 +100,46 @@ class Tracker
             ':id' => $id,
         ]);
 
+        if ($normalizedDomain) {
+            $this->addSiteDomain($id, $normalizedDomain);
+        }
+
         if ($tracking) {
             $this->redis->del("site:{$tracking}");
         }
+    }
+
+    public function getSiteDomains(int $siteId): array
+    {
+        $statement = $this->db->prepare('SELECT id, domain FROM site_domains WHERE site_id = :site_id ORDER BY id DESC');
+        $statement->execute([':site_id' => $siteId]);
+
+        return $statement->fetchAll();
+    }
+
+    public function addSiteDomain(int $siteId, string $domain): void
+    {
+        $normalized = $this->canonicalHost($domain);
+        if (!$normalized) {
+            return;
+        }
+
+        $insert = $this->db->prepare(
+            'INSERT IGNORE INTO site_domains (site_id, domain, created_at) VALUES (:site_id, :domain, NOW())'
+        );
+        $insert->execute([
+            ':site_id' => $siteId,
+            ':domain' => $normalized,
+        ]);
+    }
+
+    public function deleteSiteDomain(int $siteId, int $domainId): void
+    {
+        $delete = $this->db->prepare('DELETE FROM site_domains WHERE site_id = :site_id AND id = :id LIMIT 1');
+        $delete->execute([
+            ':site_id' => $siteId,
+            ':id' => $domainId,
+        ]);
     }
 
     public function recordPageview(string $trackingId, array $payload): void
@@ -609,6 +652,20 @@ class Tracker
             'canonical' => $canonical,
             'path' => $path,
         ];
+    }
+
+    private function ensureSiteDomainSchema(): void
+    {
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS site_domains (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                site_id INT UNSIGNED NOT NULL,
+                domain VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uniq_site_domain (site_id, domain),
+                CONSTRAINT fk_site_domains_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
     }
 
     private function ensurePageviewSchema(): void

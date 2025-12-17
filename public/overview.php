@@ -24,19 +24,20 @@ render_topbar($branding);
             </section>
 
             <section class="metric-row">
-                <div class="metric"><div class="muted">PV</div><div class="value"><?= $data['totals']['views'] ?></div></div>
-                <div class="metric"><div class="muted">UV</div><div class="value"><?= $data['totals']['uniques'] ?></div></div>
-                <div class="metric"><div class="muted">IP</div><div class="value"><?= $data['totals']['ip_count'] ?></div></div>
-                <div class="metric"><div class="muted">平均访问时长</div><div class="value"><?= $data['totals']['averages']['duration'] ?>s</div></div>
-                <div class="metric"><div class="muted">平均访问页数</div><div class="value"><?= $data['totals']['averages']['pages'] ?></div></div>
-                <div class="metric"><div class="muted">跳出率</div><div class="value"><?= round($data['totals']['bounce_rate'] * 100, 1) ?>%</div></div>
-                <div class="metric"><div class="muted">预计今日 PV</div><div class="value"><?= $data['predictions']['views'] ?></div></div>
-                <div class="metric"><div class="muted">预计今日 UV</div><div class="value"><?= $data['predictions']['uniques'] ?></div></div>
-                <div class="metric"><div class="muted">预计今日 IP</div><div class="value"><?= $data['predictions']['ips'] ?></div></div>
+                <div class="metric"><div class="muted">📈 PV</div><div class="value"><?= $data['totals']['views'] ?></div></div>
+                <div class="metric"><div class="muted">👥 UV</div><div class="value"><?= $data['totals']['uniques'] ?></div></div>
+                <div class="metric"><div class="muted">🌐 IP</div><div class="value"><?= $data['totals']['ip_count'] ?></div></div>
+                <div class="metric"><div class="muted">⏱️ 平均访问时长</div><div class="value"><?= $data['totals']['averages']['duration'] ?>s</div></div>
+                <div class="metric"><div class="muted">📄 平均访问页数</div><div class="value"><?= $data['totals']['averages']['pages'] ?></div></div>
+                <div class="metric"><div class="muted">↩️ 跳出率</div><div class="value"><?= round($data['totals']['bounce_rate'] * 100, 1) ?>%</div></div>
+                <div class="metric"><div class="muted">🔮 预计今日 PV</div><div class="value"><?= $data['predictions']['views'] ?></div></div>
+                <div class="metric"><div class="muted">🔮 预计今日 UV</div><div class="value"><?= $data['predictions']['uniques'] ?></div></div>
+                <div class="metric"><div class="muted">🔮 预计今日 IP</div><div class="value"><?= $data['predictions']['ips'] ?></div></div>
             </section>
 
             <section class="card">
                 <div class="section-title"><h3>趋势（按所选范围）</h3><span class="muted">PV / UV / IP</span></div>
+                <canvas id="dailyTrendChart" height="120"></canvas>
                 <table>
                     <thead><tr><th>日期</th><th>PV</th><th>UV</th><th>IP</th></tr></thead>
                     <tbody>
@@ -93,13 +94,21 @@ render_topbar($branding);
                     <h3>访问终端设备</h3>
                     <a class="filter-btn" href="/env.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
                 </div>
-                <div class="metric-row">
-                    <div class="metric"><div class="muted">电脑端 PV</div><div class="value"><?= (int) $data['devices']['desktop']['views'] ?></div></div>
-                    <div class="metric"><div class="muted">电脑端 IP</div><div class="value"><?= (int) $data['devices']['desktop']['ips'] ?></div></div>
-                    <div class="metric"><div class="muted">移动端 PV</div><div class="value"><?= (int) $data['devices']['mobile']['views'] ?></div></div>
-                    <div class="metric"><div class="muted">移动端 IP</div><div class="value"><?= (int) $data['devices']['mobile']['ips'] ?></div></div>
+                <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center;">
+                    <div style="flex:1;min-width:220px;">
+                        <canvas id="devicePie" height="180"></canvas>
+                    </div>
+                    <div style="flex:1;min-width:200px;">
+                        <div class="metric-row">
+                            <div class="metric"><div class="muted">电脑端 PV</div><div class="value"><?= (int) $data['devices']['desktop']['views'] ?></div></div>
+                            <div class="metric"><div class="muted">电脑端 IP</div><div class="value"><?= (int) $data['devices']['desktop']['ips'] ?></div></div>
+                            <div class="metric"><div class="muted">移动端 PV</div><div class="value"><?= (int) $data['devices']['mobile']['views'] ?></div></div>
+                            <div class="metric"><div class="muted">移动端 IP</div><div class="value"><?= (int) $data['devices']['mobile']['ips'] ?></div></div>
+                        </div>
+                    </div>
                 </div>
                 <div class="section-title" style="margin-top:12px;"><h4 style="margin:0;">浏览器 TOP</h4></div>
+                <canvas id="browserBar" height="140"></canvas>
                 <table>
                     <thead><tr><th>浏览器</th><th>PV</th><th>IP</th></tr></thead>
                     <tbody>
@@ -172,6 +181,54 @@ render_topbar($branding);
                     </tbody>
                 </table>
             </section>
+
+            <script>
+                const dailyData = <?= json_encode($data['daily'], JSON_UNESCAPED_UNICODE) ?>;
+                const ctxDaily = document.getElementById('dailyTrendChart');
+                if (ctxDaily && window.Chart) {
+                    new Chart(ctxDaily, {
+                        type: 'bar',
+                        data: {
+                            labels: dailyData.map(d => d.day),
+                            datasets: [
+                                {label:'PV', data: dailyData.map(d => Number(d.views)), backgroundColor:'rgba(37,99,235,0.65)'},
+                                {label:'UV', data: dailyData.map(d => Number(d.uniques)), backgroundColor:'rgba(14,165,233,0.65)'},
+                                {label:'IP', data: dailyData.map(d => Number(d.ip_count)), backgroundColor:'rgba(16,185,129,0.65)'}
+                            ]
+                        },
+                        options: {responsive:true, plugins:{legend:{position:'top'}, tooltip:{mode:'index', intersect:false}}, scales:{x:{stacked:false}, y:{beginAtZero:true}}}
+                    });
+                }
+
+                const deviceData = [
+                    {label:'电脑端', value: <?= (int) $data['devices']['desktop']['views'] ?>, color:'#2563eb'},
+                    {label:'移动端', value: <?= (int) $data['devices']['mobile']['views'] ?>, color:'#f59e0b'}
+                ];
+                const ctxDevice = document.getElementById('devicePie');
+                if (ctxDevice && window.Chart) {
+                    new Chart(ctxDevice, {
+                        type:'pie',
+                        data:{
+                            labels: deviceData.map(d=>d.label),
+                            datasets:[{data: deviceData.map(d=>d.value), backgroundColor: deviceData.map(d=>d.color)}]
+                        },
+                        options:{plugins:{legend:{position:'bottom'}}}
+                    });
+                }
+
+                const browserRows = <?= json_encode($data['browsers'], JSON_UNESCAPED_UNICODE) ?>;
+                const ctxBrowser = document.getElementById('browserBar');
+                if (ctxBrowser && window.Chart) {
+                    new Chart(ctxBrowser, {
+                        type:'bar',
+                        data:{
+                            labels: browserRows.map(r=>r.browser || '未知'),
+                            datasets:[{label:'PV', data: browserRows.map(r=>Number(r.views)), backgroundColor:'#10b981'}]
+                        },
+                        options:{plugins:{legend:{display:false}, datalabels:{display:false}}, scales:{y:{beginAtZero:true}}}
+                    });
+                }
+            </script>
         <?php endif; ?>
     </main>
 </div>

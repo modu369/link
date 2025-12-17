@@ -8,22 +8,26 @@ function render_head(string $title = '统计后台'): void
         <meta charset="utf-8">
         <title><?= htmlspecialchars($title, ENT_QUOTES, 'UTF-8') ?></title>
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/modern-normalize/modern-normalize.css">
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <style>
             :root {
-                --primary: #0f172a;
+                --primary: #2563eb;
+                --primary-2: #0ea5e9;
+                --primary-3: #10b981;
                 --muted: #64748b;
                 --border: #e2e8f0;
                 --bg: #f8fafc;
+                --card-gradient: linear-gradient(135deg, #e0f2fe 0%, #eef2ff 100%);
             }
             body { margin: 0; font-family: 'Inter','PingFang SC',sans-serif; background: var(--bg); color: #0f172a; }
-            header { background: #fff; padding: 18px 28px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 5; }
+            header { background: #fff; padding: 18px 28px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 5; box-shadow: 0 8px 24px rgba(37,99,235,0.06); }
             .brand { font-size: 20px; font-weight: 700; }
             .muted { color: var(--muted); }
-            .card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.04); }
+            .card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 12px 30px rgba(37, 99, 235, 0.06); }
             h2, h3 { margin: 0 0 12px; }
             .form-control { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
             input[type="text"], input[type="password"] { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); font-size: 14px; }
-            button { padding: 10px 14px; border: none; border-radius: 8px; cursor: pointer; background: var(--primary); color: #fff; font-weight: 700; }
+            button { padding: 10px 14px; border: none; border-radius: 8px; cursor: pointer; background: linear-gradient(120deg, var(--primary), var(--primary-2)); color: #fff; font-weight: 700; box-shadow: 0 10px 30px rgba(37, 99, 235, 0.2); }
             button.ghost { background: #fff; color: #0f172a; border: 1px solid var(--border); }
             .top-bar { display: flex; gap: 10px; align-items: center; }
             .logout { color: #ef4444; text-decoration: none; font-weight: 600; }
@@ -36,7 +40,7 @@ function render_head(string $title = '统计后台'): void
             .site-card .actions { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
             .site-card .enter { text-decoration: none; color: #0f172a; font-weight: 700; }
             .data-layout { display: grid; grid-template-columns: 240px 1fr; gap: 16px; padding: 22px 24px 32px; align-items: start; }
-            .nav { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.04); position: sticky; top: 90px; }
+            .nav { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 12px 30px rgba(37, 99, 235, 0.06); position: sticky; top: 90px; }
             .nav .site-name { font-size: 18px; font-weight: 700; margin: 0 0 4px; }
             .nav .site-domain { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
             .nav select { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 12px; }
@@ -47,12 +51,13 @@ function render_head(string $title = '统计后台'): void
             .nav-section.open .nav-links { display: block; }
             .nav a { display: block; padding: 10px 12px; border-radius: 10px; text-decoration: none; color: #0f172a; font-weight: 600; border: 1px solid transparent; margin: 4px 8px; }
             .nav a.active { background: #0f172a; color: #fff; border-color: #0f172a; }
+            .nav .return-link { display: block; margin-top: 12px; text-align: center; padding: 10px 12px; border-radius: 10px; background: #f1f5f9; font-weight: 700; color: #0f172a; text-decoration: none; border: 1px dashed var(--border); }
             .content { display: grid; gap: 12px; }
             .filters { display: flex; gap: 10px; align-items: center; justify-content: flex-end; }
             .filter-btn { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #fff; cursor: pointer; font-weight: 600; color: #0f172a; text-decoration: none; }
             .filter-btn.active { background: #0f172a; color: #fff; border-color: #0f172a; }
             .metric-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
-            .metric { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: #f8fafc; }
+            .metric { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card-gradient); color: #0f172a; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); }
             .metric .value { font-size: 22px; font-weight: 700; }
             table { width: 100%; border-collapse: collapse; }
             th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: left; }
@@ -131,7 +136,6 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
             'config' => [
                 'title' => '配置',
                 'items' => [
-                    ['key' => 'sites', 'label' => '返回域名列表', 'href' => '/sites.php'],
                     ['key' => 'config', 'label' => '配置修改', 'href' => "/config.php?site={$siteId}&range={$range}"],
                 ],
             ],
@@ -154,6 +158,7 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
                 </div>
             </div>
         <?php endforeach; ?>
+        <a class="return-link" href="/sites.php">⏎ 返回域名列表</a>
         <script>
             document.querySelectorAll('.nav-section .nav-toggle').forEach(function(btn){
                 btn.addEventListener('click', function(){
