@@ -11,19 +11,20 @@ class Tracker
     public function createSite(string $name, string $domain): array
     {
         $trackingId = bin2hex(random_bytes(8));
+        $normalizedDomain = $this->canonicalHost($domain);
         $statement = $this->db->prepare(
             'INSERT INTO sites (name, domain, tracking_id, created_at) VALUES (:name, :domain, :tracking_id, NOW())'
         );
         $statement->execute([
             ':name' => $name,
-            ':domain' => $domain,
+            ':domain' => $normalizedDomain,
             ':tracking_id' => $trackingId,
         ]);
 
         return [
             'id' => (int) $this->db->lastInsertId(),
             'name' => $name,
-            'domain' => $domain,
+            'domain' => $normalizedDomain,
             'tracking_id' => $trackingId,
         ];
     }
@@ -60,6 +61,10 @@ class Tracker
             return;
         }
 
+        $parsedUrl = $this->parseUrl($payload['path'] ?? null, $site['domain'] ?? null);
+        $path = $parsedUrl['path'];
+        $host = $parsedUrl['host'];
+        $canonicalHost = $parsedUrl['canonical'];
         $ip = $payload['ip'] ?? '';
         $ipHash = $ip ? hash('sha256', $ip) : null;
         $uniqueKey = sprintf('unique:%s:%s', $site['id'], date('Y-m-d'));
@@ -68,7 +73,9 @@ class Tracker
         $sessionId = $payload['session_id'] ?? bin2hex(random_bytes(8));
         $duration = max(0, (int) ($payload['duration'] ?? 0));
         $pageCount = max(1, (int) ($payload['page_count'] ?? 1));
-        $isBot = $this->isBot($payload['user_agent'] ?? '');
+        $userAgent = $payload['user_agent'] ?? '';
+        $isBot = $this->isBot($userAgent);
+        $isMobile = $this->isMobile($userAgent);
         $keyword = $this->extractKeyword($payload['referrer'] ?? '');
 
         if ($ipHash) {
@@ -77,22 +84,64 @@ class Tracker
         }
 
         $statement = $this->db->prepare(
-            'INSERT INTO pageviews (site_id, path, referrer, user_agent, ip_hash, session_id, duration_seconds, page_count, keyword, is_bot, is_unique, occurred_at) VALUES
-            (:site_id, :path, :referrer, :user_agent, :ip_hash, :session_id, :duration_seconds, :page_count, :keyword, :is_bot, :is_unique, NOW())'
+            'INSERT INTO pageviews (site_id, host, canonical_host, path, referrer, user_agent, ip_hash, session_id, duration_seconds, page_count, keyword, is_mobile, is_bot, is_unique, occurred_at) VALUES
+            (:site_id, :host, :canonical_host, :path, :referrer, :user_agent, :ip_hash, :session_id, :duration_seconds, :page_count, :keyword, :is_mobile, :is_bot, :is_unique, NOW())'
         );
         $statement->execute([
             ':site_id' => $site['id'],
-            ':path' => $payload['path'] ?? null,
+            ':host' => $host,
+            ':canonical_host' => $canonicalHost,
+            ':path' => $path,
             ':referrer' => $payload['referrer'] ?? null,
-            ':user_agent' => $payload['user_agent'] ?? null,
+            ':user_agent' => $userAgent,
             ':ip_hash' => $ipHash,
             ':session_id' => $sessionId,
             ':duration_seconds' => $duration,
             ':page_count' => $pageCount,
             ':keyword' => $keyword,
+            ':is_mobile' => $isMobile ? 1 : 0,
             ':is_bot' => $isBot ? 1 : 0,
             ':is_unique' => $isUnique ? 1 : 0,
         ]);
+    }
+
+    public function getOverview(int $siteId): array
+    {
+        return [
+            'totals' => $this->getTotals($siteId),
+            'daily' => $this->getDailyStats($siteId),
+            'predictions' => $this->getPredictions($siteId),
+        ];
+    }
+
+    public function getContentData(int $siteId): array
+    {
+        return [
+            'top_pages' => $this->getTopPages($siteId),
+            'top_referrers' => $this->getTopReferrers($siteId),
+            'recent' => $this->getRecentPageviews($siteId),
+        ];
+    }
+
+    public function getKeywordData(int $siteId): array
+    {
+        return [
+            'keywords' => $this->getKeywords($siteId),
+        ];
+    }
+
+    public function getBotData(int $siteId): array
+    {
+        return [
+            'bot' => $this->getBotTraffic($siteId),
+        ];
+    }
+
+    public function getMobileData(int $siteId): array
+    {
+        return [
+            'breakdown' => $this->getMobileBreakdown($siteId),
+        ];
     }
 
     public function getDashboardData(int $siteId): array
@@ -151,7 +200,7 @@ class Tracker
             WHERE site_id = :site_id AND is_bot = 0
             GROUP BY path
             ORDER BY views DESC
-            LIMIT 10'
+            LIMIT 50'
         );
         $statement->execute([':site_id' => $siteId]);
 
@@ -166,7 +215,7 @@ class Tracker
             WHERE site_id = :site_id AND referrer IS NOT NULL AND referrer != "" AND is_bot = 0
             GROUP BY referrer
             ORDER BY views DESC
-            LIMIT 10'
+            LIMIT 50'
         );
         $statement->execute([':site_id' => $siteId]);
 
@@ -195,7 +244,7 @@ class Tracker
             WHERE site_id = :site_id AND keyword IS NOT NULL AND keyword != "" AND is_bot = 0
             GROUP BY keyword
             ORDER BY views DESC
-            LIMIT 20'
+            LIMIT 100'
         );
         $statement->execute([':site_id' => $siteId]);
 
@@ -209,7 +258,7 @@ class Tracker
             FROM pageviews
             WHERE site_id = :site_id AND is_bot = 1
             ORDER BY occurred_at DESC
-            LIMIT 30'
+            LIMIT 100'
         );
         $statement->execute([':site_id' => $siteId]);
 
@@ -271,7 +320,7 @@ class Tracker
             WHERE site_id = :site_id AND is_bot = 0 AND occurred_at < CURDATE()
             GROUP BY day
             ORDER BY day DESC
-            LIMIT 14'
+            LIMIT 30'
         );
         $statement->execute([':site_id' => $siteId]);
         $rows = $statement->fetchAll();
@@ -312,6 +361,96 @@ class Tracker
         }
 
         return false;
+    }
+
+    private function isMobile(string $userAgent): bool
+    {
+        if ($userAgent === '') {
+            return false;
+        }
+
+        $ua = strtolower($userAgent);
+        $needles = ['mobile', 'android', 'iphone', 'ipad', 'ipod', 'micromessenger', 'windows phone', 'harmony', 'huawei'];
+        foreach ($needles as $needle) {
+            if (str_contains($ua, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function canonicalHost(?string $host): ?string
+    {
+        if (!$host) {
+            return null;
+        }
+
+        $lower = strtolower($host);
+        if (str_starts_with($lower, 'www.')) {
+            return substr($lower, 4);
+        }
+
+        return $lower;
+    }
+
+    private function parseUrl(?string $url, ?string $fallbackDomain): array
+    {
+        $host = $fallbackDomain ? $this->canonicalHost($fallbackDomain) : null;
+        $canonical = $host;
+        $path = $url ?? '';
+
+        if ($url && str_starts_with($url, 'http')) {
+            $parsed = parse_url($url);
+            if (!empty($parsed['host'])) {
+                $host = strtolower($parsed['host']);
+                $canonical = $this->canonicalHost($host);
+            }
+
+            $path = ($parsed['path'] ?? '/') . (isset($parsed['query']) ? '?' . $parsed['query'] : '');
+        }
+
+        if ($host && !$canonical) {
+            $canonical = $this->canonicalHost($host);
+        }
+
+        return [
+            'host' => $host,
+            'canonical' => $canonical,
+            'path' => $path,
+        ];
+    }
+
+    private function getMobileBreakdown(int $siteId): array
+    {
+        $statement = $this->db->prepare(
+            'SELECT COALESCE(canonical_host, "未知域名") as domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
+                SUM(is_mobile) as mobile_views, COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
+            FROM pageviews
+            WHERE site_id = :site_id AND is_bot = 0
+            GROUP BY canonical_host
+            ORDER BY views DESC
+            LIMIT 100'
+        );
+        $statement->execute([':site_id' => $siteId]);
+
+        $rows = $statement->fetchAll();
+        $totals = [
+            'domain' => '汇总',
+            'views' => 0,
+            'ips' => 0,
+            'mobile_views' => 0,
+            'mobile_ips' => 0,
+        ];
+
+        foreach ($rows as $row) {
+            $totals['views'] += (int) $row['views'];
+            $totals['ips'] += (int) $row['ips'];
+            $totals['mobile_views'] += (int) $row['mobile_views'];
+            $totals['mobile_ips'] += (int) $row['mobile_ips'];
+        }
+
+        return array_merge([$totals], $rows);
     }
 
     private function extractKeyword(?string $referrer): ?string

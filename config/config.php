@@ -12,5 +12,9 @@ return [
     ],
     'app' => [
         'base_url' => getenv('APP_BASE_URL') ?: 'http://localhost',
+        'admin' => [
+            'user' => getenv('ADMIN_USER') ?: 'admin',
+            'pass' => getenv('ADMIN_PASS') ?: 'admin123',
+        ],
     ],
 ];
