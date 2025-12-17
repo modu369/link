@@ -128,10 +128,11 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
                     ['key' => 'entry', 'label' => '入口页', 'href' => "/entry.php?site={$siteId}&range={$range}"],
                 ],
             ],
-            'back' => [
-                'title' => '返回',
+            'config' => [
+                'title' => '配置',
                 'items' => [
-                    ['key' => 'sites', 'label' => '域名列表', 'href' => '/sites.php'],
+                    ['key' => 'sites', 'label' => '返回域名列表', 'href' => '/sites.php'],
+                    ['key' => 'config', 'label' => '配置修改', 'href' => "/config.php?site={$siteId}&range={$range}"],
                 ],
             ],
         ];

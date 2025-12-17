@@ -80,6 +80,25 @@ class Tracker
         return $site ?: null;
     }
 
+    public function updateSite(int $id, string $name, string $domain): void
+    {
+        $normalizedDomain = $this->canonicalHost($domain);
+        $statement = $this->db->prepare('SELECT tracking_id FROM sites WHERE id = :id LIMIT 1');
+        $statement->execute([':id' => $id]);
+        $tracking = $statement->fetchColumn();
+
+        $update = $this->db->prepare('UPDATE sites SET name = :name, domain = :domain WHERE id = :id');
+        $update->execute([
+            ':name' => $name,
+            ':domain' => $normalizedDomain,
+            ':id' => $id,
+        ]);
+
+        if ($tracking) {
+            $this->redis->del("site:{$tracking}");
+        }
+    }
+
     public function recordPageview(string $trackingId, array $payload): void
     {
         $site = $this->getSiteByTrackingId($trackingId);
