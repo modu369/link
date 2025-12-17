@@ -71,7 +71,7 @@ class Tracker
         $uniqueKey = sprintf('unique:%s:%s', $site['id'], date('Y-m-d'));
         $isUnique = false;
 
-        $sessionId = $payload['session_id'] ?? bin2hex(random_bytes(8));
+        $sessionId = $payload['session_id'] ?? ($ipHash ?: bin2hex(random_bytes(8)));
         $duration = max(0, (int) ($payload['duration'] ?? 0));
         $pageCount = max(1, (int) ($payload['page_count'] ?? 1));
         $userAgent = $payload['user_agent'] ?? '';
@@ -360,8 +360,10 @@ class Tracker
         }
 
         $bots = [
-            'bot', 'spider', 'crawl', 'slurp', 'bingpreview', 'curl', 'python-requests',
-            'mediapartners-google', 'ahrefs', 'mj12bot', 'semrush', 'yandex', 'sogou'
+            'bot', 'spider', 'monitor', 'crawler', 'postman', 'curl/', 'bingpreview/', 'wget/',
+            'windowspowershell/', 'python-', 'httpclient/', 'go-http-client/', 'libwww-perl',
+            'feedburner/', 'headless', 'cloudflare', 'gocolly/', 'scrapy/', 'zgrab/',
+            'phantomjs', 'axios', 'apachebench', 'wkhtmltopdf'
         ];
 
         $ua = strtolower($userAgent);
@@ -517,26 +519,61 @@ class Tracker
             return null;
         }
 
-        $parsed = parse_url($referrer);
-        if (!isset($parsed['host'])) {
-            return null;
+        $refererHost = parse_url($referrer, PHP_URL_HOST) ?? '';
+        $refererQuery = parse_url($referrer, PHP_URL_QUERY) ?? '';
+        parse_str($refererQuery, $query);
+
+        // ==================== 百度来源（加密 eqid 处理） ====================
+        if (str_contains($refererHost, 'baidu.com')) {
+            if (!empty($query['eqid'])) {
+                require_once __DIR__ . '/baidukey_referer_eqid.php';
+                $keyword = getBaiduKeywordByEqid($query['eqid']);
+                if ($keyword !== '') {
+                    return $keyword;
+                }
+            }
+
+            if (!empty($query['wd'])) {
+                return urldecode($query['wd']);
+            }
         }
 
-        parse_str($parsed['query'] ?? '', $params);
+        // ==================== 神马 / Quark ====================
+        if (preg_match('/(\.sm\.cn|quark\.cn)$/i', $refererHost) || str_contains($refererHost, 'sm.cn') || str_contains($refererHost, 'quark.cn')) {
+            if (!empty($query['q'])) {
+                return urldecode($query['q']);
+            }
+        }
 
-        $host = $parsed['host'];
-        $keywordParams = [
-            'baidu.com' => 'wd',
-            'google.' => 'q',
-            'bing.com' => 'q',
-            'so.com' => 'q',
-            'sogou.com' => 'query',
-            'sm.cn' => 'q',
+        // ==================== 360 搜索 ====================
+        if (str_contains($refererHost, 'm.so.com')) {
+            if (!empty($query['q'])) {
+                return urldecode($query['q']);
+            }
+        }
+
+        // ==================== Bing ====================
+        if (str_contains($refererHost, 'cn.bing.com')) {
+            if (!empty($query['q'])) {
+                return urldecode($query['q']);
+            }
+        }
+
+        // ==================== 搜狗移动 ====================
+        if (str_contains($refererHost, 'm.sogou.com')) {
+            if (!empty($query['keyword'])) {
+                return urldecode($query['keyword']);
+            }
+        }
+
+        // 兜底：常见搜索参数解析
+        $fallbackParams = [
+            'q', 'query', 'keyword', 'word', 'wd'
         ];
 
-        foreach ($keywordParams as $domain => $param) {
-            if (str_contains($host, $domain) && !empty($params[$param])) {
-                return urldecode($params[$param]);
+        foreach ($fallbackParams as $param) {
+            if (!empty($query[$param])) {
+                return urldecode($query[$param]);
             }
         }
 
