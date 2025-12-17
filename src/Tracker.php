@@ -829,14 +829,16 @@ class Tracker
             return false;
         }
 
+        $ua = strtolower($userAgent);
         $bots = [
             'bot', 'spider', 'monitor', 'crawler', 'postman', 'curl/', 'bingpreview/', 'wget/',
             'windowspowershell/', 'python-', 'httpclient/', 'go-http-client/', 'libwww-perl',
             'feedburner/', 'headless', 'cloudflare', 'gocolly/', 'scrapy/', 'zgrab/',
-            'phantomjs', 'axios', 'apachebench', 'wkhtmltopdf'
+            'phantomjs', 'axios', 'apachebench', 'wkhtmltopdf',
+            'baiduspider', 'googlebot', 'bingbot', '360spider', 'bytespider', 'sogouspider', 'sogou web spider',
+            'yisouspider'
         ];
 
-        $ua = strtolower($userAgent);
         foreach ($bots as $needle) {
             if (str_contains($ua, $needle)) {
                 return true;
@@ -1050,23 +1052,40 @@ class Tracker
 
     private function identifySearchEngine(?string $ua, ?string $referrer = null): string
     {
-        $haystack = strtolower(($ua ?? '') . ' ' . ($referrer ?? ''));
+        $uaLower = strtolower($ua ?? '');
+        $refHost = strtolower(parse_url($referrer ?? '', PHP_URL_HOST) ?? '');
 
-        $map = [
-            '百度' => ['baidu', 'baiduspider'],
-            'Google' => ['google', 'adsbot'],
-            'Bing' => ['bing', 'bingbot'],
-            '360搜索' => ['360spider', 'so.com'],
-            '神马' => ['sm.cn', 'yisouspider'],
-            '搜狗' => ['sogou', 'sosospider'],
-            '头条' => ['toutiao', 'bytedance'],
+        $spiderMap = [
+            'baiduspider' => '百度蜘蛛',
+            'googlebot' => '谷歌蜘蛛',
+            'bingbot' => '必应蜘蛛',
+            '360spider' => '360蜘蛛',
+            'bytespider' => '头条蜘蛛',
+            'sogouspider' => '搜狗蜘蛛',
+            'sogou web spider' => '搜狗蜘蛛',
+            'yisouspider' => '神马蜘蛛',
         ];
 
-        foreach ($map as $label => $needles) {
-            foreach ($needles as $needle) {
-                if (str_contains($haystack, strtolower($needle))) {
-                    return $label;
-                }
+        foreach ($spiderMap as $needle => $label) {
+            if ($needle !== '' && str_contains($uaLower, $needle)) {
+                return $label;
+            }
+        }
+
+        $searchMap = [
+            'baidu.com' => '百度',
+            'google' => '谷歌',
+            'bing.com' => '必应',
+            'so.com' => '360',
+            'toutiao.com' => '头条',
+            'sogou.com' => '搜狗',
+            'sm.cn' => '神马',
+            'quark.cn' => '夸克',
+        ];
+
+        foreach ($searchMap as $needle => $label) {
+            if ($needle !== '' && str_contains($refHost, $needle)) {
+                return $label;
             }
         }
 
@@ -1076,13 +1095,14 @@ class Tracker
     private function searchEngineCase(): string
     {
         return "CASE
-            WHEN LOWER(COALESCE(referrer,'')) LIKE '%baidu%' OR LOWER(COALESCE(user_agent,'')) LIKE '%baiduspider%' THEN '百度'
-            WHEN LOWER(COALESCE(referrer,'')) LIKE '%google.' OR LOWER(COALESCE(user_agent,'')) LIKE '%googlebot%' THEN 'Google'
-            WHEN LOWER(COALESCE(referrer,'')) LIKE '%bing.' OR LOWER(COALESCE(user_agent,'')) LIKE '%bingbot%' THEN 'Bing'
-            WHEN LOWER(COALESCE(referrer,'')) LIKE '%sm.cn%' OR LOWER(COALESCE(referrer,'')) LIKE '%quark.cn%' OR LOWER(COALESCE(user_agent,'')) LIKE '%yisouspider%' THEN '神马'
-            WHEN LOWER(COALESCE(referrer,'')) LIKE '%so.com%' OR LOWER(COALESCE(user_agent,'')) LIKE '%360spider%' THEN '360搜索'
-            WHEN LOWER(COALESCE(referrer,'')) LIKE '%sogou%' OR LOWER(COALESCE(user_agent,'')) LIKE '%sogou%' THEN '搜狗'
-            WHEN LOWER(COALESCE(referrer,'')) LIKE '%toutiao%' OR LOWER(COALESCE(user_agent,'')) LIKE '%bytedance%' THEN '头条'
+            WHEN LOWER(COALESCE(referrer,'')) LIKE '%baidu.com%' OR LOWER(COALESCE(user_agent,'')) LIKE '%baiduspider%' THEN '百度'
+            WHEN LOWER(COALESCE(referrer,'')) LIKE '%google%' OR LOWER(COALESCE(user_agent,'')) LIKE '%googlebot%' THEN '谷歌'
+            WHEN LOWER(COALESCE(referrer,'')) LIKE '%bing.com%' OR LOWER(COALESCE(user_agent,'')) LIKE '%bingbot%' THEN '必应'
+            WHEN LOWER(COALESCE(referrer,'')) LIKE '%so.com%' OR LOWER(COALESCE(user_agent,'')) LIKE '%360spider%' THEN '360'
+            WHEN LOWER(COALESCE(referrer,'')) LIKE '%toutiao.com%' OR LOWER(COALESCE(user_agent,'')) LIKE '%bytespider%' THEN '头条'
+            WHEN LOWER(COALESCE(referrer,'')) LIKE '%sogou.com%' OR LOWER(COALESCE(user_agent,'')) LIKE '%sogouspider%' THEN '搜狗'
+            WHEN LOWER(COALESCE(referrer,'')) LIKE '%sm.cn%' OR LOWER(COALESCE(user_agent,'')) LIKE '%yisouspider%' THEN '神马'
+            WHEN LOWER(COALESCE(referrer,'')) LIKE '%quark.cn%' THEN '夸克'
             ELSE '其他'
         END";
     }
@@ -1184,12 +1204,22 @@ class Tracker
         $statement = $this->db->prepare(
             "SELECT browser, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips FROM (
                 SELECT CASE
-                    WHEN user_agent LIKE '%Chrome%' AND user_agent NOT LIKE '%Edg%' THEN 'Chrome'
-                    WHEN user_agent LIKE '%Edg%' THEN 'Edge'
-                    WHEN user_agent LIKE '%Firefox%' THEN 'Firefox'
-                    WHEN user_agent LIKE '%Safari%' AND user_agent NOT LIKE '%Chrome%' THEN 'Safari'
-                    WHEN user_agent LIKE '%Opera%' OR user_agent LIKE '%OPR%' THEN 'Opera'
-                    WHEN user_agent LIKE '%MSIE%' OR user_agent LIKE '%Trident%' THEN 'IE'
+                    WHEN LOWER(user_agent) REGEXP 'micromessenger' THEN 'WeChat'
+                    WHEN LOWER(user_agent) REGEXP 'bytedancewebview|aweme' THEN 'Douyin'
+                    WHEN LOWER(user_agent) REGEXP 'baiduboxapp' THEN 'Baidu'
+                    WHEN LOWER(user_agent) REGEXP 'edg(a|ios)' THEN 'Edge'
+                    WHEN LOWER(user_agent) REGEXP 'chrome|crios' THEN 'Chrome'
+                    WHEN LOWER(user_agent) REGEXP 'firefox|fxios' THEN 'Firefox'
+                    WHEN LOWER(user_agent) REGEXP 'safari' AND LOWER(user_agent) NOT REGEXP 'chrome|crios|edg' THEN 'Safari'
+                    WHEN LOWER(user_agent) REGEXP 'qqbrowser' THEN 'QQ'
+                    WHEN LOWER(user_agent) REGEXP 'ucbrowser' THEN 'UC'
+                    WHEN LOWER(user_agent) REGEXP 'quark' THEN 'Quark'
+                    WHEN LOWER(user_agent) REGEXP 'miuibrowser' THEN 'Mi'
+                    WHEN LOWER(user_agent) REGEXP 'huaweibrowser' THEN 'Huawei'
+                    WHEN LOWER(user_agent) REGEXP 'vivobrowser' THEN 'Vivo'
+                    WHEN LOWER(user_agent) REGEXP 'heytapbrowser' THEN 'OPPO'
+                    WHEN LOWER(user_agent) REGEXP '360se|360ee' THEN '360'
+                    WHEN LOWER(user_agent) REGEXP 'msie|trident' THEN 'IE'
                     ELSE '其他浏览器'
                 END as browser,
                 ip_hash
@@ -1282,9 +1312,25 @@ class Tracker
             return null;
         }
 
-        $refererHost = parse_url($referrer, PHP_URL_HOST) ?? '';
+        $refererHost = strtolower(parse_url($referrer, PHP_URL_HOST) ?? '');
         $refererQuery = parse_url($referrer, PHP_URL_QUERY) ?? '';
         parse_str($refererQuery, $query);
+
+        $allowedHosts = [
+            'baidu.com', 'google', 'bing.com', 'so.com', 'toutiao.com', 'sogou.com', 'sm.cn', 'quark.cn'
+        ];
+
+        $matchedHost = null;
+        foreach ($allowedHosts as $needle) {
+            if ($needle !== '' && str_contains($refererHost, $needle)) {
+                $matchedHost = $needle;
+                break;
+            }
+        }
+
+        if (!$matchedHost) {
+            return null;
+        }
 
         // ==================== 百度来源（加密 eqid 处理） ====================
         if (str_contains($refererHost, 'baidu.com')) {
@@ -1301,43 +1347,21 @@ class Tracker
             }
         }
 
-        // ==================== 神马 / Quark ====================
-        if (preg_match('/(\.sm\.cn|quark\.cn)$/i', $refererHost) || str_contains($refererHost, 'sm.cn') || str_contains($refererHost, 'quark.cn')) {
-            if (!empty($query['q'])) {
-                return urldecode($query['q']);
-            }
+        // ==================== 谷歌/必应/360/头条/搜狗/神马/夸克 ====================
+        $paramQ = !empty($query['q']) ? urldecode($query['q']) : null;
+        $paramKeyword = !empty($query['keyword']) ? urldecode($query['keyword']) : null;
+        $paramWord = !empty($query['word']) ? urldecode($query['word']) : null;
+
+        if (str_contains($refererHost, 'google') || str_contains($refererHost, 'bing.com') || str_contains($refererHost, 'so.com') || str_contains($refererHost, 'sm.cn') || str_contains($refererHost, 'quark.cn')) {
+            return $paramQ ?: $paramKeyword ?: $paramWord;
         }
 
-        // ==================== 360 搜索 ====================
-        if (str_contains($refererHost, 'm.so.com')) {
-            if (!empty($query['q'])) {
-                return urldecode($query['q']);
-            }
+        if (str_contains($refererHost, 'toutiao.com')) {
+            return $paramKeyword ?: $paramQ ?: $paramWord;
         }
 
-        // ==================== Bing ====================
-        if (str_contains($refererHost, 'cn.bing.com')) {
-            if (!empty($query['q'])) {
-                return urldecode($query['q']);
-            }
-        }
-
-        // ==================== 搜狗移动 ====================
-        if (str_contains($refererHost, 'm.sogou.com')) {
-            if (!empty($query['keyword'])) {
-                return urldecode($query['keyword']);
-            }
-        }
-
-        // 兜底：常见搜索参数解析
-        $fallbackParams = [
-            'q', 'query', 'keyword', 'word', 'wd'
-        ];
-
-        foreach ($fallbackParams as $param) {
-            if (!empty($query[$param])) {
-                return urldecode($query[$param]);
-            }
+        if (str_contains($refererHost, 'sogou.com')) {
+            return $paramKeyword ?: $paramQ ?: $paramWord;
         }
 
         return null;
