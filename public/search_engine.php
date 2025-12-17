@@ -41,8 +41,8 @@ render_topbar($branding);
                     <?php endif; ?>
                     </tbody>
                 </table>
-                <div style="margin-top:14px; display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
-                    <div style="min-width:240px; flex:1;">
+                <div style="margin-top:14px; display:flex; gap:20px; align-items:center; flex-wrap:wrap; justify-content:center;">
+                    <div style="max-width:400px; flex:1; text-align:center;">
                         <div class="muted" style="margin-bottom:6px;">IP 占比（前 8 项）</div>
                         <canvas id="enginePie" height="220"></canvas>
                     </div>

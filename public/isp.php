@@ -41,7 +41,34 @@ render_topbar($branding);
                     <?php endif; ?>
                     </tbody>
                 </table>
+                <div style="margin-top:14px; display:flex; justify-content:center;">
+                    <div style="max-width:400px; width:100%; text-align:center;">
+                        <div class="muted" style="margin-bottom:6px;">IP 占比（前 8 项）</div>
+                        <canvas id="ispPie" height="220"></canvas>
+                    </div>
+                </div>
             </section>
+            <script>
+                (function(){
+                    const isps = <?= json_encode(array_slice($data['isps'] ?? [],0,8), JSON_UNESCAPED_UNICODE) ?>;
+                    const palette = ['#1690ff','#73c1ff','#4dd0e1','#7c4dff','#ff8a65','#ffd166','#06d6a0','#ef476f'];
+                    const el = document.getElementById('ispPie');
+                    if(!el || !window.Chart) return;
+                    const total = isps.reduce((s,i)=>s+Number(i.ips||0),0) || 1;
+                    new Chart(el, {
+                        type:'pie',
+                        data:{
+                            labels:isps.map(i=>{
+                                const val=Number(i.ips||0);
+                                const pct=((val/total)*100).toFixed(1);
+                                return `${i.isp || '未知'} ${pct}%`;
+                            }),
+                            datasets:[{data:isps.map(i=>Number(i.ips||0)),backgroundColor:isps.map((_,i)=>palette[i%palette.length]),borderWidth:0}]
+                        },
+                        options:{plugins:{legend:{position:'bottom'}}}
+                    });
+                })();
+            </script>
         <?php endif; ?>
     </main>
 </div>
