@@ -3,6 +3,7 @@ require __DIR__ . '/init.php';
 require __DIR__ . '/layout.php';
 
 $data = $selectedSite ? $tracker->getOverview($siteId, $range) : null;
+$avgMinutes = $data ? round(($data['totals']['averages']['duration'] ?? 0) / 60, 1) : 0;
 $trend = $data['trend'] ?? null;
 $topReferrers = $data ? array_slice($data['top_referrers'], 0, 20) : [];
 $topPages = $data ? array_slice($data['top_pages'], 0, 20) : [];
@@ -27,12 +28,12 @@ render_topbar($branding);
     .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; align-items: stretch; }
     .pill-tag { background: #deedfb; color: #1690ff; padding: 4px 10px; border-radius: 999px; font-weight: 700; border: 1px solid var(--border); }
     .chart-wrap { position: relative; width: 100%; }
-    .trend-wrap canvas { height: 80px !important; }
+    .trend-wrap canvas { height: 320px !important; width: 100% !important; }
     .table-wrap { max-height: 320px; overflow: auto; }
     .trend-controls { display:flex; gap:8px; align-items:center; }
     .trend-toggle button { border:1px solid var(--border); background:#deedfb; color:#1690ff; padding:6px 10px; border-radius:8px; cursor:pointer; font-weight:700; }
     .trend-toggle button.active { background:#1690ff; color:#fff; }
-    .browser-pie { max-width: 220px; margin: 0 auto; transform: scale(0.7); transform-origin: center; }
+    .browser-pie { max-width: 260px; margin: 0 auto; display: flex; justify-content: center; }
 </style>
 <div class="data-layout">
     <?php render_sidebar($sites, $siteId, $selectedSite, 'overview', $range); ?>
@@ -55,7 +56,7 @@ render_topbar($branding);
                     <div class="metric-tile"><div class="metric-icon">📈</div><div class="metric-info"><div class="label">PV</div><div class="val"><?= $data['totals']['views'] ?></div></div></div>
                     <div class="metric-tile"><div class="metric-icon">👥</div><div class="metric-info"><div class="label">UV</div><div class="val"><?= $data['totals']['uniques'] ?></div></div></div>
                     <div class="metric-tile"><div class="metric-icon">🌐</div><div class="metric-info"><div class="label">IP</div><div class="val"><?= $data['totals']['ip_count'] ?></div></div></div>
-                    <div class="metric-tile"><div class="metric-icon">⏱️</div><div class="metric-info"><div class="label">平均访问时长</div><div class="val"><?= $data['totals']['averages']['duration'] ?>s</div></div></div>
+                    <div class="metric-tile"><div class="metric-icon">⏱️</div><div class="metric-info"><div class="label">平均访问时长</div><div class="val"><?= $avgMinutes ?> min</div></div></div>
                     <div class="metric-tile"><div class="metric-icon">📄</div><div class="metric-info"><div class="label">平均访问页数</div><div class="val"><?= $data['totals']['averages']['pages'] ?></div></div></div>
                     <div class="metric-tile"><div class="metric-icon">↩️</div><div class="metric-info"><div class="label">跳出率</div><div class="val"><?= round($data['totals']['bounce_rate'] * 100, 1) ?>%</div></div></div>
                     <div class="metric-tile"><div class="metric-icon">🔮</div><div class="metric-info"><div class="label">预计今日 PV</div><div class="val"><?= $data['predictions']['views']?></div></div></div>
@@ -92,7 +93,7 @@ render_topbar($branding);
                         </div>
                     </div>
                     <div class="section-title" style="margin-top:12px;"><h4 style="margin:0;">浏览器分布（IP）</h4></div>
-                    <div class="chart-wrap browser-pie"><canvas id="browserBar" height="98"></canvas></div>
+                    <div class="chart-wrap browser-pie"><canvas id="browserBar" height="180"></canvas></div>
                 </section>
 
                 <section class="card">

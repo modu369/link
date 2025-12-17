@@ -2,11 +2,42 @@
 require __DIR__ . '/init.php';
 require __DIR__ . '/layout.php';
 
-$data = $selectedSite ? $tracker->getContentData($siteId, $range) : null;
+$filters = [
+    'date' => $_GET['date'] ?? date('Y-m-d'),
+    'visitor' => $_GET['visitor'] ?? 'all',
+    'engine' => $_GET['engine'] ?? '',
+    'city' => $_GET['city'] ?? '',
+    'entry' => $_GET['entry'] ?? '',
+    'session' => $_GET['session'] ?? '',
+    'ip' => $_GET['ip'] ?? '',
+    'keyword' => $_GET['keyword'] ?? '',
+];
 
-render_head('内容 - 统计后台');
+$detailRange = in_array($range, ['today', 'yesterday']) ? $range : '15d';
+$data = $selectedSite ? $tracker->getContentData($siteId, $detailRange, $filters) : null;
+
+render_head('访问明细 - 统计后台');
 render_topbar($branding);
 ?>
+<style>
+    .content-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
+    .summary-card { background:#fff; border:1px solid var(--border); border-radius:12px; padding:14px; display:flex; gap:10px; align-items:center; box-shadow:0 10px 24px rgba(22,144,255,0.08); }
+    .summary-icon { width:44px; height:44px; border-radius:12px; background:#deedfb; display:grid; place-items:center; color:#1690ff; font-size:18px; }
+    .summary-info { display:flex; flex-direction:column; gap:2px; }
+    .summary-info .label { color:var(--muted); font-size:13px; }
+    .summary-info .val { font-size:20px; font-weight:800; }
+    .filters { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:10px; }
+    .filters label { font-size:12px; color:var(--muted); margin-bottom:4px; display:block; }
+    .filters input, .filters select { width:100%; padding:8px 10px; border:1px solid var(--border); border-radius:8px; }
+    .visit-table { width:100%; border-collapse: collapse; }
+    .visit-table th, .visit-table td { border-bottom:1px solid var(--border); padding:8px 6px; text-align:left; }
+    .visit-table th { background:#f8fbff; color:#0f172a; position:sticky; top:0; }
+    .visit-table tbody tr:hover { background:#f4f8ff; }
+    .badge { display:inline-block; padding:2px 8px; border-radius:10px; background:#deedfb; color:#1690ff; font-weight:700; font-size:12px; }
+    .status-live { color:#15a655; font-weight:700; }
+    .status-done { color:#999; }
+    .note { color:var(--muted); font-size:13px; }
+</style>
 <div class="data-layout">
     <?php render_sidebar($sites, $siteId, $selectedSite, 'content', $range); ?>
     <main class="content">
@@ -16,51 +47,127 @@ render_topbar($branding);
             <section class="card">
                 <div class="section-title">
                     <div>
-                        <h2 style="margin:0;">内容分析</h2>
-                        <p class="muted" style="margin:2px 0 0;">热门页面与来源拆分到独立页面</p>
+                        <h2 style="margin:0;">访问明细</h2>
+                        <p class="muted" style="margin:2px 0 0;">访问明细按会话数记录，一个会话一条记录。仅支持查询近15天，每次最多展示 50,000 条。</p>
                     </div>
                     <?php render_range_filters($allowedRanges, $range, 'content', (int) $selectedSite['id']); ?>
+                </div>
+                <div class="content-grid">
+                    <div class="summary-card"><div class="summary-icon">⚡</div><div class="summary-info"><div class="label">实时活跃访客数</div><div class="val">近5分钟 <?= (int)($data['active'][5] ?? 0) ?></div></div></div>
+                    <div class="summary-card"><div class="summary-icon">⏱</div><div class="summary-info"><div class="label">最近 15 分钟</div><div class="val"><?= (int)($data['active'][15] ?? 0) ?></div></div></div>
+                    <div class="summary-card"><div class="summary-icon">🕒</div><div class="summary-info"><div class="label">最近 30 分钟</div><div class="val"><?= (int)($data['active'][30] ?? 0) ?></div></div></div>
+                    <div class="summary-card"><div class="summary-icon">📄</div><div class="summary-info"><div class="label">当前结果数</div><div class="val"><?= (int)$data['total_sessions'] ?></div></div></div>
                 </div>
             </section>
 
             <section class="card">
-                <div class="section-title"><h3>热门页面（TOP 50）</h3><span class="muted">按 PV</span></div>
-                <table>
-                    <thead><tr><th>页面路径</th><th>PV</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($data['top_pages'] as $row): ?>
-                        <tr><td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['views'] ?></td></tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
+                <div class="section-title" style="align-items:flex-start;">
+                    <div>
+                        <h3 style="margin:0;">筛选</h3>
+                        <p class="note">启用垃圾广告信息屏蔽</p>
+                    </div>
+                    <form method="get" class="filters">
+                        <input type="hidden" name="site" value="<?= (int)$siteId ?>" />
+                        <label>时间
+                            <input type="date" name="date" value="<?= htmlspecialchars($filters['date'], ENT_QUOTES, 'UTF-8') ?>" max="<?= date('Y-m-d') ?>">
+                        </label>
+                        <label>访客
+                            <select name="visitor">
+                                <option value="all" <?= $filters['visitor']==='all'?'selected':''; ?>>全部访客</option>
+                                <option value="new" <?= $filters['visitor']==='new'?'selected':''; ?>>新访客</option>
+                                <option value="return" <?= $filters['visitor']==='return'?'selected':''; ?>>老访客</option>
+                            </select>
+                        </label>
+                        <label>搜索引擎
+                            <select name="engine">
+                                <option value="" <?= empty($filters['engine'])?'selected':''; ?>>请选择搜索引擎</option>
+                                <option value="baidu" <?= $filters['engine']==='baidu'?'selected':''; ?>>百度</option>
+                                <option value="sm" <?= $filters['engine']==='sm'?'selected':''; ?>>神马/Quark</option>
+                                <option value="so" <?= $filters['engine']==='so'?'selected':''; ?>>360</option>
+                                <option value="bing" <?= $filters['engine']==='bing'?'selected':''; ?>>必应</option>
+                                <option value="sogou" <?= $filters['engine']==='sogou'?'selected':''; ?>>搜狗</option>
+                            </select>
+                        </label>
+                        <label>城市
+                            <input type="text" name="city" placeholder="请选择" value="<?= htmlspecialchars($filters['city'], ENT_QUOTES, 'UTF-8') ?>">
+                        </label>
+                        <label>入口页
+                            <input type="text" name="entry" placeholder="请输入入口页网址" value="<?= htmlspecialchars($filters['entry'], ENT_QUOTES, 'UTF-8') ?>">
+                        </label>
+                        <label>标识码
+                            <input type="text" name="session" placeholder="请输入访客唯一标识码" value="<?= htmlspecialchars($filters['session'], ENT_QUOTES, 'UTF-8') ?>">
+                        </label>
+                        <label>IP地址
+                            <input type="text" name="ip" placeholder="请输入IP" value="<?= htmlspecialchars($filters['ip'], ENT_QUOTES, 'UTF-8') ?>">
+                        </label>
+                        <label>关键词
+                            <input type="text" name="keyword" placeholder="请输入搜索引擎关键词" value="<?= htmlspecialchars($filters['keyword'], ENT_QUOTES, 'UTF-8') ?>">
+                        </label>
+                        <div style="display:flex;align-items:flex-end; gap:8px;">
+                            <button class="primary" type="submit">筛选</button>
+                            <a class="filter-btn" href="/content.php?site=<?= (int)$siteId ?>">重置</a>
+                        </div>
+                    </form>
+                </div>
             </section>
 
             <section class="card">
-                <div class="section-title"><h3>来源网站（TOP 50）</h3><span class="muted">Referrer</span></div>
-                <table>
-                    <thead><tr><th>来源</th><th>PV</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($data['top_referrers'] as $row): ?>
-                        <tr><td><?= htmlspecialchars($row['referrer'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['views'] ?></td></tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </section>
-
-            <section class="card">
-                <div class="section-title"><h3>实时访问</h3><span class="muted">最新 20 条</span></div>
-                <table>
-                    <thead><tr><th>页面</th><th>来源</th><th>时间</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($data['recent'] as $row): ?>
+                <div class="section-title" style="justify-content:space-between;">
+                    <h3 style="margin:0;">访问明细</h3>
+                    <span class="note">共 <?= (int)$data['total_sessions'] ?> 条 · 近15天数据</span>
+                </div>
+                <div style="overflow:auto; max-height:700px;">
+                    <table class="visit-table">
+                        <thead>
                         <tr>
-                            <td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td>
-                            <td><?= htmlspecialchars($row['referrer'], ENT_QUOTES, 'UTF-8') ?></td>
-                            <td><?= htmlspecialchars($row['occurred_at'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <th>时间</th>
+                            <th>标识码</th>
+                            <th>访客类型</th>
+                            <th>地域</th>
+                            <th>IP</th>
+                            <th>浏览器</th>
+                            <th>入口页</th>
+                            <th>当前页</th>
+                            <th>关键词</th>
+                            <th>会话页数</th>
+                            <th>时长</th>
+                            <th>状态</th>
                         </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
+                        </thead>
+                        <tbody>
+                        <?php if (empty($data['details'])): ?>
+                            <tr><td colspan="12" class="muted">暂无数据</td></tr>
+                        <?php endif; ?>
+                        <?php foreach ($data['details'] as $row): ?>
+                            <?php
+                                $ua = $row['user_agent'] ?? '';
+                                $browser = '未知';
+                                if (stripos($ua, 'Chrome') !== false && stripos($ua, 'Edg') === false) $browser = 'Chrome';
+                                elseif (stripos($ua, 'Edg') !== false) $browser = 'Edge';
+                                elseif (stripos($ua, 'Firefox') !== false) $browser = 'Firefox';
+                                elseif (stripos($ua, 'Safari') !== false && stripos($ua, 'Chrome') === false) $browser = 'Safari';
+                                elseif (stripos($ua, 'Opera') !== false || stripos($ua, 'OPR') !== false) $browser = 'Opera';
+                                elseif (stripos($ua, 'MSIE') !== false || stripos($ua, 'Trident') !== false) $browser = 'IE';
+                                $status = (strtotime($row['occurred_at']) > time() - 180) ? '正在访问' : '已结束';
+                            ?>
+                            <tr>
+                                <td><?= htmlspecialchars(substr($row['occurred_at'], 11, 8), ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><?= htmlspecialchars($row['session_id'], ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><span class="badge"><?= $row['is_unique'] ? '新访客' : '老访客' ?></span></td>
+                                <td><?= htmlspecialchars($row['region'], ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><?= htmlspecialchars($row['ip_address'] ?? '-', ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><?= htmlspecialchars($browser, ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><?= htmlspecialchars($row['entry_path'] ?? '-', ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><?= htmlspecialchars($row['path'] ?? '-', ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><?= htmlspecialchars($row['keyword'] ?? '-', ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><?= (int)($row['page_count'] ?? 1) ?></td>
+                                <td><?= gmdate('i:s', max(0, (int)($row['duration_seconds'] ?? 0))) ?></td>
+                                <td><?= $status === '正在访问' ? '<span class="status-live">正在访问</span>' : '<span class="status-done">结束</span>' ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
             </section>
         <?php endif; ?>
     </main>

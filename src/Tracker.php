@@ -214,12 +214,12 @@ class Tracker
         ];
     }
 
-    public function getContentData(int $siteId, string $range = 'today'): array
+    public function getContentData(int $siteId, string $range = 'today', array $filters = []): array
     {
         return [
-            'top_pages' => $this->getTopPages($siteId, $range),
-            'top_referrers' => $this->getTopReferrers($siteId, $range),
-            'recent' => $this->getRecentPageviews($siteId, $range),
+            'active' => $this->getActiveSessions($siteId),
+            'details' => $this->getVisitDetails($siteId, $filters),
+            'total_sessions' => $this->getVisitDetailCount($siteId, $filters),
         ];
     }
 
@@ -497,6 +497,189 @@ class Tracker
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         return $statement->fetchAll();
+    }
+
+    private function getActiveSessions(int $siteId): array
+    {
+        $windows = [5, 15, 30];
+        $results = [];
+
+        foreach ($windows as $minutes) {
+            $stmt = $this->db->prepare(
+                "SELECT COUNT(DISTINCT session_id) as sessions
+                 FROM pageviews
+                 WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL
+                   AND occurred_at >= DATE_SUB(NOW(), INTERVAL {$minutes} MINUTE)"
+            );
+            $stmt->execute([':site_id' => $siteId]);
+            $row = $stmt->fetch();
+            $results[$minutes] = (int)($row['sessions'] ?? 0);
+        }
+
+        return $results;
+    }
+
+    private function visitFiltersWindow(array $filters): array
+    {
+        $today = new DateTimeImmutable('today');
+        $earliest = $today->modify('-14 days');
+        $dateStr = $filters['date'] ?? $today->format('Y-m-d');
+        $parsed = DateTimeImmutable::createFromFormat('Y-m-d', $dateStr) ?: $today;
+        if ($parsed < $earliest) {
+            $parsed = $earliest;
+        }
+
+        $start = $parsed->setTime(0, 0, 0);
+        $end = $start->modify('+1 day');
+
+        return [$start, $end];
+    }
+
+    private function getVisitDetailCount(int $siteId, array $filters): int
+    {
+        [$start, $end] = $this->visitFiltersWindow($filters);
+
+        $conditions = [
+            'p.site_id = :site_id',
+            'p.is_bot = 0',
+            'p.session_id IS NOT NULL',
+            'p.occurred_at BETWEEN :start AND :end'
+        ];
+        $params = [
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ];
+
+        if (!empty($filters['ip'])) {
+            $conditions[] = 'p.ip_address LIKE :ip';
+            $params[':ip'] = '%' . $filters['ip'] . '%';
+        }
+        if (!empty($filters['keyword'])) {
+            $conditions[] = 'p.keyword LIKE :keyword';
+            $params[':keyword'] = '%' . $filters['keyword'] . '%';
+        }
+        if (!empty($filters['entry'])) {
+            $conditions[] = 'entry.path LIKE :entry';
+            $params[':entry'] = '%' . $filters['entry'] . '%';
+        }
+        if (!empty($filters['session'])) {
+            $conditions[] = 'p.session_id LIKE :session';
+            $params[':session'] = '%' . $filters['session'] . '%';
+        }
+        if (!empty($filters['visitor']) && in_array($filters['visitor'], ['new', 'return'], true)) {
+            $conditions[] = $filters['visitor'] === 'new' ? 'p.is_unique = 1' : 'p.is_unique = 0';
+        }
+
+        $engineCase = $this->searchEngineCase();
+        $engineHaving = '';
+        if (!empty($filters['engine'])) {
+            $engineHaving = 'HAVING engine = :engine';
+            $params[':engine'] = $filters['engine'];
+        }
+
+        $sql = "SELECT COUNT(*) as total FROM (
+                    SELECT p.session_id, {$engineCase} as engine
+                    FROM (
+                        SELECT MIN(id) as first_id, session_id
+                        FROM pageviews
+                        WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL
+                          AND occurred_at BETWEEN :start AND :end
+                        GROUP BY session_id
+                    ) s
+                    JOIN pageviews p ON p.id = s.first_id
+                    LEFT JOIN pageviews entry ON entry.id = s.first_id
+                    WHERE " . implode(' AND ', $conditions) . "
+                    {$engineHaving}
+                ) t";
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        $row = $stmt->fetch();
+
+        return (int)($row['total'] ?? 0);
+    }
+
+    private function getVisitDetails(int $siteId, array $filters): array
+    {
+        [$start, $end] = $this->visitFiltersWindow($filters);
+
+        $conditions = [
+            'p.site_id = :site_id',
+            'p.is_bot = 0',
+            'p.session_id IS NOT NULL',
+            'p.occurred_at BETWEEN :start AND :end'
+        ];
+        $params = [
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ];
+
+        if (!empty($filters['ip'])) {
+            $conditions[] = 'p.ip_address LIKE :ip';
+            $params[':ip'] = '%' . $filters['ip'] . '%';
+        }
+        if (!empty($filters['keyword'])) {
+            $conditions[] = 'p.keyword LIKE :keyword';
+            $params[':keyword'] = '%' . $filters['keyword'] . '%';
+        }
+        if (!empty($filters['entry'])) {
+            $conditions[] = 'entry.path LIKE :entry';
+            $params[':entry'] = '%' . $filters['entry'] . '%';
+        }
+        if (!empty($filters['session'])) {
+            $conditions[] = 'p.session_id LIKE :session';
+            $params[':session'] = '%' . $filters['session'] . '%';
+        }
+        if (!empty($filters['visitor']) && in_array($filters['visitor'], ['new', 'return'], true)) {
+            $conditions[] = $filters['visitor'] === 'new' ? 'p.is_unique = 1' : 'p.is_unique = 0';
+        }
+        if (!empty($filters['city'])) {
+            $conditions[] = "(CASE WHEN p.ip_address IS NULL OR p.ip_address = '' THEN '未知' ELSE CONCAT('网段 ', SUBSTRING_INDEX(p.ip_address, '.', 3)) END) LIKE :city";
+            $params[':city'] = '%' . $filters['city'] . '%';
+        }
+
+        $engineCase = $this->searchEngineCase();
+        $engineSelect = ", {$engineCase} as engine";
+        $engineHaving = '';
+        if (!empty($filters['engine'])) {
+            $engineHaving = 'HAVING engine = :engine';
+            $params[':engine'] = $filters['engine'];
+        }
+
+        $sql = "SELECT
+                    p.occurred_at,
+                    p.session_id,
+                    p.ip_address,
+                    p.is_unique,
+                    p.user_agent,
+                    p.referrer,
+                    p.path,
+                    p.keyword,
+                    p.duration_seconds,
+                    p.page_count,
+                    entry.path as entry_path,
+                    (CASE WHEN p.ip_address IS NULL OR p.ip_address = '' THEN '未知' ELSE CONCAT('网段 ', SUBSTRING_INDEX(p.ip_address, '.', 3)) END) as region
+                    {$engineSelect}
+                FROM (
+                    SELECT MIN(id) as first_id, session_id
+                    FROM pageviews
+                    WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL
+                      AND occurred_at BETWEEN :start AND :end
+                    GROUP BY session_id
+                ) s
+                JOIN pageviews p ON p.id = s.first_id
+                LEFT JOIN pageviews entry ON entry.id = s.first_id
+                WHERE " . implode(' AND ', $conditions) . "
+                {$engineHaving}
+                ORDER BY p.occurred_at DESC
+                LIMIT 50000";
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+
+        return $stmt->fetchAll();
     }
 
     private function getKeywords(int $siteId, string $range): array
