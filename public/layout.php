@@ -19,12 +19,12 @@ function render_head(string $title = '统计后台'): void
                 --bg: #deedfb;
                 --card-gradient: linear-gradient(135deg, #deedfb 0%, #f5f9ff 100%);
             }
-            body { margin: 0; font-family: 'Inter','PingFang SC',sans-serif; background: var(--bg); color: #0f172a; }
+            body { margin: 0; font-family: "Helvetica Neue", Helvetica, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "微软雅黑", Arial, sans-serif; background: var(--bg); color: #0f172a; }
             header { background: #fff; padding: 18px 28px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 5; box-shadow: 0 8px 24px rgba(37,99,235,0.06); }
             .brand { font-size: 20px; font-weight: 700; }
             .muted { color: var(--muted); }
             .card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 12px 30px rgba(22, 144, 255, 0.12); }
-            h2, h3 { margin: 0 0 12px; }
+            h1, h2, h3 { margin: 0 0 12px; color: #1690ff; }
             .form-control { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
             input[type="text"], input[type="password"] { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); font-size: 14px; }
             button { padding: 10px 14px; border: none; border-radius: 8px; cursor: pointer; background: #deedfb; color: #1690ff; font-weight: 700; box-shadow: 0 10px 24px rgba(22, 144, 255, 0.18); border: 1px solid var(--border); }
@@ -51,7 +51,7 @@ function render_head(string $title = '统计后台'): void
             .nav-section.open .nav-links { display: block; }
             .nav a { display: block; padding: 10px 12px; border-radius: 10px; text-decoration: none; color: #1690ff; font-weight: 600; border: 1px solid transparent; margin: 4px 8px; }
             .nav a.active { background: #1690ff; color: #fff; border-color: #1690ff; box-shadow: 0 8px 18px rgba(22,144,255,0.18); }
-            .nav .return-link { display: block; margin-top: 12px; text-align: center; padding: 10px 12px; border-radius: 10px; background: #deedfb; font-weight: 700; color: #1690ff; text-decoration: none; border: 1px dashed var(--border); }
+            .nav .return-link { display: block; width: 100%; margin-top: 12px; text-align: center; padding: 10px 12px; border-radius: 10px; background: #deedfb; font-weight: 700; color: #1690ff; text-decoration: none; border: 1px dashed var(--border); box-shadow: 0 12px 30px rgba(22, 144, 255, 0.12); }
             .content { display: grid; gap: 12px; }
             .filters { display: flex; gap: 10px; align-items: center; justify-content: flex-end; }
             .filter-btn { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #deedfb; cursor: pointer; font-weight: 600; color: #1690ff; text-decoration: none; }
