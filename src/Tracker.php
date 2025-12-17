@@ -6,7 +6,7 @@ class Tracker
         private PDO $db,
         private Redis $redis
     ) {
-        $this->ensureCanonicalHostColumn();
+        $this->ensurePageviewSchema();
     }
 
     public function createSite(string $name, string $domain): array
@@ -432,38 +432,50 @@ class Tracker
         ];
     }
 
-    private function ensureCanonicalHostColumn(): void
+    private function ensurePageviewSchema(): void
     {
-        $hostExistsQuery = $this->db->prepare(
-            "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pageviews' AND COLUMN_NAME = 'host'"
-        );
-        $hostExistsQuery->execute();
-        $hostExists = (int) $hostExistsQuery->fetchColumn() > 0;
+        $columnExists = function (string $column): bool {
+            $query = $this->db->prepare(
+                "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pageviews' AND COLUMN_NAME = :column"
+            );
+            $query->execute([':column' => $column]);
 
-        if (!$hostExists) {
-            $this->db->exec("ALTER TABLE pageviews ADD COLUMN host VARCHAR(255) AFTER site_id");
-        }
+            return (int) $query->fetchColumn() > 0;
+        };
 
-        $canonicalExistsQuery = $this->db->prepare(
-            "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pageviews' AND COLUMN_NAME = 'canonical_host'"
-        );
-        $canonicalExistsQuery->execute();
-        $canonicalExists = (int) $canonicalExistsQuery->fetchColumn() > 0;
+        $ensureColumn = function (string $column, string $definition, ?string $position = null) use ($columnExists) {
+            if ($columnExists($column)) {
+                return;
+            }
 
-        if (!$canonicalExists) {
-            $position = $hostExists ? 'AFTER host' : 'AFTER site_id';
-            $this->db->exec("ALTER TABLE pageviews ADD COLUMN canonical_host VARCHAR(255) {$position}");
-        }
+            $posClause = $position ? " {$position}" : '';
+            $this->db->exec("ALTER TABLE pageviews ADD COLUMN {$column} {$definition}{$posClause}");
+        };
 
-        $indexExistsQuery = $this->db->prepare(
-            "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pageviews' AND INDEX_NAME = 'idx_site_host'"
-        );
-        $indexExistsQuery->execute();
-        $indexExists = (int) $indexExistsQuery->fetchColumn() > 0;
+        $ensureIndex = function (string $index, string $definition) {
+            $query = $this->db->prepare(
+                "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pageviews' AND INDEX_NAME = :index"
+            );
+            $query->execute([':index' => $index]);
 
-        if (!$indexExists) {
-            $this->db->exec("ALTER TABLE pageviews ADD INDEX idx_site_host (site_id, canonical_host, occurred_at)");
-        }
+            if ((int) $query->fetchColumn() === 0) {
+                $this->db->exec("ALTER TABLE pageviews ADD INDEX {$index} ({$definition})");
+            }
+        };
+
+        $ensureColumn('host', 'VARCHAR(255)', 'AFTER site_id');
+        $ensureColumn('canonical_host', 'VARCHAR(255)', $columnExists('host') ? 'AFTER host' : 'AFTER site_id');
+        $ensureColumn('session_id', 'VARCHAR(64)');
+        $ensureColumn('duration_seconds', 'INT DEFAULT 0');
+        $ensureColumn('page_count', 'INT DEFAULT 1');
+        $ensureColumn('keyword', 'VARCHAR(255)');
+        $ensureColumn('is_mobile', 'TINYINT(1) DEFAULT 0');
+        $ensureColumn('is_bot', 'TINYINT(1) DEFAULT 0');
+        $ensureColumn('is_unique', 'TINYINT(1) DEFAULT 0');
+        $ensureColumn('occurred_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
+
+        $ensureIndex('idx_site_host', 'site_id, canonical_host, occurred_at');
+        $ensureIndex('idx_site_mobile', 'site_id, is_mobile, occurred_at');
     }
 
     private function getMobileBreakdown(int $siteId, string $range): array
