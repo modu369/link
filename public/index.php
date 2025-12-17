@@ -123,23 +123,29 @@ if (!in_array($view, $allowedViews, true)) {
     $view = 'overview';
 }
 
+$range = $_GET['range'] ?? '7d';
+$allowedRanges = ['today', 'yesterday', '7d', '30d'];
+if (!in_array($range, $allowedRanges, true)) {
+    $range = '7d';
+}
+
 $data = null;
 if ($selectedSite) {
     switch ($view) {
         case 'content':
-            $data = $tracker->getContentData($siteId);
+            $data = $tracker->getContentData($siteId, $range);
             break;
         case 'keyword':
-            $data = $tracker->getKeywordData($siteId);
+            $data = $tracker->getKeywordData($siteId, $range);
             break;
         case 'bot':
-            $data = $tracker->getBotData($siteId);
+            $data = $tracker->getBotData($siteId, $range);
             break;
         case 'mobile':
-            $data = $tracker->getMobileData($siteId);
+            $data = $tracker->getMobileData($siteId, $range);
             break;
         default:
-            $data = $tracker->getOverview($siteId);
+            $data = $tracker->getOverview($siteId, $range);
     }
 }
 ?>
@@ -170,9 +176,12 @@ if ($selectedSite) {
         .site-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; max-height: 520px; overflow: auto; }
         .site-item { padding: 10px; border-radius: 10px; border: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: #fefefe; }
         .site-item a { color: #0f172a; text-decoration: none; font-weight: 600; }
-        .tabs { display: flex; gap: 10px; margin-bottom: 12px; }
+        .tabs { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
         .tab { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); color: #0f172a; text-decoration: none; font-weight: 600; background: #fff; }
         .tab.active { background: #0f172a; color: #fff; border-color: #0f172a; }
+        .filters { display: flex; gap: 10px; align-items: center; justify-content: flex-end; }
+        .filter-btn { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #fff; cursor: pointer; font-weight: 600; color: #0f172a; }
+        .filter-btn.active { background: #0f172a; color: #fff; border-color: #0f172a; }
         .grid { display: grid; gap: 12px; }
         .metrics { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
         .metric { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: #f8fafc; }
@@ -256,14 +265,22 @@ if ($selectedSite) {
         <?php if ($selectedSite && $data): ?>
         <section class="card">
             <div class="tabs">
-                <a class="tab <?= $view === 'overview' ? 'active' : '' ?>" href="?site=<?= (int) $selectedSite['id'] ?>&view=overview">总览</a>
-                <a class="tab <?= $view === 'content' ? 'active' : '' ?>" href="?site=<?= (int) $selectedSite['id'] ?>&view=content">内容</a>
-                <a class="tab <?= $view === 'keyword' ? 'active' : '' ?>" href="?site=<?= (int) $selectedSite['id'] ?>&view=keyword">关键词</a>
-                <a class="tab <?= $view === 'mobile' ? 'active' : '' ?>" href="?site=<?= (int) $selectedSite['id'] ?>&view=mobile">移动端</a>
-                <a class="tab <?= $view === 'bot' ? 'active' : '' ?>" href="?site=<?= (int) $selectedSite['id'] ?>&view=bot">蜘蛛</a>
+                <a class="tab <?= $view === 'overview' ? 'active' : '' ?>" href="?site=<?= (int) $selectedSite['id'] ?>&view=overview&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">总览</a>
+                <a class="tab <?= $view === 'content' ? 'active' : '' ?>" href="?site=<?= (int) $selectedSite['id'] ?>&view=content&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">内容</a>
+                <a class="tab <?= $view === 'keyword' ? 'active' : '' ?>" href="?site=<?= (int) $selectedSite['id'] ?>&view=keyword&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">关键词</a>
+                <a class="tab <?= $view === 'mobile' ? 'active' : '' ?>" href="?site=<?= (int) $selectedSite['id'] ?>&view=mobile&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">移动端</a>
+                <a class="tab <?= $view === 'bot' ? 'active' : '' ?>" href="?site=<?= (int) $selectedSite['id'] ?>&view=bot&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">蜘蛛</a>
             </div>
             <h2 style="margin-top:0;"><?= htmlspecialchars($selectedSite['name'], ENT_QUOTES, 'UTF-8') ?></h2>
             <p class="muted" style="margin-top:-4px;">域名 <?= htmlspecialchars($selectedSite['domain'], ENT_QUOTES, 'UTF-8') ?>（www 自动合并）</p>
+            <div class="filters">
+                <span class="muted" style="font-size:13px;">时间范围</span>
+                <?php foreach ($allowedRanges as $r): ?>
+                    <a class="filter-btn <?= $range === $r ? 'active' : '' ?>" href="?site=<?= (int) $selectedSite['id'] ?>&view=<?= htmlspecialchars($view, ENT_QUOTES, 'UTF-8') ?>&range=<?= $r ?>">
+                        <?= ['today' => '今日', 'yesterday' => '昨日', '7d' => '近7天', '30d' => '近30天'][$r] ?>
+                    </a>
+                <?php endforeach; ?>
+            </div>
         </section>
 
         <?php if ($view === 'overview'): ?>
@@ -280,7 +297,7 @@ if ($selectedSite) {
             </section>
 
             <section class="card">
-                <div class="section-title"><h3>趋势（近 7 天）</h3><span class="muted">PV / UV / IP</span></div>
+                <div class="section-title"><h3>趋势（按所选范围）</h3><span class="muted">PV / UV / IP</span></div>
                 <table>
                     <thead><tr><th>日期</th><th>PV</th><th>UV</th><th>IP</th></tr></thead>
                     <tbody>
@@ -290,6 +307,23 @@ if ($selectedSite) {
                             <td><?= (int) $row['views'] ?></td>
                             <td><?= (int) $row['uniques'] ?></td>
                             <td><?= (int) $row['ip_count'] ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </section>
+
+            <section class="card">
+                <div class="section-title"><h3>小时分布</h3><span class="muted">按选择的日期范围聚合</span></div>
+                <table>
+                    <thead><tr><th>小时</th><th>PV</th><th>UV</th><th>IP</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($data['hourly'] as $row): ?>
+                        <tr>
+                            <td><?= htmlspecialchars($row['hour'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td><?= (int) $row['views'] ?></td>
+                            <td><?= (int) $row['uniques'] ?></td>
+                            <td><?= (int) $row['ips'] ?></td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>

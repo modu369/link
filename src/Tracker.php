@@ -105,42 +105,43 @@ class Tracker
         ]);
     }
 
-    public function getOverview(int $siteId): array
+    public function getOverview(int $siteId, string $range = '7d'): array
     {
         return [
-            'totals' => $this->getTotals($siteId),
-            'daily' => $this->getDailyStats($siteId),
+            'totals' => $this->getTotals($siteId, $range),
+            'daily' => $this->getDailyStats($siteId, $range),
+            'hourly' => $this->getHourlyStats($siteId, $range),
             'predictions' => $this->getPredictions($siteId),
         ];
     }
 
-    public function getContentData(int $siteId): array
+    public function getContentData(int $siteId, string $range = '7d'): array
     {
         return [
-            'top_pages' => $this->getTopPages($siteId),
-            'top_referrers' => $this->getTopReferrers($siteId),
-            'recent' => $this->getRecentPageviews($siteId),
+            'top_pages' => $this->getTopPages($siteId, $range),
+            'top_referrers' => $this->getTopReferrers($siteId, $range),
+            'recent' => $this->getRecentPageviews($siteId, $range),
         ];
     }
 
-    public function getKeywordData(int $siteId): array
+    public function getKeywordData(int $siteId, string $range = '7d'): array
     {
         return [
-            'keywords' => $this->getKeywords($siteId),
+            'keywords' => $this->getKeywords($siteId, $range),
         ];
     }
 
-    public function getBotData(int $siteId): array
+    public function getBotData(int $siteId, string $range = '7d'): array
     {
         return [
-            'bot' => $this->getBotTraffic($siteId),
+            'bot' => $this->getBotTraffic($siteId, $range),
         ];
     }
 
-    public function getMobileData(int $siteId): array
+    public function getMobileData(int $siteId, string $range = '7d'): array
     {
         return [
-            'breakdown' => $this->getMobileBreakdown($siteId),
+            'breakdown' => $this->getMobileBreakdown($siteId, $range),
         ];
     }
 
@@ -158,14 +159,15 @@ class Tracker
         ];
     }
 
-    private function getTotals(int $siteId): array
+    private function getTotals(int $siteId, string $range): array
     {
+        [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            'SELECT COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
+            "SELECT COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
             FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0'
+            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}"
         );
-        $statement->execute([':site_id' => $siteId]);
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         $row = $statement->fetch();
 
@@ -173,122 +175,129 @@ class Tracker
             'views' => (int) ($row['views'] ?? 0),
             'uniques' => (int) ($row['uniques'] ?? 0),
             'ip_count' => (int) ($row['ip_count'] ?? 0),
-            'averages' => $this->getVisitAverages($siteId),
-            'bounce_rate' => $this->getBounceRate($siteId),
+            'averages' => $this->getVisitAverages($siteId, $range),
+            'bounce_rate' => $this->getBounceRate($siteId, $range),
         ];
     }
 
-    private function getDailyStats(int $siteId): array
+    private function getDailyStats(int $siteId, string $range): array
     {
+        [$rangeSql, $params] = $this->rangeClause($range, true);
         $statement = $this->db->prepare(
-            'SELECT DATE(occurred_at) as day, COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
+            "SELECT DATE(occurred_at) as day, COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
             FROM pageviews
-            WHERE site_id = :site_id AND occurred_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) AND is_bot = 0
+            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
             GROUP BY day
-            ORDER BY day ASC'
+            ORDER BY day ASC"
         );
-        $statement->execute([':site_id' => $siteId]);
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         return $statement->fetchAll();
     }
 
-    private function getTopPages(int $siteId): array
+    private function getTopPages(int $siteId, string $range): array
     {
+        [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            'SELECT path, COUNT(*) as views
+            "SELECT path, COUNT(*) as views
             FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0
+            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
             GROUP BY path
             ORDER BY views DESC
-            LIMIT 50'
+            LIMIT 50"
         );
-        $statement->execute([':site_id' => $siteId]);
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         return $statement->fetchAll();
     }
 
-    private function getTopReferrers(int $siteId): array
+    private function getTopReferrers(int $siteId, string $range): array
     {
+        [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            'SELECT referrer, COUNT(*) as views
+            "SELECT referrer, COUNT(*) as views
             FROM pageviews
-            WHERE site_id = :site_id AND referrer IS NOT NULL AND referrer != "" AND is_bot = 0
+            WHERE site_id = :site_id AND referrer IS NOT NULL AND referrer != '' AND is_bot = 0 {$rangeSql}
             GROUP BY referrer
             ORDER BY views DESC
-            LIMIT 50'
+            LIMIT 50"
         );
-        $statement->execute([':site_id' => $siteId]);
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         return $statement->fetchAll();
     }
 
-    private function getRecentPageviews(int $siteId): array
+    private function getRecentPageviews(int $siteId, string $range): array
     {
+        [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            'SELECT path, referrer, user_agent, occurred_at
+            "SELECT path, referrer, user_agent, occurred_at
             FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0
+            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
             ORDER BY occurred_at DESC
-            LIMIT 20'
+            LIMIT 20"
         );
-        $statement->execute([':site_id' => $siteId]);
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         return $statement->fetchAll();
     }
 
-    private function getKeywords(int $siteId): array
+    private function getKeywords(int $siteId, string $range): array
     {
+        [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            'SELECT keyword, COUNT(*) as views
+            "SELECT keyword, COUNT(*) as views
             FROM pageviews
-            WHERE site_id = :site_id AND keyword IS NOT NULL AND keyword != "" AND is_bot = 0
+            WHERE site_id = :site_id AND keyword IS NOT NULL AND keyword != '' AND is_bot = 0 {$rangeSql}
             GROUP BY keyword
             ORDER BY views DESC
-            LIMIT 100'
+            LIMIT 100"
         );
-        $statement->execute([':site_id' => $siteId]);
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         return $statement->fetchAll();
     }
 
-    private function getBotTraffic(int $siteId): array
+    private function getBotTraffic(int $siteId, string $range): array
     {
+        [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            'SELECT path, referrer, user_agent, occurred_at
+            "SELECT path, referrer, user_agent, occurred_at
             FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 1
+            WHERE site_id = :site_id AND is_bot = 1 {$rangeSql}
             ORDER BY occurred_at DESC
-            LIMIT 100'
+            LIMIT 100"
         );
-        $statement->execute([':site_id' => $siteId]);
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         return $statement->fetchAll();
     }
 
-    private function getVisitAverages(int $siteId): array
+    private function getVisitAverages(int $siteId, string $range): array
     {
+        [$rangeSql, $params] = $this->rangeClause($range);
         $avgDuration = $this->db->prepare(
-            'SELECT AVG(duration_seconds) as avg_duration
+            "SELECT AVG(duration_seconds) as avg_duration
             FROM (
                 SELECT MAX(duration_seconds) as duration_seconds
                 FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL
+                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
                 GROUP BY session_id
-            ) t'
+            ) t"
         );
-        $avgDuration->execute([':site_id' => $siteId]);
+        $avgDuration->execute(array_merge([':site_id' => $siteId], $params));
         $duration = $avgDuration->fetch()['avg_duration'] ?? 0;
 
         $avgPages = $this->db->prepare(
-            'SELECT AVG(pages) as avg_pages
+            "SELECT AVG(pages) as avg_pages
             FROM (
                 SELECT MAX(page_count) as pages
                 FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL
+                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
                 GROUP BY session_id
-            ) t'
+            ) t"
         );
-        $avgPages->execute([':site_id' => $siteId]);
+        $avgPages->execute(array_merge([':site_id' => $siteId], $params));
         $pages = $avgPages->fetch()['avg_pages'] ?? 0;
 
         return [
@@ -297,17 +306,18 @@ class Tracker
         ];
     }
 
-    private function getBounceRate(int $siteId): float
+    private function getBounceRate(int $siteId, string $range): float
     {
+        [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            'SELECT AVG(bounce) as rate FROM (
+            "SELECT AVG(bounce) as rate FROM (
                 SELECT CASE WHEN MAX(page_count) = 1 THEN 1 ELSE 0 END as bounce
                 FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL
+                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
                 GROUP BY session_id
-            ) t'
+            ) t"
         );
-        $statement->execute([':site_id' => $siteId]);
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         return (float) ($statement->fetch()['rate'] ?? 0.0);
     }
@@ -421,18 +431,19 @@ class Tracker
         ];
     }
 
-    private function getMobileBreakdown(int $siteId): array
+    private function getMobileBreakdown(int $siteId, string $range): array
     {
+        [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            'SELECT COALESCE(canonical_host, "未知域名") as domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
+            "SELECT COALESCE(canonical_host, '未知域名') as domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
                 SUM(is_mobile) as mobile_views, COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
             FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0
+            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
             GROUP BY canonical_host
             ORDER BY views DESC
-            LIMIT 100'
+            LIMIT 100"
         );
-        $statement->execute([':site_id' => $siteId]);
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         $rows = $statement->fetchAll();
         $totals = [
@@ -483,6 +494,55 @@ class Tracker
         }
 
         return null;
+    }
+
+    private function getHourlyStats(int $siteId, string $range): array
+    {
+        [$rangeSql, $params] = $this->rangeClause($range, false, true);
+        $statement = $this->db->prepare(
+            "SELECT DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as hour,
+                COUNT(*) as views,
+                SUM(is_unique) as uniques,
+                COUNT(DISTINCT ip_hash) as ips
+            FROM pageviews
+            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+            GROUP BY hour
+            ORDER BY hour ASC"
+        );
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+        return $statement->fetchAll();
+    }
+
+    private function rangeClause(string $range, bool $forceLowerBound = false, bool $hourly = false): array
+    {
+        $params = [];
+        $sql = '';
+        $now = new DateTimeImmutable('now');
+
+        $ranges = [
+            'today' => $now->setTime(0, 0),
+            'yesterday' => $now->modify('-1 day')->setTime(0, 0),
+            '7d' => $now->modify('-6 day')->setTime(0, 0),
+            '30d' => $now->modify('-29 day')->setTime(0, 0),
+        ];
+
+        $start = $ranges[$range] ?? $ranges['7d'];
+
+        if ($range === 'yesterday') {
+            $end = $now->setTime(0, 0);
+            $sql = ' AND occurred_at >= :start AND occurred_at < :end';
+            $params[':start'] = $start->format('Y-m-d H:i:s');
+            $params[':end'] = $end->format('Y-m-d H:i:s');
+            return [$sql, $params];
+        }
+
+        if ($forceLowerBound || $hourly || $range !== 'all') {
+            $sql = ' AND occurred_at >= :start';
+            $params[':start'] = $start->format('Y-m-d H:i:s');
+        }
+
+        return [$sql, $params];
     }
 
     public function deleteSite(int $siteId): void
