@@ -202,6 +202,7 @@ class Tracker
             'totals' => $this->getTotals($siteId, $range),
             'daily' => $this->getDailyStats($siteId, $range),
             'hourly' => $this->getHourlyStats($siteId, $range),
+            'trend' => $this->getTrendLines($siteId, $range),
             'predictions' => $this->getPredictions($siteId),
             'regions' => $this->getRegionStats($siteId, $range, 10),
             'devices' => $this->getDeviceBreakdown($siteId, $range),
@@ -262,6 +263,70 @@ class Tracker
         return [
             'daily' => $this->getDailyStats($siteId, $range),
             'hourly' => $this->getHourlyStats($siteId, $range),
+        ];
+    }
+
+    public function getTrendLines(int $siteId, string $range = 'today'): array
+    {
+        $now = new DateTimeImmutable('now');
+        $granularity = 'day';
+        $primaryLabel = '当前区间';
+        $compareLabel = null;
+
+        if ($range === 'today') {
+            $granularity = 'hour';
+            $primaryLabel = '今天';
+            $compareLabel = '昨天';
+
+            $dayStart = $now->setTime(0, 0);
+            $primary = $this->normalizeHourlySeries($this->getHourlyStats($siteId, 'today'), $dayStart);
+            $compare = $this->normalizeHourlySeries(
+                $this->getHourlyStatsForWindow($siteId, $dayStart->modify('-1 day'), $dayStart),
+                $dayStart->modify('-1 day')
+            );
+
+            return [
+                'granularity' => $granularity,
+                'labels' => $primary['labels'],
+                'primary_label' => $primaryLabel,
+                'primary' => $primary['series'],
+                'compare_label' => $compareLabel,
+                'compare' => $compare['series'],
+            ];
+        }
+
+        if ($range === 'yesterday') {
+            $granularity = 'hour';
+            $primaryLabel = '昨天';
+            $compareLabel = '前天';
+
+            $yesterdayStart = $now->modify('-1 day')->setTime(0, 0);
+            $primary = $this->normalizeHourlySeries($this->getHourlyStats($siteId, 'yesterday'), $yesterdayStart);
+            $compare = $this->normalizeHourlySeries(
+                $this->getHourlyStatsForWindow($siteId, $yesterdayStart->modify('-1 day'), $yesterdayStart),
+                $yesterdayStart->modify('-1 day')
+            );
+
+            return [
+                'granularity' => $granularity,
+                'labels' => $primary['labels'],
+                'primary_label' => $primaryLabel,
+                'primary' => $primary['series'],
+                'compare_label' => $compareLabel,
+                'compare' => $compare['series'],
+            ];
+        }
+
+        $window = $this->rangeWindow($range);
+        $primary = $this->normalizeDailySeries($siteId, $range, new DateTimeImmutable($window['start']), new DateTimeImmutable($window['end']));
+
+        return [
+            'granularity' => 'day',
+            'labels' => $primary['labels'],
+            'primary_label' => $primaryLabel,
+            'primary' => $primary['series'],
+            'compare_label' => null,
+            'compare' => null,
         ];
     }
 
@@ -1111,6 +1176,81 @@ class Tracker
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         return $statement->fetchAll();
+    }
+
+    private function getHourlyStatsForWindow(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        $statement = $this->db->prepare(
+            "SELECT DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as hour,
+                COUNT(*) as views,
+                SUM(is_unique) as uniques,
+                COUNT(DISTINCT ip_hash) as ips
+            FROM pageviews
+            WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
+            GROUP BY hour
+            ORDER BY hour ASC"
+        );
+
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        return $statement->fetchAll();
+    }
+
+    private function normalizeHourlySeries(array $rows, DateTimeImmutable $dayStart): array
+    {
+        $map = [];
+        foreach ($rows as $row) {
+            $key = (new DateTimeImmutable($row['hour']))->format('H:00');
+            $map[$key] = [
+                'views' => (int) $row['views'],
+                'uniques' => (int) $row['uniques'],
+                'ips' => (int) $row['ips'],
+            ];
+        }
+
+        $labels = [];
+        $series = ['views' => [], 'uniques' => [], 'ips' => []];
+
+        for ($i = 0; $i < 24; $i++) {
+            $label = $dayStart->modify("+{$i} hour")->format('H:00');
+            $labels[] = $label;
+            $series['views'][] = $map[$label]['views'] ?? 0;
+            $series['uniques'][] = $map[$label]['uniques'] ?? 0;
+            $series['ips'][] = $map[$label]['ips'] ?? 0;
+        }
+
+        return ['labels' => $labels, 'series' => $series];
+    }
+
+    private function normalizeDailySeries(int $siteId, string $range, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        $rows = $this->getDailyStats($siteId, $range);
+        $map = [];
+        foreach ($rows as $row) {
+            $map[$row['day']] = [
+                'views' => (int) $row['views'],
+                'uniques' => (int) $row['uniques'],
+                'ips' => (int) $row['ip_count'],
+            ];
+        }
+
+        $labels = [];
+        $series = ['views' => [], 'uniques' => [], 'ips' => []];
+        $period = new DatePeriod($start, new DateInterval('P1D'), $end->modify('+1 day'));
+
+        foreach ($period as $date) {
+            $day = $date->format('Y-m-d');
+            $labels[] = $day;
+            $series['views'][] = $map[$day]['views'] ?? 0;
+            $series['uniques'][] = $map[$day]['uniques'] ?? 0;
+            $series['ips'][] = $map[$day]['ips'] ?? 0;
+        }
+
+        return ['labels' => $labels, 'series' => $series];
     }
 
     public function rangeWindow(string $range): array

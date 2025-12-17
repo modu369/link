@@ -3,6 +3,11 @@ require __DIR__ . '/init.php';
 require __DIR__ . '/layout.php';
 
 $data = $selectedSite ? $tracker->getOverview($siteId, $range) : null;
+$trend = $data['trend'] ?? null;
+$topReferrers = $data ? array_slice($data['top_referrers'], 0, 20) : [];
+$topPages = $data ? array_slice($data['top_pages'], 0, 20) : [];
+$entryPages = $data ? array_slice($data['entry_pages'], 0, 20) : [];
+$regions = $data ? array_slice($data['regions'], 0, 20) : [];
 
 render_head('总览 - 统计后台');
 render_topbar($branding);
@@ -22,7 +27,12 @@ render_topbar($branding);
     .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; align-items: stretch; }
     .pill-tag { background: #deedfb; color: #1690ff; padding: 4px 10px; border-radius: 999px; font-weight: 700; border: 1px solid var(--border); }
     .chart-wrap { position: relative; width: 100%; }
+    .trend-wrap canvas { height: 80px !important; }
     .table-wrap { max-height: 320px; overflow: auto; }
+    .trend-controls { display:flex; gap:8px; align-items:center; }
+    .trend-toggle button { border:1px solid var(--border); background:#deedfb; color:#1690ff; padding:6px 10px; border-radius:8px; cursor:pointer; font-weight:700; }
+    .trend-toggle button.active { background:#1690ff; color:#fff; }
+    .browser-pie { max-width: 220px; margin: 0 auto; transform: scale(0.7); transform-origin: center; }
 </style>
 <div class="data-layout">
     <?php render_sidebar($sites, $siteId, $selectedSite, 'overview', $range); ?>
@@ -55,8 +65,18 @@ render_topbar($branding);
             </section>
 
             <section class="card">
-                <div class="section-title"><h3>趋势热力</h3><span class="pill-tag">PV / UV / IP</span></div>
-                <div class="chart-wrap"><canvas id="dailyTrendChart" height="140"></canvas></div>
+                <div class="section-title" style="justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                    <div class="trend-controls">
+                        <h3 style="margin:0;">趋势热力</h3>
+                        <span class="pill-tag"><?= $trend['granularity'] === 'hour' ? '小时对比' : '按天走势' ?></span>
+                    </div>
+                    <div class="trend-toggle">
+                        <button class="active" data-metric="ips">IP</button>
+                        <button data-metric="uniques">UV</button>
+                        <button data-metric="views">PV</button>
+                    </div>
+                </div>
+                <div class="chart-wrap trend-wrap"><canvas id="dailyTrendChart" height="80"></canvas></div>
             </section>
 
             <div class="grid-2">
@@ -72,7 +92,7 @@ render_topbar($branding);
                         </div>
                     </div>
                     <div class="section-title" style="margin-top:12px;"><h4 style="margin:0;">浏览器分布（IP）</h4></div>
-                    <div class="chart-wrap"><canvas id="browserBar" height="140"></canvas></div>
+                    <div class="chart-wrap browser-pie"><canvas id="browserBar" height="98"></canvas></div>
                 </section>
 
                 <section class="card">
@@ -86,7 +106,7 @@ render_topbar($branding);
                         <table>
                             <thead><tr><th>入口页</th><th>PV</th></tr></thead>
                             <tbody>
-                            <?php foreach ($data['entry_pages'] as $row): ?>
+                            <?php foreach ($entryPages as $row): ?>
                                 <tr><td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['views'] ?></td></tr>
                             <?php endforeach; ?>
                             </tbody>
@@ -124,7 +144,7 @@ render_topbar($branding);
                         <table>
                             <thead><tr><th>地域</th><th>PV</th><th>IP</th></tr></thead>
                             <tbody>
-                            <?php foreach ($data['regions'] as $row): ?>
+                            <?php foreach ($regions as $row): ?>
                                 <tr>
                                     <td><?= htmlspecialchars($row['region'], ENT_QUOTES, 'UTF-8') ?></td>
                                     <td><?= (int) $row['views'] ?></td>
@@ -144,13 +164,14 @@ render_topbar($branding);
                         <div style="display:flex;gap:8px;">
                             <a class="filter-btn" href="/search_engine.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">搜索引擎</a>
                             <a class="filter-btn" href="/external.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">外部链接</a>
+                            <a class="filter-btn" href="/referrer.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
                         </div>
                     </div>
                     <div class="table-wrap">
                         <table>
                             <thead><tr><th>来源</th><th>IP</th></tr></thead>
                             <tbody>
-                            <?php foreach ($data['top_referrers'] as $row): ?>
+                            <?php foreach ($topReferrers as $row): ?>
                                 <tr><td><?= htmlspecialchars($row['referrer'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['ips'] ?></td></tr>
                             <?php endforeach; ?>
                             </tbody>
@@ -167,7 +188,7 @@ render_topbar($branding);
                         <table>
                             <thead><tr><th>页面</th><th>IP</th></tr></thead>
                             <tbody>
-                            <?php foreach ($data['top_pages'] as $row): ?>
+                            <?php foreach ($topPages as $row): ?>
                                 <tr><td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['ips'] ?></td></tr>
                             <?php endforeach; ?>
                             </tbody>
@@ -177,31 +198,66 @@ render_topbar($branding);
             </div>
 
             <script>
-                const dailyData = <?= json_encode($data['daily'], JSON_UNESCAPED_UNICODE) ?>;
+                const trendData = <?= json_encode($trend, JSON_UNESCAPED_UNICODE) ?>;
                 const ctxDaily = document.getElementById('dailyTrendChart');
-                if (ctxDaily && window.Chart) {
-                    const gPV = ctxDaily.getContext('2d').createLinearGradient(0, 0, 0, 200);
-                    gPV.addColorStop(0, '#1690ff');
-                    gPV.addColorStop(1, '#73c1ff');
-                    const gUV = ctxDaily.getContext('2d').createLinearGradient(0, 0, 0, 200);
-                    gUV.addColorStop(0, '#4dadff');
-                    gUV.addColorStop(1, '#b6e0ff');
-                    const gIP = ctxDaily.getContext('2d').createLinearGradient(0, 0, 0, 200);
-                    gIP.addColorStop(0, '#73c1ff');
-                    gIP.addColorStop(1, '#d1ecff');
-                    new Chart(ctxDaily, {
+                let trendChart = null;
+
+                const renderTrend = (metric = 'ips') => {
+                    if (!ctxDaily || !window.Chart || !trendData) return;
+                    const ctx = ctxDaily.getContext('2d');
+                    const primaryGrad = ctx.createLinearGradient(0, 0, 0, 160);
+                    primaryGrad.addColorStop(0, '#1690ff');
+                    primaryGrad.addColorStop(1, 'rgba(22,144,255,0.08)');
+                    const compareGrad = ctx.createLinearGradient(0, 0, 0, 160);
+                    compareGrad.addColorStop(0, '#73c1ff');
+                    compareGrad.addColorStop(1, 'rgba(115,193,255,0.08)');
+
+                    const datasets = [
+                        {
+                            label: trendData.primary_label,
+                            data: trendData.primary?.[metric] || [],
+                            borderColor: '#1690ff',
+                            backgroundColor: primaryGrad,
+                            tension: 0.35,
+                            fill: true,
+                        }
+                    ];
+
+                    if (trendData.compare) {
+                        datasets.push({
+                            label: trendData.compare_label,
+                            data: trendData.compare?.[metric] || [],
+                            borderColor: '#73c1ff',
+                            backgroundColor: compareGrad,
+                            tension: 0.35,
+                            fill: true,
+                        });
+                    }
+
+                    if (trendChart) trendChart.destroy();
+                    trendChart = new Chart(ctxDaily, {
                         type: 'line',
-                        data: {
-                            labels: dailyData.map(d => d.day),
-                            datasets: [
-                                {label:'PV', data: dailyData.map(d => Number(d.views)), borderColor:'#1690ff', backgroundColor:gPV, tension:0.35, fill:true},
-                                {label:'UV', data: dailyData.map(d => Number(d.uniques)), borderColor:'#4dadff', backgroundColor:gUV, tension:0.35, fill:true},
-                                {label:'IP', data: dailyData.map(d => Number(d.ip_count)), borderColor:'#73c1ff', backgroundColor:gIP, tension:0.35, fill:true}
-                            ]
-                        },
-                        options: {responsive:true, plugins:{legend:{position:'top'}, tooltip:{mode:'index', intersect:false}}, scales:{x:{stacked:false, grid:{display:false}}, y:{beginAtZero:true}}}
+                        data: { labels: trendData.labels, datasets },
+                        options: {
+                            responsive: true,
+                            plugins: { legend: { position: 'top' }, tooltip: { mode: 'index', intersect: false } },
+                            scales: {
+                                x: { ticks: { maxRotation: 0 }, grid: { display: false } },
+                                y: { beginAtZero: true }
+                            }
+                        }
                     });
-                }
+                };
+
+                document.querySelectorAll('.trend-toggle button').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        document.querySelectorAll('.trend-toggle button').forEach(b => b.classList.remove('active'));
+                        btn.classList.add('active');
+                        renderTrend(btn.dataset.metric);
+                    });
+                });
+
+                renderTrend('ips');
 
                 const deviceData = [
                     {label:'电脑端', value: <?= (int) $data['devices']['desktop']['ips'] ?>, color:'#1690ff'},
