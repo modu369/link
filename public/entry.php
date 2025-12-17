@@ -5,7 +5,7 @@ require __DIR__ . '/layout.php';
 $data = $selectedSite ? $tracker->getEntryData($siteId, $range) : null;
 
 render_head('入口页详情 - 统计后台');
-render_topbar($config);
+render_topbar($branding);
 ?>
 <div class="data-layout">
     <?php render_sidebar($sites, $siteId, $selectedSite, 'entry', $range); ?>

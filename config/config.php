@@ -17,6 +17,11 @@ return [
             'pass' => getenv('ADMIN_PASS') ?: 'admin123',
         ],
     ],
+    'branding' => [
+        'base_url' => getenv('APP_BASE_URL') ?: 'http://localhost',
+        'brand_title' => getenv('APP_BRAND_TITLE') ?: '简约白 · 统计后台',
+        'brand_subtitle' => getenv('APP_BRAND_SUBTITLE') ?: '多站点切换 / www 自动兼容 / 亿级数据索引优化',
+    ],
     'retention' => [
         // 数据保留天数，超过后自动清理；设置为 0 可关闭
         'days' => (int) (getenv('RETENTION_DAYS') ?: 180),

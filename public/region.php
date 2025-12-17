@@ -5,7 +5,7 @@ require __DIR__ . '/layout.php';
 $data = $selectedSite ? $tracker->getRegionData($siteId, $range) : null;
 
 render_head('地域分布 - 统计后台');
-render_topbar($config);
+render_topbar($branding);
 ?>
 <div class="data-layout">
     <?php render_sidebar($sites, $siteId, $selectedSite, 'region', $range); ?>

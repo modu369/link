@@ -9,6 +9,12 @@ $config = require __DIR__ . '/../config/config.php';
 $db = Database::connection($config['db']);
 $redis = RedisClient::connection($config['redis']);
 $tracker = new Tracker($db, $redis, $config);
+$brandingFallback = $config['branding'] ?? [
+    'base_url' => $config['app']['base_url'] ?? 'http://localhost',
+    'brand_title' => '简约白 · 统计后台',
+    'brand_subtitle' => '多站点切换 / www 自动兼容 / 亿级数据索引优化',
+];
+$branding = $tracker->getBrandingSettings($brandingFallback);
 
 if (($_GET['action'] ?? '') === 'logout') {
     session_destroy();

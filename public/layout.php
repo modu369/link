@@ -67,17 +67,16 @@ function render_head(string $title = '统计后台'): void
     <?php
 }
 
-function render_topbar(array $config): void
+function render_topbar(array $branding): void
 {
     ?>
     <header>
-        <div>
-            <div class="brand">简约白 · 统计后台</div>
-            <div class="muted">多站点切换 / www 自动兼容 / 亿级数据索引优化</div>
-        </div>
+        <a href="/sites.php" style="text-decoration:none; color:inherit;">
+            <div class="brand"><?= htmlspecialchars($branding['brand_title'] ?? '简约白 · 统计后台', ENT_QUOTES, 'UTF-8') ?></div>
+            <div class="muted"><?= htmlspecialchars($branding['brand_subtitle'] ?? '', ENT_QUOTES, 'UTF-8') ?></div>
+        </a>
         <div class="top-bar">
             <a class="logout" style="color:#0f172a;text-decoration:none;font-weight:700;" href="/user.php"><?= htmlspecialchars($_SESSION['admin_user'] ?? '管理员', ENT_QUOTES, 'UTF-8') ?></a>
-            <span class="muted">基址 <?= htmlspecialchars($config['app']['base_url'], ENT_QUOTES, 'UTF-8') ?></span>
             <a class="logout" href="?action=logout">退出</a>
         </div>
     </header>

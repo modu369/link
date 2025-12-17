@@ -4,6 +4,7 @@ require __DIR__ . '/layout.php';
 
 $account = $tracker->getAdminAccount($config['app']['admin']);
 $retention = $tracker->getRetentionSettings($config['retention']);
+$branding = $tracker->getBrandingSettings($brandingFallback);
 $message = null;
 $error = null;
 
@@ -31,6 +32,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $message = '数据保留策略已更新';
     }
 
+    if ($action === 'update_branding') {
+        $base = trim($_POST['base_url'] ?? '');
+        $title = trim($_POST['brand_title'] ?? '');
+        $subtitle = trim($_POST['brand_subtitle'] ?? '');
+        $branding = $tracker->updateBrandingSettings($base, $title, $subtitle);
+        $message = '站点基址与标题已更新';
+    }
+
     if ($action === 'manual_cleanup') {
         $days = (int) ($_POST['cleanup_days'] ?? 0);
         if ($days > 0) {
@@ -43,7 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 render_head('用户中心 - 统计后台');
-render_topbar($config);
+render_topbar($branding);
 ?>
 <div class="sites-layout">
     <section class="card">
@@ -68,6 +77,29 @@ render_topbar($config);
                 <input type="password" name="pass2" placeholder="再次输入" required>
             </div>
             <div><button type="submit">保存账号</button></div>
+        </form>
+    </section>
+
+    <section class="card">
+        <div class="section-title">
+            <h2>品牌与基址设置</h2>
+            <span class="pill">更新顶部标题、描述与跟踪脚本基址</span>
+        </div>
+        <form method="post" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;align-items:end;">
+            <input type="hidden" name="action" value="update_branding">
+            <div class="form-control" style="margin:0;">
+                <label>基址（站点域名）</label>
+                <input type="text" name="base_url" value="<?= htmlspecialchars($branding['base_url'] ?? '', ENT_QUOTES, 'UTF-8') ?>" placeholder="https://stats.example.com" required>
+            </div>
+            <div class="form-control" style="margin:0;">
+                <label>大标题</label>
+                <input type="text" name="brand_title" value="<?= htmlspecialchars($branding['brand_title'] ?? '', ENT_QUOTES, 'UTF-8') ?>" placeholder="简约白 · 统计后台" required>
+            </div>
+            <div class="form-control" style="margin:0;">
+                <label>小标题</label>
+                <input type="text" name="brand_subtitle" value="<?= htmlspecialchars($branding['brand_subtitle'] ?? '', ENT_QUOTES, 'UTF-8') ?>" placeholder="多站点切换 / www 自动兼容 / 亿级数据索引优化" required>
+            </div>
+            <div><button type="submit">保存品牌</button></div>
         </form>
     </section>
 

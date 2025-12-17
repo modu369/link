@@ -28,7 +28,7 @@ $window = $tracker->rangeWindow($range);
         body { font-family: 'Inter','PingFang SC',sans-serif; background:#f8fafc; margin:0; color:#0f172a; }
         .wrap { max-width: 1100px; margin: 40px auto; padding: 0 16px; }
         .card { background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:16px; box-shadow:0 12px 30px rgba(15,23,42,0.04); }
-        h1 { margin:0 0 6px; }
+        h1 { margin:0 0 6px; text-align:center; }
         .muted { color:#64748b; }
         table { width:100%; border-collapse: collapse; margin-top:12px; }
         th,td { padding:10px 8px; border-bottom:1px solid #e2e8f0; text-align:left; }

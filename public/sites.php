@@ -57,7 +57,7 @@ $sites = $tracker->getSites();
 $sharePages = $tracker->getSharePages();
 
 render_head('域名列表 - 统计后台');
-render_topbar($config);
+render_topbar($branding);
 ?>
 <div class="sites-layout">
     <section class="card">
@@ -95,7 +95,7 @@ render_topbar($config);
                     <div class="name"><?= htmlspecialchars($site['name'], ENT_QUOTES, 'UTF-8') ?></div>
                     <div class="meta">根域名：<?= htmlspecialchars($site['domain'], ENT_QUOTES, 'UTF-8') ?>（含 www）</div>
                     <div class="meta">Tracking ID：<?= htmlspecialchars($site['tracking_id'], ENT_QUOTES, 'UTF-8') ?></div>
-                    <code>&lt;script src="<?= rtrim($config['app']['base_url'], '/') ?>/js/tracker.js" data-site="<?= htmlspecialchars($site['tracking_id'], ENT_QUOTES, 'UTF-8') ?>"&gt;&lt;/script&gt;</code>
+                    <code>&lt;script src="<?= rtrim($branding['base_url'], '/') ?>/js/tracker.js" data-site="<?= htmlspecialchars($site['tracking_id'], ENT_QUOTES, 'UTF-8') ?>"&gt;&lt;/script&gt;</code>
                     <div class="actions">
                         <a class="enter" href="/overview.php?site=<?= (int) $site['id'] ?>">进入数据</a>
                         <form method="post" style="margin:0;">

@@ -1158,6 +1158,42 @@ class Tracker
         return $merged;
     }
 
+    public function getBrandingSettings(array $fallback): array
+    {
+        $stored = $this->getSetting('branding') ?? [];
+        $merged = array_merge($fallback, $stored);
+
+        $merged['base_url'] = trim($merged['base_url'] ?? '');
+        if ($merged['base_url'] === '') {
+            $merged['base_url'] = 'http://localhost';
+        }
+
+        $merged['brand_title'] = trim($merged['brand_title'] ?? '');
+        if ($merged['brand_title'] === '') {
+            $merged['brand_title'] = '简约白 · 统计后台';
+        }
+
+        $merged['brand_subtitle'] = trim($merged['brand_subtitle'] ?? '');
+        if ($merged['brand_subtitle'] === '') {
+            $merged['brand_subtitle'] = '多站点切换 / www 自动兼容 / 亿级数据索引优化';
+        }
+
+        return $merged;
+    }
+
+    public function updateBrandingSettings(string $baseUrl, string $title, string $subtitle): array
+    {
+        $payload = [
+            'base_url' => trim($baseUrl) ?: 'http://localhost',
+            'brand_title' => trim($title) ?: '简约白 · 统计后台',
+            'brand_subtitle' => trim($subtitle) ?: '多站点切换 / www 自动兼容 / 亿级数据索引优化',
+        ];
+
+        $this->setSetting('branding', $payload);
+
+        return $payload;
+    }
+
     public function updateRetentionSettings(int $days, int $hour): array
     {
         $payload = [
