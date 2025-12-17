@@ -22,7 +22,7 @@
    - `APP_BASE_URL`：对外访问的根地址，用于生成埋点脚本 URL。
    - `ADMIN_USER` / `ADMIN_PASS`：后台登录账号密码。
 3. 确保 PHP 具备 PDO MySQL 与 Redis 扩展。
-4. 部署 Nginx + PHP-FPM（可参考 `nginx.conf`），站点根目录指向 `public/`。
+4. 部署 Nginx + PHP-FPM（可参考 `nginx.conf`），站点根目录指向 `public/`；已在示例中加入兼容 Tengine 2.2.3 的伪静态回退（`try_files` + `@rewrite`）。
 
 ## 埋点方式
 在需要统计的站点 `<head>` 中插入（替换 `YOUR_TRACKING_ID`）：
