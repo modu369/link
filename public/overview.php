@@ -28,10 +28,10 @@ render_topbar($branding);
     .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; align-items: stretch; }
     .pill-tag { background: #deedfb; color: #1690ff; padding: 4px 10px; border-radius: 999px; font-weight: 700; border: 1px solid var(--border); }
     .chart-wrap { position: relative; width: 100%; }
-    .trend-wrap canvas {
-        width: 100% !important;
-        height: 280px !important;
-        max-height: 340px;
+    .trend-wrap canvas
+
+    {
+        max-height: 430px;
     }
     .table-wrap { max-height: 320px; overflow: auto; }
     .trend-controls { display:flex; gap:8px; align-items:center; }
@@ -42,10 +42,6 @@ render_topbar($branding);
         margin: 0 auto;
         display: flex;
         justify-content: center;
-    }
-    .browser-pie canvas {
-        width: 100% !important;
-        height: 200px !important;
     }
 </style>
 <div class="data-layout">
@@ -106,7 +102,7 @@ render_topbar($branding);
                         </div>
                     </div>
                     <div class="section-title" style="margin-top:12px;"><h4 style="margin:0;">浏览器分布（IP）</h4></div>
-                    <div class="chart-wrap browser-pie"><canvas id="browserBar" height="180"></canvas></div>
+                    <div class="chart-wrap browser-pie"><canvas id="browserBar" height="480" style="display: block; box-sizing: border-box; height: 320px; width: 320px;" width="480"></canvas></div>
                 </section>
 
                 <section class="card">
@@ -273,6 +269,22 @@ render_topbar($branding);
 
                 renderTrend('ips');
 
+                const pieOptions = {
+                    plugins: {
+                        legend: { position: 'bottom' },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => `${ctx.label}: ${ctx.parsed} IP`,
+                                afterLabel: (ctx) => {
+                                    const total = (ctx.dataset?.data || []).reduce((s, v) => s + Number(v || 0), 0) || 1;
+                                    const pct = ((ctx.parsed / total) * 100).toFixed(1);
+                                    return `占比 ${pct}%`;
+                                }
+                            }
+                        }
+                    }
+                };
+
                 const deviceData = [
                     {label:'电脑端', value: <?= (int) $data['devices']['desktop']['ips'] ?>, color:'#1690ff'},
                     {label:'移动端', value: <?= (int) $data['devices']['mobile']['ips'] ?>, color:'#73c1ff'}
@@ -285,7 +297,7 @@ render_topbar($branding);
                             labels: deviceData.map(d=>d.label),
                             datasets:[{data: deviceData.map(d=>d.value), backgroundColor: deviceData.map(d=>d.color)}]
                         },
-                        options:{plugins:{legend:{position:'bottom'}}}
+                        options: pieOptions
                     });
                 }
 
@@ -299,7 +311,7 @@ render_topbar($branding);
                             labels: browserRows.map(r=>r.browser || '未知'),
                             datasets:[{label:'IP', data: browserRows.map(r=>Number(r.ips)), backgroundColor: browserRows.map((_,i)=>palette[i % palette.length])}]
                         },
-                        options:{plugins:{legend:{position:'bottom'}}}
+                        options: pieOptions
                     });
                 }
             </script>

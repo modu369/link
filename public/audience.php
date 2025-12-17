@@ -58,7 +58,21 @@ render_topbar($branding);
                             }),
                             datasets:[{data:items.map(i=>Number(i.value||0)),backgroundColor:items.map((_,i)=>palette[i%palette.length]),borderWidth:0}]
                         },
-                        options:{plugins:{legend:{position:'bottom'}}}
+                        options:{
+                            plugins:{
+                                legend:{position:'bottom'},
+                                tooltip:{
+                                    callbacks:{
+                                        label:(ctx)=>`${ctx.label}: ${ctx.parsed} IP`,
+                                        afterLabel:(ctx)=>{
+                                            const totalVal = (ctx.dataset?.data || []).reduce((s,v)=>s+Number(v||0),0) || 1;
+                                            const pct = ((ctx.parsed/totalVal)*100).toFixed(1);
+                                            return `占比 ${pct}%`;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     });
                 })();
             </script>
