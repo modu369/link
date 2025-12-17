@@ -7,17 +7,35 @@ require __DIR__ . '/../src/Tracker.php';
 
 $config = require __DIR__ . '/../config/config.php';
 $loginError = null;
+$entryVerified = $_SESSION['login_entry_verified'] ?? false;
+
+$loginEntry = $config['security']['login_entry'] ?? 'admin';
 
 try {
     $db = Database::connection($config['db']);
     $redis = RedisClient::connection($config['redis']);
     $tracker = new Tracker($db, $redis, $config);
+    $loginEntry = $tracker->getLoginEntry();
 } catch (Throwable $e) {
     $loginError = '服务暂不可用，请稍后再试';
 }
 
+if (!$entryVerified) {
+    $candidate = trim($_GET['entry'] ?? '');
+    if ($candidate !== '' && hash_equals($loginEntry, $candidate)) {
+        $_SESSION['login_entry_verified'] = true;
+        $entryVerified = true;
+    }
+}
+
 if (($_GET['action'] ?? '') === 'logout') {
     session_destroy();
+}
+
+if (!$entryVerified) {
+    http_response_code(404);
+    echo '<!doctype html><html><head><meta charset="utf-8"><title>Not Found</title></head><body><h1 style="text-align:center;font-family:Helvetica Neue, Helvetica, PingFang SC, Hiragino Sans GB, Microsoft YaHei, 微软雅黑, Arial, sans-serif;">404 Not Found</h1></body></html>';
+    exit;
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login' && isset($tracker)) {

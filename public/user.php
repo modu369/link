@@ -5,6 +5,7 @@ require __DIR__ . '/layout.php';
 $account = $tracker->getAdminAccount($config['app']['admin']);
 $retention = $tracker->getRetentionSettings($config['retention']);
 $branding = $tracker->getBrandingSettings($brandingFallback);
+$loginEntry = $tracker->getLoginEntry();
 $message = null;
 $error = null;
 
@@ -38,6 +39,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $subtitle = trim($_POST['brand_subtitle'] ?? '');
         $branding = $tracker->updateBrandingSettings($base, $title, $subtitle);
         $message = '站点基址与标题已更新';
+    }
+
+    if ($action === 'update_login_entry') {
+        $entry = trim($_POST['login_entry'] ?? '');
+        $loginEntry = $tracker->updateLoginEntry($entry);
+        $message = '隐蔽入口已更新';
     }
 
     if ($action === 'manual_cleanup') {
@@ -100,6 +107,22 @@ render_topbar($branding);
                 <input type="text" name="brand_subtitle" value="<?= htmlspecialchars($branding['brand_subtitle'] ?? '', ENT_QUOTES, 'UTF-8') ?>" placeholder="多站点切换 / www 自动兼容 / 亿级数据索引优化" required>
             </div>
             <div><button type="submit">保存品牌</button></div>
+        </form>
+    </section>
+
+    <section class="card">
+        <div class="section-title">
+            <h2>隐蔽登录入口</h2>
+            <span class="pill">设置后仅通过 ?entry=此标识 才能打开登录页</span>
+        </div>
+        <form method="post" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;align-items:end;">
+            <input type="hidden" name="action" value="update_login_entry">
+            <div class="form-control" style="margin:0;">
+                <label>入口标识</label>
+                <input type="text" name="login_entry" value="<?= htmlspecialchars($loginEntry, ENT_QUOTES, 'UTF-8') ?>" placeholder="例如 admin2024 或 secret-door" required>
+                <p class="muted" style="margin:6px 0 0;">访问 <code>/index.php?entry=<?= htmlspecialchars($loginEntry, ENT_QUOTES, 'UTF-8') ?></code> 才会出现登录表单</p>
+            </div>
+            <div><button type="submit">保存入口</button></div>
         </form>
     </section>
 

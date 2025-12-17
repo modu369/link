@@ -6,6 +6,7 @@ class Tracker
     private int $cleanupHour = 3;
     private array $adminDefaults = ['user' => 'admin', 'pass' => 'admin123'];
     private array $retentionDefaults = ['days' => 0, 'cleanup_hour' => 3];
+    private string $defaultLoginEntry = 'admin';
 
     public function __construct(
         private PDO $db,
@@ -14,6 +15,7 @@ class Tracker
     ) {
         $this->adminDefaults = $this->options['app']['admin'] ?? $this->options['admin'] ?? $this->adminDefaults;
         $this->retentionDefaults = $this->options['retention'] ?? $this->retentionDefaults;
+        $this->defaultLoginEntry = trim($this->options['security']['login_entry'] ?? $this->defaultLoginEntry) ?: $this->defaultLoginEntry;
         $this->retentionDays = max(0, (int) ($this->retentionDefaults['days'] ?? 0));
         $this->cleanupHour = min(23, max(0, (int) ($this->retentionDefaults['cleanup_hour'] ?? 3)));
 
@@ -1268,6 +1270,30 @@ class Tracker
         $this->setSetting('branding', $payload);
 
         return $payload;
+    }
+
+    public function getLoginEntry(): string
+    {
+        $stored = $this->getSetting('login_entry') ?? [];
+        $entry = trim($stored['entry'] ?? '');
+
+        if ($entry === '') {
+            $entry = $this->defaultLoginEntry;
+        }
+
+        return $entry ?: 'admin';
+    }
+
+    public function updateLoginEntry(string $entry): string
+    {
+        $sanitized = preg_replace('/[^a-zA-Z0-9_-]/', '', trim($entry));
+        if ($sanitized === '') {
+            $sanitized = $this->defaultLoginEntry ?: 'admin';
+        }
+
+        $this->setSetting('login_entry', ['entry' => $sanitized]);
+
+        return $sanitized;
     }
 
     public function updateRetentionSettings(int $days, int $hour): array
