@@ -17,4 +17,10 @@ return [
             'pass' => getenv('ADMIN_PASS') ?: 'admin123',
         ],
     ],
+    'retention' => [
+        // 数据保留天数，超过后自动清理；设置为 0 可关闭
+        'days' => (int) (getenv('RETENTION_DAYS') ?: 180),
+        // 每天定时清理的小时（0-23）
+        'cleanup_hour' => (int) (getenv('RETENTION_CLEANUP_HOUR') ?: 3),
+    ],
 ];

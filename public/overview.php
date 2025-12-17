@@ -128,7 +128,10 @@ render_topbar($config);
             <section class="card">
                 <div class="section-title">
                     <h3>来路</h3>
-                    <a class="filter-btn" href="/referrer.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
+                    <div style="display:flex;gap:8px;">
+                        <a class="filter-btn" href="/search_engine.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">搜索引擎</a>
+                        <a class="filter-btn" href="/external.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">外部链接</a>
+                    </div>
                 </div>
                 <table>
                     <thead><tr><th>来源</th><th>PV</th></tr></thead>

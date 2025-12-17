@@ -8,7 +8,7 @@ require __DIR__ . '/../src/Tracker.php';
 $config = require __DIR__ . '/../config/config.php';
 $db = Database::connection($config['db']);
 $redis = RedisClient::connection($config['redis']);
-$tracker = new Tracker($db, $redis);
+$tracker = new Tracker($db, $redis, $config['retention'] ?? []);
 
 if (($_GET['action'] ?? '') === 'logout') {
     session_destroy();

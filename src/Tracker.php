@@ -2,12 +2,20 @@
 
 class Tracker
 {
+    private int $retentionDays = 0;
+    private int $cleanupHour = 3;
+
     public function __construct(
         private PDO $db,
-        private Redis $redis
+        private Redis $redis,
+        private array $options = []
     ) {
+        $this->retentionDays = max(0, (int) ($this->options['days'] ?? 0));
+        $this->cleanupHour = min(23, max(0, (int) ($this->options['cleanup_hour'] ?? 3)));
+
         $this->ensurePageviewSchema();
         $this->ensureShareSchema();
+        $this->maybeCleanupRetention();
     }
 
     public function createSite(string $name, string $domain): array
@@ -36,6 +44,16 @@ class Tracker
         $query = $this->db->query('SELECT id, name, domain, tracking_id, created_at FROM sites ORDER BY created_at DESC');
 
         return $query->fetchAll();
+    }
+
+    public function getSite(int $id): ?array
+    {
+        $statement = $this->db->prepare('SELECT id, name, domain, tracking_id, created_at FROM sites WHERE id = :id LIMIT 1');
+        $statement->execute([':id' => $id]);
+
+        $site = $statement->fetch();
+
+        return $site ?: null;
     }
 
     public function getSiteByTrackingId(string $trackingId): ?array
@@ -141,6 +159,20 @@ class Tracker
         ];
     }
 
+    public function getSearchEngineData(int $siteId, string $range = 'today'): array
+    {
+        return [
+            'engines' => $this->getSearchEngines($siteId, $range),
+        ];
+    }
+
+    public function getExternalLinkData(int $siteId, string $range = 'today'): array
+    {
+        return [
+            'links' => $this->getExternalLinks($siteId, $range),
+        ];
+    }
+
     public function getBotData(int $siteId, string $range = 'today'): array
     {
         return [
@@ -152,6 +184,14 @@ class Tracker
     {
         return [
             'breakdown' => $this->getMobileBreakdown($siteId, $range),
+        ];
+    }
+
+    public function getTrendData(int $siteId, string $range = 'today'): array
+    {
+        return [
+            'daily' => $this->getDailyStats($siteId, $range),
+            'hourly' => $this->getHourlyStats($siteId, $range),
         ];
     }
 
@@ -327,11 +367,9 @@ class Tracker
     private function getKeywords(int $siteId, string $range): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
+        $engineCase = $this->searchEngineCase();
         $statement = $this->db->prepare(
-            "SELECT keyword,
-                COALESCE(NULLIF(SUBSTRING_INDEX(SUBSTRING_INDEX(referrer, '/', 3), '//', -1), ''), '直接访问') as engine,
-                COALESCE(path, '/') as path,
-                COUNT(*) as views
+            "SELECT keyword, {$engineCase} as engine, COALESCE(path, '/') as path, COUNT(*) as views
             FROM pageviews
             WHERE site_id = :site_id AND keyword IS NOT NULL AND keyword != '' AND is_bot = 0 {$rangeSql}
             GROUP BY keyword, engine, path
@@ -355,7 +393,7 @@ class Tracker
             }
 
             $keywords[$keyword]['views'] += (int) $row['views'];
-            $keywords[$keyword]['engines'][] = $this->identifySearchEngine($row['engine']);
+            $keywords[$keyword]['engines'][] = $row['engine'];
 
             if ($row['views'] >= $keywords[$keyword]['views']) {
                 $keywords[$keyword]['entry'] = $row['path'];
@@ -594,6 +632,7 @@ class Tracker
         $ensureIndex('idx_site_host', 'site_id, canonical_host, occurred_at');
         $ensureIndex('idx_site_mobile', 'site_id, is_mobile, occurred_at');
         $ensureIndex('idx_site_ip', 'site_id, ip_hash, occurred_at');
+        $ensureIndex('idx_site_ref', 'site_id, referrer(120), occurred_at');
     }
 
     private function ensureShareSchema(): void
@@ -665,6 +704,85 @@ class Tracker
         }
 
         return '其他来源';
+    }
+
+    private function searchEngineCase(): string
+    {
+        return "CASE
+            WHEN LOWER(COALESCE(referrer,'')) LIKE '%baidu%' OR LOWER(COALESCE(user_agent,'')) LIKE '%baiduspider%' THEN '百度'
+            WHEN LOWER(COALESCE(referrer,'')) LIKE '%google.' OR LOWER(COALESCE(user_agent,'')) LIKE '%googlebot%' THEN 'Google'
+            WHEN LOWER(COALESCE(referrer,'')) LIKE '%bing.' OR LOWER(COALESCE(user_agent,'')) LIKE '%bingbot%' THEN 'Bing'
+            WHEN LOWER(COALESCE(referrer,'')) LIKE '%sm.cn%' OR LOWER(COALESCE(referrer,'')) LIKE '%quark.cn%' OR LOWER(COALESCE(user_agent,'')) LIKE '%yisouspider%' THEN '神马'
+            WHEN LOWER(COALESCE(referrer,'')) LIKE '%so.com%' OR LOWER(COALESCE(user_agent,'')) LIKE '%360spider%' THEN '360搜索'
+            WHEN LOWER(COALESCE(referrer,'')) LIKE '%sogou%' OR LOWER(COALESCE(user_agent,'')) LIKE '%sogou%' THEN '搜狗'
+            WHEN LOWER(COALESCE(referrer,'')) LIKE '%toutiao%' OR LOWER(COALESCE(user_agent,'')) LIKE '%bytedance%' THEN '头条'
+            ELSE '其他'
+        END";
+    }
+
+    private function getSearchEngines(int $siteId, string $range): array
+    {
+        [$rangeSql, $params] = $this->rangeClause($range);
+        $engineCase = $this->searchEngineCase();
+        $statement = $this->db->prepare(
+            "SELECT engine, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
+            FROM (
+                SELECT {$engineCase} as engine, ip_hash
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+            ) t
+            GROUP BY engine
+            HAVING engine != '其他'
+            ORDER BY views DESC"
+        );
+
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+        return $statement->fetchAll();
+    }
+
+    private function getExternalLinks(int $siteId, string $range): array
+    {
+        [$rangeSql, $params] = $this->rangeClause($range);
+        $site = $this->getSite($siteId);
+        $domain = $site['domain'] ?? '';
+
+        $statement = $this->db->prepare(
+            "SELECT host, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
+            FROM (
+                SELECT COALESCE(NULLIF(SUBSTRING_INDEX(SUBSTRING_INDEX(referrer, '/', 3), '//', -1), ''), '直接访问') as host, ip_hash
+                FROM pageviews
+                WHERE site_id = :site_id AND referrer IS NOT NULL AND referrer != '' AND is_bot = 0 {$rangeSql}
+            ) t
+            WHERE host != '直接访问'
+            GROUP BY host
+            ORDER BY views DESC
+            LIMIT 200"
+        );
+
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $rows = $statement->fetchAll();
+
+        $blocked = ['baidu', 'google', 'bing.', 'sm.cn', 'quark.cn', 'so.com', 'sogou', 'bytedance', 'toutiao'];
+        $filtered = [];
+        foreach ($rows as $row) {
+            $host = strtolower($row['host'] ?? '');
+            $skip = false;
+            foreach ($blocked as $needle) {
+                if (str_contains($host, $needle)) {
+                    $skip = true;
+                    break;
+                }
+            }
+            if ($domain && (str_ends_with($host, $domain) || str_ends_with($host, 'www.' . ltrim($domain, '.')))) {
+                $skip = true;
+            }
+            if (!$skip) {
+                $filtered[] = $row;
+            }
+        }
+
+        return $filtered;
     }
 
     private function getDeviceBreakdown(int $siteId, string $range): array
@@ -1021,7 +1139,48 @@ class Tracker
 
     public function deleteSite(int $siteId): void
     {
-        $statement = $this->db->prepare('DELETE FROM sites WHERE id = :id');
-        $statement->execute([':id' => $siteId]);
+        $this->db->beginTransaction();
+        try {
+            $deleteStats = $this->db->prepare('DELETE FROM pageviews WHERE site_id = :id');
+            $deleteStats->execute([':id' => $siteId]);
+
+            $shares = $this->getSharePages();
+            foreach ($shares as $share) {
+                $siteIds = array_filter($share['site_ids'], fn($sid) => (int) $sid !== (int) $siteId);
+                if (empty($siteIds)) {
+                    $del = $this->db->prepare('DELETE FROM share_pages WHERE id = :id');
+                    $del->execute([':id' => $share['id']]);
+                } elseif (count($siteIds) !== count($share['site_ids'])) {
+                    $upd = $this->db->prepare('UPDATE share_pages SET site_ids = :sites WHERE id = :id');
+                    $upd->execute([':sites' => json_encode(array_values($siteIds)), ':id' => $share['id']]);
+                }
+            }
+
+            $statement = $this->db->prepare('DELETE FROM sites WHERE id = :id');
+            $statement->execute([':id' => $siteId]);
+            $this->db->commit();
+        } catch (Throwable $e) {
+            $this->db->rollBack();
+            throw $e;
+        }
+    }
+
+    private function maybeCleanupRetention(): void
+    {
+        if ($this->retentionDays <= 0) {
+            return;
+        }
+
+        $key = 'retention:cleanup:' . date('Y-m-d');
+        $hour = (int) date('G');
+        if ($hour < $this->cleanupHour) {
+            return;
+        }
+
+        if ($this->redis->setnx($key, '1')) {
+            $this->redis->expire($key, 86400);
+            $stmt = $this->db->prepare('DELETE FROM pageviews WHERE occurred_at < DATE_SUB(NOW(), INTERVAL :days DAY)');
+            $stmt->execute([':days' => $this->retentionDays]);
+        }
     }
 }

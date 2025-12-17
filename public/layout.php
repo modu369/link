@@ -102,10 +102,18 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
                 'title' => '功能',
                 'items' => [
                     ['key' => 'overview', 'label' => '总览', 'href' => "/overview.php?site={$siteId}&range={$range}"],
+                    ['key' => 'trend', 'label' => '趋势分析', 'href' => "/trend.php?site={$siteId}&range={$range}"],
                     ['key' => 'content', 'label' => '内容', 'href' => "/content.php?site={$siteId}&range={$range}"],
-                    ['key' => 'keyword', 'label' => '关键词', 'href' => "/keyword.php?site={$siteId}&range={$range}"],
                     ['key' => 'mobile', 'label' => '移动端', 'href' => "/mobile.php?site={$siteId}&range={$range}"],
                     ['key' => 'bot', 'label' => '蜘蛛', 'href' => "/bot.php?site={$siteId}&range={$range}"],
+                ],
+            ],
+            'refer' => [
+                'title' => '来路分析',
+                'items' => [
+                    ['key' => 'search_engine', 'label' => '搜索引擎', 'href' => "/search_engine.php?site={$siteId}&range={$range}"],
+                    ['key' => 'keyword', 'label' => '关键词', 'href' => "/keyword.php?site={$siteId}&range={$range}"],
+                    ['key' => 'external', 'label' => '外部链接', 'href' => "/external.php?site={$siteId}&range={$range}"],
                 ],
             ],
             'visitor' => [
