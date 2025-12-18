@@ -21,6 +21,13 @@ class IpResolver
         }
 
         // 支持用户自行通过 Composer 安装 ipip/db 组件
+        if (!class_exists('\\IPIP\\DB\\Reader')) {
+            $local = __DIR__ . '/IpipReader.php';
+            if (is_file($local)) {
+                require_once $local;
+            }
+        }
+
         if (class_exists('\\IPIP\\DB\\Reader')) {
             try {
                 $this->reader = new \IPIP\DB\Reader($this->dbPath);
