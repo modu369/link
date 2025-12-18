@@ -816,12 +816,7 @@ class Tracker
     {
         [$start, $end] = $this->visitFiltersWindow($filters);
 
-        $conditions = [
-            'p.site_id = :site_id',
-            'p.is_bot = 0',
-            'p.session_id IS NOT NULL',
-            'p.occurred_at BETWEEN :start AND :end'
-        ];
+        $conditions = ['1=1'];
         $params = [
             ':site_id' => $siteId,
             ':start' => $start->format('Y-m-d H:i:s'),
@@ -883,12 +878,7 @@ class Tracker
     {
         [$start, $end] = $this->visitFiltersWindow($filters);
 
-        $conditions = [
-            'p.site_id = :site_id',
-            'p.is_bot = 0',
-            'p.session_id IS NOT NULL',
-            'p.occurred_at BETWEEN :start AND :end'
-        ];
+        $conditions = ['1=1'];
         $params = [
             ':site_id' => $siteId,
             ':start' => $start->format('Y-m-d H:i:s'),
