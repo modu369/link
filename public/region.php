@@ -49,7 +49,7 @@ render_topbar($branding);
             </section>
 
             <section class="card">
-                <div class="section-title"><h3>中国地域包</h3><span class="muted">省级视图，按 IP 计</span></div>
+                <div class="section-title"><h3>中国区域</h3><span class="muted">省级视图，按 IP 计</span></div>
                 <div id="chinaRegionMap" style="width:100%;height:420px;margin-bottom:12px;"></div>
                 <div class="table-wrap">
                     <table>

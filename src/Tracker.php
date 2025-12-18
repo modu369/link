@@ -1200,13 +1200,26 @@ class Tracker
         }
 
         $meta = $this->ipResolver->resolve($ip);
+        if (empty($meta)) {
+            $fallback = [
+                'country_name' => '未知',
+                'region_name' => '未知',
+                'city_name' => '',
+                'isp_domain' => '未知运营商',
+                'country_code' => '',
+                'continent_code' => '',
+            ];
+            $this->redis->setex($cacheKey, 604800, json_encode($fallback, JSON_UNESCAPED_UNICODE));
+            return $fallback;
+        }
+
         $sanitized = [
-            'country_name' => $meta['country_name'] ?? '未知',
-            'region_name' => $meta['region_name'] ?? '未知',
-            'city_name' => $meta['city_name'] ?? '',
-            'isp_domain' => $meta['isp_domain'] ?? '未知运营商',
-            'country_code' => $meta['country_code'] ?? '',
-            'continent_code' => $meta['continent_code'] ?? '',
+            'country_name' => trim($meta['country_name'] ?? '') ?: '未知',
+            'region_name' => trim($meta['region_name'] ?? '') ?: '未知',
+            'city_name' => trim($meta['city_name'] ?? ''),
+            'isp_domain' => trim($meta['isp_domain'] ?? '') ?: '未知运营商',
+            'country_code' => trim($meta['country_code'] ?? ''),
+            'continent_code' => trim($meta['continent_code'] ?? ''),
         ];
 
         $this->redis->setex($cacheKey, 604800, json_encode($sanitized, JSON_UNESCAPED_UNICODE));

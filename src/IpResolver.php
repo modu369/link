@@ -1,88 +1,84 @@
 <?php
+declare(strict_types=1);
 
-/**
- * IP 解析器：优先使用 QQWry IPIP.ipdb，如果未提供则回退到简易网段推断。
- */
+use IPIP\DB\Reader;
+
 class IpResolver
 {
-    private ?object $reader = null;
-    private ?string $dbPath = null;
+    private ?Reader $reader = null;
+
+    /** 这些值在 qqwry/ipdb 中表示“无有效地理意义” */
+    private const INVALID_COUNTRIES = [
+        '',
+        '未知',
+        '保留地址',
+    ];
+
+    private const INVALID_ISP = [
+        '',
+        'IETF',
+    ];
 
     public function __construct(?string $dbPath = null)
     {
-        $this->dbPath = $dbPath && is_file($dbPath) ? $dbPath : null;
-        $this->bootReader();
+        if ($dbPath && is_file($dbPath)) {
+            $this->bootReader($dbPath);
+        }
     }
 
-    private function bootReader(): void
+    private function bootReader(string $dbPath): void
     {
-        if (!$this->dbPath) {
-            return;
+        if (!class_exists(Reader::class)) {
+            require_once __DIR__ . '/IpipReader.php';
         }
 
-        // 支持用户自行通过 Composer 安装 ipip/db 组件
-        if (!class_exists('\\IPIP\\DB\\Reader')) {
-            $local = __DIR__ . '/IpipReader.php';
-            if (is_file($local)) {
-                require_once $local;
-            }
-        }
-
-        if (class_exists('\\IPIP\\DB\\Reader')) {
-            try {
-                $this->reader = new \IPIP\DB\Reader($this->dbPath);
-            } catch (\Throwable $e) {
-                $this->reader = null;
-            }
+        try {
+            $this->reader = new Reader($dbPath);
+        } catch (\Throwable $e) {
+            $this->reader = null;
         }
     }
 
+    /**
+     * 解析 IP
+     * - 成功：返回字段数组
+     * - 无效 / 保留段：返回 []
+     */
     public function resolve(?string $ip): array
     {
         if (!$ip || filter_var($ip, FILTER_VALIDATE_IP) === false) {
             return [];
         }
 
-        // 优先走官方 Reader
-        if ($this->reader) {
-            try {
-                $data = $this->reader->findMap($ip, 'CN');
-                if (is_array($data)) {
-                    // 简单校验：字段存在且不是元数据内容
-                    $country = $data['country_name'] ?? '';
-                    if ($country === '' || stripos($country, 'ip_version') !== false || stripos($country, 'node_count') !== false) {
-                        return [];
-                    }
-                    return $data;
-                }
-            } catch (\Throwable $e) {
-                // ignore and fallback
-            }
+        if (!$this->reader) {
+            return [];
         }
 
-        // 简易回退：仅通过私网 / 本地网段推断
-        if (str_starts_with($ip, '10.') || str_starts_with($ip, '192.168.') || str_starts_with($ip, '172.')) {
-            return [
-                'country_name' => '内网',
-                'region_name' => '内网',
-                'city_name' => '',
-                'isp_domain' => '内网',
-                'country_code' => '',
-                'continent_code' => '',
-            ];
+        try {
+            $data = $this->reader->findMap($ip, 'CN');
+        } catch (\Throwable $e) {
+            return [];
         }
 
-        if (str_starts_with($ip, '127.')) {
-            return [
-                'country_name' => '本地回环',
-                'region_name' => '本地回环',
-                'city_name' => '',
-                'isp_domain' => '本地',
-                'country_code' => '',
-                'continent_code' => '',
-            ];
+        if (empty($data)) {
+            return [];
         }
 
-        return [];
+        // ===== 业务级校验 =====
+        $country = trim($data['country_name'] ?? '');
+        $isp     = trim($data['isp_domain'] ?? '');
+
+        // 国家无意义
+        if (in_array($country, self::INVALID_COUNTRIES, true)) {
+            return [];
+        }
+
+        // ISP 明确是 IETF（保留/协议段）
+        if ($isp !== '' && in_array($isp, self::INVALID_ISP, true)) {
+            return [];
+        }
+
+        return $data;
     }
 }
+
