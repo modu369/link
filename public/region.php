@@ -77,10 +77,28 @@ render_topbar($branding);
                     const worldEl = document.getElementById('worldMap');
                     if (worldEl) {
                         const worldChart = echarts.init(worldEl);
-                        const worldData = (countries || []).map(r => ({ name: r.country || '未知', value: Number(r.ips || 0) }));
+                        const normalizeCountry = (r) => {
+                            const code = String(r.country_code || '').toUpperCase();
+                            const name = r.country || '';
+                            if (code === 'CN' || name.includes('中国')) return 'China';
+                            if (code === 'US' || name.includes('美国')) return 'United States';
+                            if (code === 'RU' || name.includes('俄罗斯')) return 'Russia';
+                            if (code === 'JP' || name.includes('日本')) return 'Japan';
+                            if (code === 'KR' || name.includes('韩国')) return 'South Korea';
+                            if (code === 'HK' || name.includes('香港')) return 'Hong Kong';
+                            if (code === 'TW' || name.includes('台湾')) return 'Taiwan';
+                            return name || code || '未知';
+                        };
+                        const worldData = (countries || []).map(r => ({
+                            name: normalizeCountry(r),
+                            value: Number(r.ips || 0)
+                        }));
                         const maxWorld = worldData.reduce((m, r) => Math.max(m, r.value || 0), 0) || 1;
                         worldChart.setOption({
-                            tooltip: { trigger: 'item', formatter: '{b}<br/>IP: {c}' },
+                            tooltip: {
+                                trigger: 'item',
+                                formatter: (p) => `${p.name}<br/>IP: ${Number(p.value || 0)}`
+                            },
                             visualMap: {
                                 min: 0,
                                 max: maxWorld,

@@ -1629,10 +1629,13 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT COALESCE(NULLIF(country_name,''), '未知') as country, COUNT(DISTINCT ip_hash) as ips
+            "SELECT
+                COALESCE(NULLIF(country_name,''), '未知') as country,
+                COALESCE(NULLIF(country_code,''), '') as country_code,
+                COUNT(DISTINCT ip_hash) as ips
             FROM pageviews
             WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY country
+            GROUP BY country, country_code
             ORDER BY ips DESC
             LIMIT {$limit}"
         );
