@@ -38,7 +38,7 @@ render_topbar($branding);
     .trend-toggle button { border:1px solid var(--border); background:#deedfb; color:#1690ff; padding:6px 10px; border-radius:8px; cursor:pointer; font-weight:700; }
     .trend-toggle button.active { background:#1690ff; color:#fff; }
     .browser-pie {
-        max-width: 320px;
+        max-width: 420px;
         margin: 0 auto;
         display: flex;
         justify-content: center;
@@ -93,8 +93,8 @@ render_topbar($branding);
                 <section class="card">
                     <div class="section-title"><h3>访问终端设备（IP）</h3><a class="filter-btn" href="/env.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a></div>
                     <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;">
-                        <div style="flex:1;min-width:240px;">
-                            <canvas id="devicePie" height="180"></canvas>
+                        <div style="flex:1;min-width:240px;max-width:240px;margin:0 auto;">
+                            <canvas id="devicePie" height="130"></canvas>
                         </div>
                         <div style="flex:1;min-width:220px;" class="metric-row">
                             <div class="metric"><div class="muted">电脑端 IP</div><div class="value"><?= (int) $data['devices']['desktop']['ips'] ?></div></div>
@@ -102,22 +102,22 @@ render_topbar($branding);
                         </div>
                     </div>
                     <div class="section-title" style="margin-top:12px;"><h4 style="margin:0;">浏览器分布（IP）</h4></div>
-                    <div class="chart-wrap browser-pie"><canvas id="browserBar" height="480" style="display: block; box-sizing: border-box; height: 320px; width: 320px;" width="480"></canvas></div>
+                    <div class="chart-wrap browser-pie"><canvas id="browserBar" height="576" style="display: block; box-sizing: border-box; height: 384px; width: 384px;" width="576"></canvas></div>
                 </section>
 
                 <section class="card">
                     <div class="section-title"><h3>新老访客</h3><a class="filter-btn" href="/audience.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a></div>
                     <div class="metric-row">
-                        <div class="metric"><div class="muted">新访客</div><div class="value"><?= (int) $data['new_vs_returning']['new'] ?></div></div>
-                        <div class="metric"><div class="muted">回访访客</div><div class="value"><?= (int) $data['new_vs_returning']['returning'] ?></div></div>
+                        <div class="metric"><div class="muted">新访客 (IP)</div><div class="value"><?= (int) $data['new_vs_returning']['new_ips'] ?></div></div>
+                        <div class="metric"><div class="muted">回访访客 (IP)</div><div class="value"><?= (int) $data['new_vs_returning']['returning_ips'] ?></div></div>
                     </div>
-                    <div class="section-title" style="margin-top:12px;"><h4 style="margin:0;">入口页（前10名）</h4><a class="filter-btn" href="/entry.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a></div>
+                    <div class="section-title" style="margin-top:12px;"><h4 style="margin:0;">入口页（前15名）</h4><a class="filter-btn" href="/entry.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a></div>
                     <div class="table-wrap">
                         <table>
-                            <thead><tr><th>入口页</th><th>PV</th></tr></thead>
+                            <thead><tr><th>入口页</th><th>IP</th></tr></thead>
                             <tbody>
                             <?php foreach ($entryPages as $row): ?>
-                                <tr><td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['views'] ?></td></tr>
+                                <tr><td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['ips'] ?></td></tr>
                             <?php endforeach; ?>
                             </tbody>
                         </table>
@@ -150,14 +150,14 @@ render_topbar($branding);
                         <h3>地域分布</h3>
                         <a class="filter-btn" href="/region.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
                     </div>
+                    <div id="chinaMap" style="width:100%;height:360px;margin-bottom:12px;"></div>
                     <div class="table-wrap">
                         <table>
-                            <thead><tr><th>地域</th><th>PV</th><th>IP</th></tr></thead>
+                            <thead><tr><th>地域</th><th>IP</th></tr></thead>
                             <tbody>
                             <?php foreach ($regions as $row): ?>
                                 <tr>
                                     <td><?= htmlspecialchars($row['region'], ENT_QUOTES, 'UTF-8') ?></td>
-                                    <td><?= (int) $row['views'] ?></td>
                                     <td><?= (int) $row['ips'] ?></td>
                                 </tr>
                             <?php endforeach; ?>
@@ -207,6 +207,8 @@ render_topbar($branding);
                 </section>
             </div>
 
+            <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+            <script src="https://fastly.jsdelivr.net/npm/echarts@5/map/js/china.js"></script>
             <script>
                 const trendData = <?= json_encode($trend, JSON_UNESCAPED_UNICODE) ?>;
                 const ctxDaily = document.getElementById('dailyTrendChart');
@@ -269,6 +271,41 @@ render_topbar($branding);
 
                 renderTrend('ips');
 
+                const chinaRows = <?= json_encode($data['china_map'] ?? [], JSON_UNESCAPED_UNICODE) ?>;
+                const chinaEl = document.getElementById('chinaMap');
+                if (chinaEl && window.echarts) {
+                    const chinaChart = echarts.init(chinaEl);
+                    const mapData = (chinaRows || []).map(row => ({
+                        name: row.region || '未知',
+                        value: Number(row.ips || 0),
+                    }));
+                    const maxVal = mapData.reduce((m, r) => Math.max(m, r.value || 0), 0) || 1;
+                    chinaChart.setOption({
+                        tooltip: {
+                            trigger: 'item',
+                            formatter: '{b}<br/>IP: {c}'
+                        },
+                        visualMap: {
+                            min: 0,
+                            max: maxVal,
+                            left: 'left',
+                            bottom: '5%',
+                            text: ['多', '少'],
+                            inRange: { color: ['#deedfb', '#1690ff'] },
+                            calculable: true
+                        },
+                        series: [{
+                            name: '地域分布',
+                            type: 'map',
+                            map: 'china',
+                            roam: false,
+                            data: mapData,
+                            emphasis: { label: { show: true } }
+                        }]
+                    });
+                    window.addEventListener('resize', () => chinaChart.resize());
+                }
+
                 const pieOptions = {
                     plugins: {
                         legend: { position: 'bottom' },
@@ -292,10 +329,10 @@ render_topbar($branding);
                 const ctxDevice = document.getElementById('devicePie');
                 if (ctxDevice && window.Chart) {
                     new Chart(ctxDevice, {
-                        type:'pie',
+                        type:'doughnut',
                         data:{
                             labels: deviceData.map(d=>d.label),
-                            datasets:[{data: deviceData.map(d=>d.value), backgroundColor: deviceData.map(d=>d.color)}]
+                            datasets:[{data: deviceData.map(d=>d.value), backgroundColor: deviceData.map(d=>d.color), cutout:'60%'}]
                         },
                         options: pieOptions
                     });

@@ -173,13 +173,14 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
     <?php
 }
 
-function render_range_filters(array $allowedRanges, string $range, string $page, int $siteId): void
+function render_range_filters(array $allowedRanges, string $range, string $page, int $siteId, array $extra = []): void
 {
     ?>
     <div class="filters">
         <span class="muted" style="font-size:13px;">时间范围</span>
         <?php foreach ($allowedRanges as $r): ?>
-            <a class="filter-btn <?= $range === $r ? 'active' : '' ?>" href="/<?= htmlspecialchars($page, ENT_QUOTES, 'UTF-8') ?>.php?site=<?= (int) $siteId ?>&range=<?= $r ?>">
+            <?php $qs = http_build_query(array_merge(['site' => (int)$siteId, 'range' => $r], $extra)); ?>
+            <a class="filter-btn <?= $range === $r ? 'active' : '' ?>" href="/<?= htmlspecialchars($page, ENT_QUOTES, 'UTF-8') ?>.php?<?= $qs ?>">
                 <?= ['today' => '今日', 'yesterday' => '昨日', '7d' => '近7天', '30d' => '近30天'][$r] ?>
             </a>
         <?php endforeach; ?>

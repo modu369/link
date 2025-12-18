@@ -24,12 +24,12 @@ render_topbar($branding);
             </section>
 
             <section class="card">
-                <div class="section-title"><h3>设备类别</h3><span class="muted">按 PV / IP</span></div>
+                <div class="section-title"><h3>设备类别</h3><span class="muted">按 IP 聚合</span></div>
                 <table>
-                    <thead><tr><th>类别</th><th>PV</th><th>IP</th></tr></thead>
+                    <thead><tr><th>类别</th><th>IP</th></tr></thead>
                     <tbody>
-                        <tr><td>电脑端</td><td><?= (int) $data['devices']['desktop']['views'] ?></td><td><?= (int) $data['devices']['desktop']['ips'] ?></td></tr>
-                        <tr><td>移动端</td><td><?= (int) $data['devices']['mobile']['views'] ?></td><td><?= (int) $data['devices']['mobile']['ips'] ?></td></tr>
+                        <tr><td>电脑端</td><td><?= (int) $data['devices']['desktop']['ips'] ?></td></tr>
+                        <tr><td>移动端</td><td><?= (int) $data['devices']['mobile']['ips'] ?></td></tr>
                     </tbody>
                 </table>
                 <div style="margin-top:14px; display:flex; justify-content:center;">

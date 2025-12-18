@@ -10,6 +10,10 @@ return [
         'port' => getenv('REDIS_PORT') ?: 6379,
         'prefix' => getenv('REDIS_PREFIX') ?: 'tracker:',
     ],
+    'ipdb' => [
+        // QQWry IPIP.net 格式库路径，可替换为实际部署路径
+        'path' => getenv('IPDB_PATH') ?: __DIR__ . '/../data/qqwry.ipdb',
+    ],
     'app' => [
         'base_url' => getenv('APP_BASE_URL') ?: 'http://localhost',
         'admin' => [

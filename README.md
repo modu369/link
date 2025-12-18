@@ -46,6 +46,11 @@
 - `schema.sql`：数据库结构。
 - `nginx.conf`：示例 Nginx 配置（根目录 `/var/www/html/public`，PHP-FPM 监听 `php-fpm:9000`）。
 
+## IP 位置与运营商识别
+- 系统支持使用 **纯真 QQWry IPIP.ipdb** 做省份 / 国家和运营商解析。默认读取 `data/qqwry.ipdb`，可通过环境变量或 `config/config.php` 的 `ipdb.path` 指定。
+- 推荐通过 Composer 引入官方 `ipip/db` Reader（或在服务器上提供同名类），系统会自动调用；若缺失则回退到基础网段提示，地图/地域统计将退化为“未知”。
+- 新增字段：`country_name`、`region_name`、`city_name`、`isp_domain`、`country_code`、`continent_code`，并附带国家/省份/运营商索引，已有库可运行后自动迁移。
+
 ## 安全与隐私提示
 - 访客 IP 会进行 SHA-256 哈希后再存储，示例代码仍需根据合规要求补充匿名化、隐私政策展示等内容。
 - 上线前请为接口增加认证、速率限制、CSP 等安全措施。
