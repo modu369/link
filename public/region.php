@@ -77,17 +77,34 @@ render_topbar($branding);
                     const worldEl = document.getElementById('worldMap');
                     if (worldEl) {
                         const worldChart = echarts.init(worldEl);
+                        const isoNameMap = {
+                            CN:'China', US:'United States', RU:'Russia', JP:'Japan', KR:'South Korea',
+                            HK:'Hong Kong', TW:'Taiwan', GB:'United Kingdom', DE:'Germany', FR:'France',
+                            ES:'Spain', IT:'Italy', IN:'India', BR:'Brazil', AU:'Australia', CA:'Canada',
+                            SG:'Singapore', TH:'Thailand', VN:'Vietnam', MY:'Malaysia', ID:'Indonesia',
+                            PH:'Philippines', PK:'Pakistan', SA:'Saudi Arabia', AE:'United Arab Emirates',
+                            TR:'Turkey', IR:'Iran', MX:'Mexico', AR:'Argentina', CO:'Colombia', CL:'Chile',
+                            PE:'Peru', ZA:'South Africa', EG:'Egypt', NG:'Nigeria', KE:'Kenya', UA:'Ukraine',
+                            PL:'Poland', NL:'Netherlands', BE:'Belgium', SE:'Sweden', NO:'Norway', DK:'Denmark',
+                            FI:'Finland', CH:'Switzerland', AT:'Austria', CZ:'Czechia', HU:'Hungary', RO:'Romania',
+                            GR:'Greece', PT:'Portugal', IL:'Israel', NZ:'New Zealand', IE:'Ireland', QA:'Qatar',
+                            KW:'Kuwait', BD:'Bangladesh', LK:'Sri Lanka', HK:'Hong Kong', MO:'Macau'
+                        };
+                        const zhNameMap = {
+                            '中国':'China','美国':'United States','俄罗斯':'Russia','日本':'Japan','韩国':'South Korea',
+                            '英国':'United Kingdom','德国':'Germany','法国':'France','西班牙':'Spain','意大利':'Italy',
+                            '加拿大':'Canada','澳大利亚':'Australia','印度':'India','新加坡':'Singapore',
+                            '泰国':'Thailand','越南':'Vietnam','马来西亚':'Malaysia','印尼':'Indonesia','菲律宾':'Philippines',
+                            '巴西':'Brazil','墨西哥':'Mexico','阿联酋':'United Arab Emirates','土耳其':'Turkey',
+                            '沙特阿拉伯':'Saudi Arabia','南非':'South Africa','埃及':'Egypt','尼日利亚':'Nigeria'
+                        };
                         const normalizeCountry = (r) => {
                             const code = String(r.country_code || '').toUpperCase();
-                            const name = r.country || '';
-                            if (code === 'CN' || name.includes('中国')) return 'China';
-                            if (code === 'US' || name.includes('美国')) return 'United States';
-                            if (code === 'RU' || name.includes('俄罗斯')) return 'Russia';
-                            if (code === 'JP' || name.includes('日本')) return 'Japan';
-                            if (code === 'KR' || name.includes('韩国')) return 'South Korea';
-                            if (code === 'HK' || name.includes('香港')) return 'Hong Kong';
-                            if (code === 'TW' || name.includes('台湾')) return 'Taiwan';
-                            return name || code || '未知';
+                            const raw = (r.country || '').trim();
+                            if (code && isoNameMap[code]) return isoNameMap[code];
+                            if (raw && zhNameMap[raw]) return zhNameMap[raw];
+                            if (code && code.length === 2) return isoNameMap[code] ?? raw || code;
+                            return raw || 'Unknown';
                         };
                         const worldData = (countries || []).map(r => ({
                             name: normalizeCountry(r),
