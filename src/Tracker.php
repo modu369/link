@@ -871,7 +871,9 @@ class Tracker
                 ) t";
 
         $stmt = $this->db->prepare($sql);
-        $stmt->execute($this->filterParams($sql, $params));
+        $filtered = $this->filterParams($sql, $params);
+        $filtered[':site_id'] = $siteId;
+        $stmt->execute($filtered);
         $row = $stmt->fetch();
 
         return (int)($row['total'] ?? 0);
@@ -954,7 +956,9 @@ class Tracker
                 LIMIT 50000";
 
         $stmt = $this->db->prepare($sql);
-        $stmt->execute(array_merge([':site_id' => $siteId], $this->filterParams($sql, $params)));
+        $filtered = $this->filterParams($sql, $params);
+        $filtered[':site_id'] = $siteId;
+        $stmt->execute($filtered);
 
         return $stmt->fetchAll();
     }
