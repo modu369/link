@@ -19,22 +19,9 @@ try {
     $loginError = '服务暂不可用，请稍后再试';
 }
 
-$sessionEntry = $_SESSION['login_entry_token'] ?? null;
-if ($sessionEntry && hash_equals($loginEntry, $sessionEntry)) {
+$candidate = trim($_GET['entry'] ?? '');
+if ($candidate !== '' && hash_equals($loginEntry, $candidate)) {
     $entryVerified = true;
-}
-
-if ($sessionEntry && !hash_equals($loginEntry, $sessionEntry)) {
-    unset($_SESSION['login_entry_token'], $_SESSION['login_entry_verified']);
-}
-
-if (!$entryVerified) {
-    $candidate = trim($_GET['entry'] ?? '');
-    if ($candidate !== '' && hash_equals($loginEntry, $candidate)) {
-        $_SESSION['login_entry_verified'] = true;
-        $_SESSION['login_entry_token'] = $loginEntry;
-        $entryVerified = true;
-    }
 }
 
 if (($_GET['action'] ?? '') === 'logout') {
