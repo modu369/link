@@ -160,6 +160,10 @@ class Tracker
         $path = $parsedUrl['path'];
         $host = $parsedUrl['host'];
         $canonicalHost = $parsedUrl['canonical'];
+        $allowedDomains = $this->getAllSiteDomains((int) $site['id']);
+        if ($canonicalHost && !empty($allowedDomains) && !in_array($canonicalHost, $allowedDomains, true)) {
+            return;
+        }
         $ip = $payload['ip'] ?? '';
         $ipHash = $ip ? hash('sha256', $ip) : null;
         $uniqueKey = sprintf('unique:%s:%s', $site['id'], date('Y-m-d'));
