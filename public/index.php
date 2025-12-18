@@ -24,6 +24,10 @@ if ($sessionEntry && hash_equals($loginEntry, $sessionEntry)) {
     $entryVerified = true;
 }
 
+if ($sessionEntry && !hash_equals($loginEntry, $sessionEntry)) {
+    unset($_SESSION['login_entry_token'], $_SESSION['login_entry_verified']);
+}
+
 if (!$entryVerified) {
     $candidate = trim($_GET['entry'] ?? '');
     if ($candidate !== '' && hash_equals($loginEntry, $candidate)) {

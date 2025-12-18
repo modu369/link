@@ -17,8 +17,10 @@ $brandingFallback = $config['branding'] ?? [
 $branding = $tracker->getBrandingSettings($brandingFallback);
 
 if (($_GET['action'] ?? '') === 'logout') {
+    $loginEntry = $tracker->getLoginEntry();
     session_destroy();
-    header('Location: /index.php');
+    $redirectEntry = $loginEntry !== '' ? '?entry=' . urlencode($loginEntry) : '';
+    header('Location: /index.php' . $redirectEntry);
     exit;
 }
 
