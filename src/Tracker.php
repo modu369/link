@@ -712,7 +712,7 @@ class Tracker
             ORDER BY ips DESC
             LIMIT 200"
         );
-        $rowsStmt->execute(array_merge([':site_id' => $siteId], $params));
+        $rowsStmt->execute($this->filterParams($rowsStmt->queryString, array_merge([':site_id' => $siteId], $params)));
         $rows = $rowsStmt->fetchAll();
 
         $filtered = [];

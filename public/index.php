@@ -68,7 +68,7 @@ if ($_SESSION['admin_logged_in'] ?? false) {
         p { margin: 0 0 24px; color: #475569; }
         label { display: block; margin-bottom: 6px; color: #0f172a; font-weight: 600; }
         input { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #e2e8f0; font-size: 14px; }
-        button { margin-top: 14px; width: 100%; padding: 12px; border: none; background: #0f172a; color: #fff; border-radius: 8px; font-weight: 700; cursor: pointer; }
+        button { margin-top: 14px; width: 100%; padding: 12px; border: none; background: #1690ff; color: #fff; border-radius: 8px; font-weight: 700; cursor: pointer; }
         .error { color: #ef4444; margin-bottom: 8px; }
     </style>
 </head>

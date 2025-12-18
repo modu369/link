@@ -130,6 +130,7 @@ render_topbar($branding);
                                 map: 'world',
                                 roam: true,
                                 emphasis: { label: { show: false } },
+                                nameMap: isoNameMap,
                                 data: worldData
                             }]
                         });
