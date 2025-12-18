@@ -22,6 +22,7 @@ class Tracker
         $this->retentionDays = max(0, (int) ($this->retentionDefaults['days'] ?? 0));
         $this->cleanupHour = min(23, max(0, (int) ($this->retentionDefaults['cleanup_hour'] ?? 3)));
         $this->ipdbPath = $this->options['ipdb']['path'] ?? (__DIR__ . '/../data/qqwry.ipdb');
+        $this->ensureIpDbExists();
         $this->ipResolver = new IpResolver($this->ipdbPath);
 
         $this->ensureSiteDomainSchema();
@@ -602,7 +603,7 @@ class Tracker
             ORDER BY ips DESC
             LIMIT 200"
         );
-        $rowsStmt->execute(array_merge([':site_id' => $siteId], $params));
+        $rowsStmt->execute($this->filterParams($rowsStmt->queryString, array_merge([':site_id' => $siteId], $params)));
         $rows = $rowsStmt->fetchAll();
 
         return [
@@ -871,7 +872,7 @@ class Tracker
                 ) t";
 
         $stmt = $this->db->prepare($sql);
-        $stmt->execute($params);
+        $stmt->execute($this->filterParams($sql, $params));
         $row = $stmt->fetch();
 
         return (int)($row['total'] ?? 0);
@@ -1283,6 +1284,28 @@ class Tracker
         $ensureIndex('idx_site_country', 'site_id, country_name, occurred_at');
         $ensureIndex('idx_site_region', 'site_id, region_name, occurred_at');
         $ensureIndex('idx_site_isp', 'site_id, isp_domain, occurred_at');
+    }
+
+    private function ensureIpDbExists(): void
+    {
+        $dir = dirname($this->ipdbPath);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0777, true);
+        }
+
+        if (is_file($this->ipdbPath) && filesize($this->ipdbPath) > 0) {
+            return;
+        }
+
+        $url = 'https://raw.githubusercontent.com/nmgliangwei/qqwry.ipdb/main/qqwry.ipdb';
+        try {
+            $data = @file_get_contents($url);
+            if ($data !== false && strlen($data) > 1024) {
+                @file_put_contents($this->ipdbPath, $data);
+            }
+        } catch (\Throwable $e) {
+            // ignore download failure; resolver will fallback
+        }
     }
 
     private function ensureShareSchema(): void
@@ -2158,5 +2181,21 @@ class Tracker
             $stmt = $this->db->prepare('DELETE FROM pageviews WHERE occurred_at < DATE_SUB(NOW(), INTERVAL :days DAY)');
             $stmt->execute([':days' => $this->retentionDays]);
         }
+    }
+
+    /**
+     * 仅保留当前 SQL 中出现的命名参数，避免出现多余参数导致的 HY093 错误
+     */
+    private function filterParams(string $sql, array $params): array
+    {
+        preg_match_all('/:\\w+/', $sql, $matches);
+        $allowed = array_unique($matches[0] ?? []);
+        $filtered = [];
+        foreach ($allowed as $key) {
+            if (array_key_exists($key, $params)) {
+                $filtered[$key] = $params[$key];
+            }
+        }
+        return $filtered;
     }
 }

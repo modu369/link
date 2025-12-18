@@ -63,7 +63,7 @@ render_topbar($branding);
                         <button data-metric="bounce_rate">跳出率</button>
                     </div>
                 </div>
-                <canvas id="pageBar" height="320"></canvas>
+                <canvas id="pageBar" height="260" style="max-height:500px;"></canvas>
             </section>
 
             <section class="card">
