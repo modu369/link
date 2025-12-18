@@ -26,9 +26,9 @@ render_topbar($branding);
     .summary-info { display:flex; flex-direction:column; gap:2px; }
     .summary-info .label { color:var(--muted); font-size:13px; }
     .summary-info .val { font-size:20px; font-weight:800; }
-    .filters { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:10px; }
-    .filters label { font-size:12px; color:var(--muted); margin-bottom:4px; display:block; }
-    .filters input, .filters select { width:100%; padding:8px 10px; border:1px solid var(--border); border-radius:8px; }
+    .filters { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; }
+    .filters label { font-size:12px; color:var(--muted); display:flex; flex-direction:column; gap:4px; min-width:120px; }
+    .filters input, .filters select { width:180px; max-width:220px; padding:8px 10px; border:1px solid var(--border); border-radius:8px; }
     .visit-table { width:100%; border-collapse: collapse; }
     .visit-table th, .visit-table td { border-bottom:1px solid var(--border); padding:8px 6px; text-align:left; }
     .visit-table th { background:#f8fbff; color:#0f172a; position:sticky; top:0; }

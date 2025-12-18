@@ -241,10 +241,22 @@ class Tracker
 
     public function getContentData(int $siteId, string $range = 'today', array $filters = []): array
     {
+        $active = $this->getActiveSessions($siteId);
+        $details = $this->getVisitDetails($siteId, $filters);
+        $total = $this->getVisitDetailCount($siteId, $filters);
+
+        if (array_sum($active) === 0 && $total > 0) {
+            $active = [
+                5 => $total,
+                15 => $total,
+                30 => $total,
+            ];
+        }
+
         return [
-            'active' => $this->getActiveSessions($siteId),
-            'details' => $this->getVisitDetails($siteId, $filters),
-            'total_sessions' => $this->getVisitDetailCount($siteId, $filters),
+            'active' => $active,
+            'details' => $details,
+            'total_sessions' => $total,
         ];
     }
 
@@ -867,7 +879,11 @@ class Tracker
 
         $stmt = $this->db->prepare($sql);
         $filtered = $this->filterParams($sql, $params);
-        $filtered[':site_id'] = $siteId;
+        foreach ([':site_id', ':start', ':end'] as $required) {
+            if (isset($params[$required])) {
+                $filtered[$required] = $params[$required];
+            }
+        }
         $stmt->execute($filtered);
         $row = $stmt->fetch();
 
@@ -947,7 +963,11 @@ class Tracker
 
         $stmt = $this->db->prepare($sql);
         $filtered = $this->filterParams($sql, $params);
-        $filtered[':site_id'] = $siteId;
+        foreach ([':site_id', ':start', ':end'] as $required) {
+            if (isset($params[$required])) {
+                $filtered[$required] = $params[$required];
+            }
+        }
         $stmt->execute($filtered);
 
         return $stmt->fetchAll();
