@@ -56,9 +56,9 @@ function render_head(string $title = '统计后台'): void
             .filters { display: flex; gap: 10px; align-items: center; justify-content: flex-end; }
             .filter-btn { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #deedfb; cursor: pointer; font-weight: 600; color: #1690ff; text-decoration: none; }
             .filter-btn.active { background: #1690ff; color: #fff; border-color: #1690ff; box-shadow: 0 8px 18px rgba(22,144,255,0.18); }
-            .metric-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
-            .metric { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card-gradient); color: #0f172a; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); }
-            .metric .value { font-size: 22px; font-weight: 700; }
+            .metric-row { display: flex; flex-wrap: wrap; gap: 10px; }
+            .metric { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card-gradient); color: #0f172a; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); flex: 1 1 170px; min-width: 160px; box-sizing: border-box; }
+            .metric .value { font-size: 12px; font-weight: 400; word-break: break-word; }
             .card-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; align-items: start; }
             table { width: 100%; border-collapse: collapse; }
             th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: left; }
