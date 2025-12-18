@@ -64,7 +64,7 @@ render_topbar($branding);
                         <button type="submit">筛选</button>
                     </form>
                 </div>
-                <div class="metric-row">
+                <div class="metric-row" style="gap:12px;">
                     <div class="metric"><div class="muted">IP数</div><div class="value"><?= (int) ($summary['ips'] ?? 0) ?></div></div>
                     <div class="metric"><div class="muted">浏览量 (PV)</div><div class="value"><?= (int) ($summary['views'] ?? 0) ?></div></div>
                     <div class="metric"><div class="muted">访客数 (UV)</div><div class="value"><?= (int) ($summary['uv'] ?? 0) ?></div></div>
@@ -107,7 +107,9 @@ render_topbar($branding);
                         </tr>
                         <?php foreach ($referrerPage as $row): ?>
                             <tr>
-                                <td><?= htmlspecialchars($row['referrer'], ENT_QUOTES, 'UTF-8') ?></td>
+                                <td title="<?= htmlspecialchars($row['referrer'], ENT_QUOTES, 'UTF-8') ?>" style="max-width:260px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                                    <?= htmlspecialchars($row['referrer'], ENT_QUOTES, 'UTF-8') ?>
+                                </td>
                                 <td><?= (int) $row['ips'] ?></td>
                                 <td><?= (int) $row['uniques'] ?></td>
                                 <td><?= (int) $row['uniques'] ?></td>

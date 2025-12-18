@@ -33,12 +33,12 @@ render_head('访问明细 - 统计后台');
 render_topbar($branding);
 ?>
 <style>
-    .content-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
-    .summary-card { background:#fff; border:1px solid var(--border); border-radius:12px; padding:14px; display:flex; gap:10px; align-items:center; box-shadow:0 10px 24px rgba(22,144,255,0.08); }
-    .summary-icon { width:44px; height:44px; border-radius:12px; background:#deedfb; display:grid; place-items:center; color:#1690ff; font-size:18px; }
-    .summary-info { display:flex; flex-direction:column; gap:2px; }
-    .summary-info .label { color:var(--muted); font-size:13px; }
-    .summary-info .val { font-size:20px; font-weight:800; }
+    .content-grid { display:flex; flex-wrap:wrap; gap:12px; }
+    .summary-card { background:#fff; border:1px solid var(--border); border-radius:12px; padding:14px; display:flex; gap:10px; align-items:center; box-shadow:0 10px 24px rgba(22,144,255,0.08); flex:0 1 auto; min-width:200px; }
+    .summary-icon { width:44px; height:44px; border-radius:12px; background:#deedfb; display:grid; place-items:center; color:#1690ff; font-size:18px; flex-shrink:0; }
+    .summary-info { display:flex; flex-direction:column; gap:4px; min-width:0; }
+    .summary-info .label { color:var(--muted); font-size:12px; font-weight:400; word-break:break-word; }
+    .summary-info .val { font-size:12px; font-weight:400; word-break:break-word; }
     .filters { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; width:100%; }
     .filters label { font-size:12px; color:var(--muted); display:flex; flex-direction:column; gap:4px; min-width:160px; flex:1 1 200px; max-width:240px; }
     .filters input, .filters select { width:100%; padding:8px 10px; border:1px solid var(--border); border-radius:8px; box-sizing:border-box; }
