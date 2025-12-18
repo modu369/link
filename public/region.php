@@ -77,37 +77,69 @@ render_topbar($branding);
                     const worldEl = document.getElementById('worldMap');
                     if (worldEl) {
                         const worldChart = echarts.init(worldEl);
-                        const isoNameMap = {
-                            CN:'China', US:'United States', RU:'Russia', JP:'Japan', KR:'South Korea',
-                            HK:'Hong Kong', TW:'Taiwan', GB:'United Kingdom', DE:'Germany', FR:'France',
-                            ES:'Spain', IT:'Italy', IN:'India', BR:'Brazil', AU:'Australia', CA:'Canada',
-                            SG:'Singapore', TH:'Thailand', VN:'Vietnam', MY:'Malaysia', ID:'Indonesia',
-                            PH:'Philippines', PK:'Pakistan', SA:'Saudi Arabia', AE:'United Arab Emirates',
-                            TR:'Turkey', IR:'Iran', MX:'Mexico', AR:'Argentina', CO:'Colombia', CL:'Chile',
-                            PE:'Peru', ZA:'South Africa', EG:'Egypt', NG:'Nigeria', KE:'Kenya', UA:'Ukraine',
-                            PL:'Poland', NL:'Netherlands', BE:'Belgium', SE:'Sweden', NO:'Norway', DK:'Denmark',
-                            FI:'Finland', CH:'Switzerland', AT:'Austria', CZ:'Czechia', HU:'Hungary', RO:'Romania',
-                            GR:'Greece', PT:'Portugal', IL:'Israel', NZ:'New Zealand', IE:'Ireland', QA:'Qatar',
-                            KW:'Kuwait', BD:'Bangladesh', LK:'Sri Lanka', HK:'Hong Kong', MO:'Macau'
+                        const worldNameMap = {
+                            CN:'China','中国':'China',
+                            US:'United States of America','USA':'United States of America','United States':'United States of America','美国':'United States of America',
+                            RU:'Russia','Russian Federation':'Russia','俄罗斯':'Russia',
+                            JP:'Japan','日本':'Japan',
+                            KR:'Korea','South Korea':'Korea','韩国':'Korea',
+                            KP:'North Korea','朝鲜':'North Korea',
+                            DE:'Germany','德国':'Germany',
+                            FR:'France','法国':'France',
+                            GB:'United Kingdom','UK':'United Kingdom','United Kingdom':'United Kingdom','英国':'United Kingdom',
+                            IT:'Italy','意大利':'Italy',
+                            ES:'Spain','西班牙':'Spain',
+                            CA:'Canada','加拿大':'Canada',
+                            AU:'Australia','澳大利亚':'Australia',
+                            BR:'Brazil','巴西':'Brazil',
+                            IN:'India','印度':'India',
+                            MX:'Mexico','墨西哥':'Mexico',
+                            ID:'Indonesia','印尼':'Indonesia',
+                            TH:'Thailand','泰国':'Thailand',
+                            SG:'Singapore','新加坡':'Singapore',
+                            MY:'Malaysia','马来西亚':'Malaysia',
+                            PH:'Philippines','菲律宾':'Philippines',
+                            VN:'Vietnam','越南':'Vietnam',
+                            SA:'Saudi Arabia','沙特阿拉伯':'Saudi Arabia',
+                            AE:'United Arab Emirates','阿联酋':'United Arab Emirates',
+                            TR:'Turkey','土耳其':'Turkey',
+                            IR:'Iran','伊朗':'Iran',
+                            ZA:'South Africa','南非':'South Africa',
+                            NG:'Nigeria','尼日利亚':'Nigeria',
+                            EG:'Egypt','埃及':'Egypt',
+                            AR:'Argentina','阿根廷':'Argentina',
+                            CO:'Colombia','哥伦比亚':'Colombia',
+                            CL:'Chile','智利':'Chile',
+                            PE:'Peru','秘鲁':'Peru',
+                            NL:'Netherlands','荷兰':'Netherlands',
+                            BE:'Belgium','比利时':'Belgium',
+                            CH:'Switzerland','瑞士':'Switzerland',
+                            SE:'Sweden','瑞典':'Sweden',
+                            NO:'Norway','挪威':'Norway',
+                            DK:'Denmark','丹麦':'Denmark',
+                            FI:'Finland','芬兰':'Finland',
+                            PL:'Poland','波兰':'Poland',
+                            UA:'Ukraine','乌克兰':'Ukraine',
+                            CZ:'Czech Republic','Czechia':'Czech Republic','捷克':'Czech Republic',
+                            AT:'Austria','奥地利':'Austria',
+                            IE:'Ireland','爱尔兰':'Ireland',
+                            IL:'Israel','以色列':'Israel',
+                            NZ:'New Zealand','新西兰':'New Zealand',
+                            QA:'Qatar','卡塔尔':'Qatar',
+                            KW:'Kuwait','科威特':'Kuwait',
+                            HK:'Hong Kong','香港':'Hong Kong',
+                            TW:'Taiwan','台湾':'Taiwan'
                         };
-                        const zhNameMap = {
-                            '中国':'China','美国':'United States','俄罗斯':'Russia','日本':'Japan','韩国':'South Korea',
-                            '英国':'United Kingdom','德国':'Germany','法国':'France','西班牙':'Spain','意大利':'Italy',
-                            '加拿大':'Canada','澳大利亚':'Australia','印度':'India','新加坡':'Singapore',
-                            '泰国':'Thailand','越南':'Vietnam','马来西亚':'Malaysia','印尼':'Indonesia','菲律宾':'Philippines',
-                            '巴西':'Brazil','墨西哥':'Mexico','阿联酋':'United Arab Emirates','土耳其':'Turkey',
-                            '沙特阿拉伯':'Saudi Arabia','南非':'South Africa','埃及':'Egypt','尼日利亚':'Nigeria'
-                        };
-                        const normalizeCountry = (r) => {
+                        const mapCountryName = (r) => {
                             const code = String(r.country_code || '').toUpperCase();
                             const raw = (r.country || '').trim();
-                            if (code && isoNameMap[code]) return isoNameMap[code];
-                            if (raw && zhNameMap[raw]) return zhNameMap[raw];
-                            if (code && code.length === 2) return isoNameMap[code] ?? raw || code;
+                            if (code && worldNameMap[code]) return worldNameMap[code];
+                            if (raw && worldNameMap[raw]) return worldNameMap[raw];
+                            if (code) return code;
                             return raw || 'Unknown';
                         };
                         const worldData = (countries || []).map(r => ({
-                            name: normalizeCountry(r),
+                            name: mapCountryName(r),
                             value: Number(r.ips || 0)
                         }));
                         const maxWorld = worldData.reduce((m, r) => Math.max(m, r.value || 0), 0) || 1;
@@ -128,9 +160,9 @@ render_topbar($branding);
                             series: [{
                                 type: 'map',
                                 map: 'world',
+                                nameMap: worldNameMap,
                                 roam: true,
                                 emphasis: { label: { show: false } },
-                                nameMap: isoNameMap,
                                 data: worldData
                             }]
                         });

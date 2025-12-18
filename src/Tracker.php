@@ -667,7 +667,6 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range, true);
         $conditions = [
-            'p.site_id = :site_id',
             'p.is_bot = 0',
             'p.session_id IS NOT NULL',
             'p.referrer IS NOT NULL',
@@ -818,7 +817,6 @@ class Tracker
         [$start, $end] = $this->visitFiltersWindow($filters);
 
         $conditions = [
-            'p.site_id = :site_id',
             'p.is_bot = 0',
             'p.session_id IS NOT NULL',
             'p.occurred_at BETWEEN :start AND :end'
@@ -883,7 +881,6 @@ class Tracker
         [$start, $end] = $this->visitFiltersWindow($filters);
 
         $conditions = [
-            'p.site_id = :site_id',
             'p.is_bot = 0',
             'p.session_id IS NOT NULL',
             'p.occurred_at BETWEEN :start AND :end'
@@ -955,7 +952,7 @@ class Tracker
                 LIMIT 50000";
 
         $stmt = $this->db->prepare($sql);
-        $stmt->execute($params);
+        $stmt->execute($this->filterParams($sql, $params));
 
         return $stmt->fetchAll();
     }
