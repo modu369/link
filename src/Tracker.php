@@ -1194,14 +1194,16 @@ class Tracker
         $cached = $this->redis->get($cacheKey);
         if ($cached) {
             $decoded = json_decode($cached, true);
-            if (is_array($decoded)) {
+            if ($this->isValidGeo($decoded)) {
                 return $decoded;
             }
+            // 无效缓存删除，避免污染
+            $this->redis->del($cacheKey);
         }
 
         $meta = $this->ipResolver->resolve($ip);
-        if (empty($meta)) {
-            $fallback = [
+        if (!$this->isValidGeo($meta)) {
+            return [
                 'country_name' => '未知',
                 'region_name' => '未知',
                 'city_name' => '',
@@ -1209,8 +1211,6 @@ class Tracker
                 'country_code' => '',
                 'continent_code' => '',
             ];
-            $this->redis->setex($cacheKey, 604800, json_encode($fallback, JSON_UNESCAPED_UNICODE));
-            return $fallback;
         }
 
         $sanitized = [
@@ -1225,6 +1225,20 @@ class Tracker
         $this->redis->setex($cacheKey, 604800, json_encode($sanitized, JSON_UNESCAPED_UNICODE));
 
         return $sanitized;
+    }
+
+    private function isValidGeo($meta): bool
+    {
+        if (!is_array($meta)) {
+            return false;
+        }
+
+        $country = trim($meta['country_name'] ?? '');
+        if ($country === '' || $country === '未知' || $country === '保留地址' || stripos($country, 'ip_version') !== false || stripos($country, 'node_count') !== false) {
+            return false;
+        }
+
+        return true;
     }
 
     private function ensureSiteDomainSchema(): void
