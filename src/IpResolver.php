@@ -48,6 +48,11 @@ class IpResolver
             try {
                 $data = $this->reader->findMap($ip, 'CN');
                 if (is_array($data)) {
+                    // 简单校验：字段存在且不是元数据内容
+                    $country = $data['country_name'] ?? '';
+                    if ($country === '' || stripos($country, 'ip_version') !== false || stripos($country, 'node_count') !== false) {
+                        return [];
+                    }
                     return $data;
                 }
             } catch (\Throwable $e) {
