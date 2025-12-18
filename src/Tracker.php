@@ -1694,6 +1694,13 @@ class Tracker
             }
         }
 
+        // ==================== 夸克搜索（quark.cn），显式读取 q 参数 ====================
+        if (str_contains($refererHost, 'quark.cn')) {
+            if (!empty($query['q'])) {
+                return urldecode($query['q']);
+            }
+        }
+
         // ==================== 谷歌/必应/360/头条/搜狗/神马/夸克 ====================
         $paramQ = !empty($query['q']) ? urldecode($query['q']) : null;
         $paramKeyword = !empty($query['keyword']) ? urldecode($query['keyword']) : null;
