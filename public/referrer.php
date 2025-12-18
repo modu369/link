@@ -4,10 +4,18 @@ require __DIR__ . '/layout.php';
 
 $device = $_GET['device'] ?? 'all';
 $visitorType = $_GET['visitor'] ?? 'all';
+$page = max(1, (int) ($_GET['page'] ?? 1));
+$perPage = 50;
 $filters = ['device' => $device, 'visitor' => $visitorType];
 $data = $selectedSite ? $tracker->getReferrerData($siteId, $range, $filters) : null;
 $referrers = $data['referrers'] ?? [];
 $summary = $data['ref_summary'] ?? [];
+$totalReferrers = count($referrers);
+$totalPages = max(1, (int) ceil($totalReferrers / $perPage));
+if ($page > $totalPages) {
+    $page = $totalPages;
+}
+$referrerPage = array_slice($referrers, ($page - 1) * $perPage, $perPage);
 
 function ref_duration_format($seconds): string {
     $seconds = (int) round($seconds);
@@ -40,6 +48,7 @@ render_topbar($branding);
                     <form method="get" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
                         <input type="hidden" name="site" value="<?= (int) $siteId ?>">
                         <input type="hidden" name="range" value="<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">
+                        <input type="hidden" name="page" value="1">
                         <label class="muted">设备类型</label>
                         <select name="device" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);">
                             <option value="all" <?= $device === 'all' ? 'selected' : '' ?>>全部</option>
@@ -68,6 +77,7 @@ render_topbar($branding);
             </section>
 
             <section class="card">
+                <div class="section-title" style="margin-bottom:0;"><h3 style="margin:0;">来路列表</h3><span class="muted">每页 <?= $perPage ?> 条</span></div>
                 <table>
                     <thead>
                     <tr>
@@ -95,7 +105,7 @@ render_topbar($branding);
                             <td><?= ref_duration_format($summary['avg_duration'] ?? 0) ?></td>
                             <td><?= round(($summary['bounce_rate'] ?? 0) * 100, 2) ?>%</td>
                         </tr>
-                        <?php foreach ($referrers as $row): ?>
+                        <?php foreach ($referrerPage as $row): ?>
                             <tr>
                                 <td><?= htmlspecialchars($row['referrer'], ENT_QUOTES, 'UTF-8') ?></td>
                                 <td><?= (int) $row['ips'] ?></td>
@@ -110,6 +120,14 @@ render_topbar($branding);
                     <?php endif; ?>
                     </tbody>
                 </table>
+                <?php
+                    render_pagination(
+                        $page,
+                        $totalPages,
+                        '/referrer.php',
+                        ['site' => (int) $siteId, 'range' => $range, 'device' => $device, 'visitor' => $visitorType]
+                    );
+                ?>
             </section>
         <?php endif; ?>
     </main>

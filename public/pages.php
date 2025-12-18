@@ -2,9 +2,17 @@
 require __DIR__ . '/init.php';
 require __DIR__ . '/layout.php';
 
+$page = max(1, (int) ($_GET['page'] ?? 1));
+$perPage = 50;
 $data = $selectedSite ? $tracker->getPageData($siteId, $range) : null;
 $pages = $data['pages'] ?? [];
 $summary = $data['page_summary'] ?? [];
+$totalPagesCount = count($pages);
+$totalPages = max(1, (int) ceil($totalPagesCount / $perPage));
+if ($page > $totalPages) {
+    $page = $totalPages;
+}
+$pageRowsForTable = array_slice($pages, ($page - 1) * $perPage, $perPage);
 
 function page_duration_format($seconds): string {
     $seconds = (int) round($seconds);
@@ -67,6 +75,7 @@ render_topbar($branding);
             </section>
 
             <section class="card">
+                <div class="section-title" style="margin-bottom:0;"><h3 style="margin:0;">受访页列表</h3><span class="muted">每页 <?= $perPage ?> 条</span></div>
                 <table>
                     <thead>
                     <tr>
@@ -94,7 +103,7 @@ render_topbar($branding);
                             <td><?= page_duration_format($summary['avg_duration'] ?? 0) ?></td>
                             <td><?= round(($summary['bounce_rate'] ?? 0) * 100, 2) ?>%</td>
                         </tr>
-                        <?php foreach ($pages as $row): ?>
+                        <?php foreach ($pageRowsForTable as $row): ?>
                             <tr>
                                 <td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td>
                                 <td><?= (int) $row['ips'] ?></td>
@@ -109,6 +118,7 @@ render_topbar($branding);
                     <?php endif; ?>
                     </tbody>
                 </table>
+                <?php render_pagination($page, $totalPages, '/pages.php', ['site' => (int) $siteId, 'range' => $range]); ?>
             </section>
 
             <script>

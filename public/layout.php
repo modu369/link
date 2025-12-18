@@ -39,7 +39,7 @@ function render_head(string $title = '统计后台'): void
             .site-card code { background: #0f172a; color: #e2e8f0; padding: 10px; display: block; border-radius: 8px; margin: 10px 0; font-size: 12px; word-break: break-all; }
             .site-card .actions { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
             .site-card .enter { text-decoration: none; color: #1690ff; font-weight: 700; }
-            .data-layout { display: grid; grid-template-columns: 240px 1fr; gap: 16px; padding: 22px 24px 32px; align-items: start; }
+            .data-layout { display: grid; grid-template-columns: minmax(220px, 260px) minmax(0, 1fr); gap: 16px; padding: 22px 24px 32px; align-items: start; width: 100%; box-sizing: border-box; }
             .nav { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 12px 30px rgba(22, 144, 255, 0.12); position: sticky; top: 90px; }
             .nav .site-name { font-size: 18px; font-weight: 700; margin: 0 0 4px; }
             .nav .site-domain { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
@@ -67,6 +67,14 @@ function render_head(string $title = '统计后台'): void
             .section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
             .pill { padding: 4px 8px; background: #f1f5f9; border-radius: 999px; color: #0f172a; border: 1px solid var(--border); font-size: 12px; }
             .empty { padding: 24px; text-align: center; color: var(--muted); }
+            .pagination { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding: 8px 0; flex-wrap: wrap; }
+            .pagination a, .pagination span { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); text-decoration: none; color: #1690ff; font-weight: 600; background: #fff; min-width: 36px; text-align: center; }
+            .pagination .current { background: #1690ff; color: #fff; box-shadow: 0 8px 18px rgba(22,144,255,0.18); }
+            .pagination .disabled { color: var(--muted); border-style: dashed; background: #f8fbff; }
+            @media (max-width: 1100px) {
+                .data-layout { grid-template-columns: 1fr; }
+                .nav { position: static; top: auto; }
+            }
         </style>
     </head>
     <body>
@@ -185,6 +193,53 @@ function render_range_filters(array $allowedRanges, string $range, string $page,
             </a>
         <?php endforeach; ?>
     </div>
+    <?php
+}
+
+function render_pagination(int $page, int $totalPages, string $path, array $params = []): void
+{
+    if ($totalPages <= 1) {
+        return;
+    }
+    $page = max(1, $page);
+    $totalPages = max(1, $totalPages);
+    $prevPage = max(1, $page - 1);
+    $nextPage = min($totalPages, $page + 1);
+    $renderLink = function(int $p, string $label, bool $disabled = false, bool $current = false) use ($path, $params) {
+        $query = http_build_query(array_merge($params, ['page' => $p]));
+        $href = $path . '?' . $query;
+        $class = $current ? 'current' : '';
+        if ($disabled) {
+            echo '<span class="disabled">' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '</span>';
+        } else {
+            echo '<a class="' . $class . '" href="' . htmlspecialchars($href, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '</a>';
+        }
+    };
+    ?>
+    <nav class="pagination" aria-label="分页">
+        <?php
+        $renderLink($prevPage, '上一页', $page === 1);
+        $window = 2;
+        $start = max(1, $page - $window);
+        $end = min($totalPages, $page + $window);
+        if ($start > 1) {
+            $renderLink(1, '1', false, $page === 1);
+            if ($start > 2) {
+                echo '<span class="disabled">...</span>';
+            }
+        }
+        for ($i = $start; $i <= $end; $i++) {
+            $renderLink($i, (string) $i, false, $i === $page);
+        }
+        if ($end < $totalPages) {
+            if ($end < $totalPages - 1) {
+                echo '<span class="disabled">...</span>';
+            }
+            $renderLink($totalPages, (string) $totalPages, false, $page === $totalPages);
+        }
+        $renderLink($nextPage, '下一页', $page === $totalPages);
+        ?>
+    </nav>
     <?php
 }
 

@@ -239,11 +239,11 @@ class Tracker
         ];
     }
 
-    public function getContentData(int $siteId, string $range = 'today', array $filters = []): array
+    public function getContentData(int $siteId, string $range = 'today', array $filters = [], int $page = 1, int $perPage = 50): array
     {
         return [
             'active' => $this->getActiveSessions($siteId),
-            'details' => $this->getVisitDetails($siteId, $filters),
+            'details' => $this->getVisitDetails($siteId, $filters, $page, $perPage),
             'total_sessions' => $this->getVisitDetailCount($siteId, $filters),
         ];
     }
@@ -874,15 +874,20 @@ class Tracker
         return (int)($row['total'] ?? 0);
     }
 
-    private function getVisitDetails(int $siteId, array $filters): array
+    private function getVisitDetails(int $siteId, array $filters, int $page = 1, int $perPage = 50): array
     {
         [$start, $end] = $this->visitFiltersWindow($filters);
+        $page = max(1, $page);
+        $perPage = max(1, $perPage);
+        $offset = ($page - 1) * $perPage;
 
         $conditions = ['1=1'];
         $params = [
             ':site_id' => $siteId,
             ':start' => $start->format('Y-m-d H:i:s'),
             ':end' => $end->format('Y-m-d H:i:s'),
+            ':limit' => $perPage,
+            ':offset' => $offset,
         ];
 
         if (!empty($filters['ip'])) {
@@ -943,7 +948,7 @@ class Tracker
                 WHERE " . implode(' AND ', $conditions) . "
                 {$engineHaving}
                 ORDER BY p.occurred_at DESC
-                LIMIT 50000";
+                LIMIT :limit OFFSET :offset";
 
         $stmt = $this->db->prepare($sql);
         $filtered = $this->filterParams($sql, $params);
