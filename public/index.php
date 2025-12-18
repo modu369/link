@@ -7,8 +7,7 @@ require __DIR__ . '/../src/Tracker.php';
 
 $config = require __DIR__ . '/../config/config.php';
 $loginError = null;
-$entryVerified = $_SESSION['login_entry_verified'] ?? false;
-
+$entryVerified = false;
 $loginEntry = $config['security']['login_entry'] ?? 'admin';
 
 try {
@@ -20,16 +19,24 @@ try {
     $loginError = '服务暂不可用，请稍后再试';
 }
 
+$sessionEntry = $_SESSION['login_entry_token'] ?? null;
+if ($sessionEntry && hash_equals($loginEntry, $sessionEntry)) {
+    $entryVerified = true;
+}
+
 if (!$entryVerified) {
     $candidate = trim($_GET['entry'] ?? '');
     if ($candidate !== '' && hash_equals($loginEntry, $candidate)) {
         $_SESSION['login_entry_verified'] = true;
+        $_SESSION['login_entry_token'] = $loginEntry;
         $entryVerified = true;
     }
 }
 
 if (($_GET['action'] ?? '') === 'logout') {
     session_destroy();
+    header('Location: /index.php?entry=' . urlencode($loginEntry));
+    exit;
 }
 
 if (!$entryVerified) {
