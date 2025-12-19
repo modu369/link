@@ -63,6 +63,11 @@ function render_head(string $title = '统计后台'): void
             table { width: 100%; border-collapse: collapse; }
             th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: left; }
             th { color: var(--muted); font-weight: 600; }
+            .table-wrapper { width: 100%; overflow-x: auto; }
+            .url-ellipsis { max-width: 320px; display: inline-block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+            @media (max-width: 768px) {
+                .url-ellipsis { max-width: 220px; }
+            }
             code.inline { background: #0f172a; color: #e2e8f0; padding: 12px; display: block; border-radius: 8px; word-break: break-all; }
             .section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
             .pill { padding: 4px 8px; background: #f1f5f9; border-radius: 999px; color: #0f172a; border: 1px solid var(--border); font-size: 12px; }

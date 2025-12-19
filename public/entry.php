@@ -76,48 +76,51 @@ render_topbar($branding);
 
             <section class="card">
                 <div class="section-title" style="margin-bottom:0;"><h3 style="margin:0;">入口列表</h3><span class="muted">每页 <?= $perPage ?> 条</span></div>
-                <table>
-                    <thead>
-                    <tr>
-                        <th>页面 URL</th>
-                        <th>IP数</th>
-                        <th>访客数</th>
-                        <th>新访客数</th>
-                        <th>贡献浏览量</th>
-                        <th>平均浏览页数</th>
-                        <th>平均访问时长</th>
-                        <th>跳出率</th>
-                    </tr>
-                    </thead>
-                    <tbody>
-                    <?php if (empty($entries)): ?>
-                        <tr><td colspan="8" class="muted">暂无入口数据</td></tr>
-                    <?php else: ?>
-                        <tr style="font-weight:700;">
-                            <td>合计</td>
-                            <td><?= (int) ($summary['ips'] ?? 0) ?></td>
-                            <td><?= (int) ($summary['uv'] ?? 0) ?></td>
-                            <td><?= (int) ($summary['new'] ?? 0) ?></td>
-                            <td><?= (int) ($summary['views'] ?? 0) ?></td>
-                            <td><?= number_format((float) ($summary['avg_pages'] ?? 0), 2) ?></td>
-                            <td><?= entry_duration_format($summary['avg_duration'] ?? 0) ?></td>
-                            <td><?= round(($summary['bounce_rate'] ?? 0) * 100, 2) ?>%</td>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                        <tr>
+                            <th>页面 URL</th>
+                            <th>IP数</th>
+                            <th>访客数</th>
+                            <th>新访客数</th>
+                            <th>贡献浏览量</th>
+                            <th>平均浏览页数</th>
+                            <th>平均访问时长</th>
+                            <th>跳出率</th>
                         </tr>
-                        <?php foreach ($entryRowsForTable as $row): ?>
-                            <tr>
-                                <td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td>
-                                <td><?= (int) $row['ips'] ?></td>
-                                <td><?= (int) $row['uniques'] ?></td>
-                                <td><?= (int) $row['uniques'] ?></td>
-                                <td><?= (int) $row['views'] ?></td>
-                                <td><?= number_format((float) $row['avg_pages'], 2) ?></td>
-                                <td><?= entry_duration_format($row['avg_duration']) ?></td>
-                                <td><?= round(($row['bounce_rate'] ?? 0) * 100, 2) ?>%</td>
+                        </thead>
+                        <tbody>
+                        <?php if (empty($entries)): ?>
+                            <tr><td colspan="8" class="muted">暂无入口数据</td></tr>
+                        <?php else: ?>
+                            <tr style="font-weight:700;">
+                                <td>合计</td>
+                                <td><?= (int) ($summary['ips'] ?? 0) ?></td>
+                                <td><?= (int) ($summary['uv'] ?? 0) ?></td>
+                                <td><?= (int) ($summary['new'] ?? 0) ?></td>
+                                <td><?= (int) ($summary['views'] ?? 0) ?></td>
+                                <td><?= number_format((float) ($summary['avg_pages'] ?? 0), 2) ?></td>
+                                <td><?= entry_duration_format($summary['avg_duration'] ?? 0) ?></td>
+                                <td><?= round(($summary['bounce_rate'] ?? 0) * 100, 2) ?>%</td>
                             </tr>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                    </tbody>
-                </table>
+                            <?php foreach ($entryRowsForTable as $row): ?>
+                                <?php $entryPath = htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8'); ?>
+                                <tr>
+                                    <td><span class="url-ellipsis" title="<?= $entryPath ?>"><?= $entryPath ?></span></td>
+                                    <td><?= (int) $row['ips'] ?></td>
+                                    <td><?= (int) $row['uniques'] ?></td>
+                                    <td><?= (int) $row['uniques'] ?></td>
+                                    <td><?= (int) $row['views'] ?></td>
+                                    <td><?= number_format((float) $row['avg_pages'], 2) ?></td>
+                                    <td><?= entry_duration_format($row['avg_duration']) ?></td>
+                                    <td><?= round(($row['bounce_rate'] ?? 0) * 100, 2) ?>%</td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
                 <?php render_pagination($page, $totalPages, '/entry.php', ['site' => (int) $siteId, 'range' => $range]); ?>
             </section>
 

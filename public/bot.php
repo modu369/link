@@ -61,25 +61,28 @@ render_topbar($branding);
 
             <section class="card">
                 <div class="section-title"><h3>抓取记录</h3><span class="muted">最新 200 条 · 每页 <?= $perPage ?> 条</span></div>
-                <table>
-                    <thead><tr><th>抓取页面</th><th>蜘蛛类别</th><th>UA</th><th>时间</th></tr></thead>
-                    <tbody>
-                    <?php if (empty($botRows)): ?>
-                        <tr><td colspan="4" class="muted">暂无蜘蛛抓取</td></tr>
-                    <?php else: ?>
-                        <?php foreach ($botRows as $row): ?>
-                            <tr>
-                                <td><?= htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8') ?></td>
-                                <td><?= htmlspecialchars($row['engine'], ENT_QUOTES, 'UTF-8') ?></td>
-                                <td class="muted" style="max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                                    <?= htmlspecialchars($row['user_agent'], ENT_QUOTES, 'UTF-8') ?>
-                                </td>
-                                <td><?= htmlspecialchars($row['occurred_at'], ENT_QUOTES, 'UTF-8') ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                    </tbody>
-                </table>
+                <div class="table-wrapper">
+                    <table>
+                        <thead><tr><th>抓取页面</th><th>蜘蛛类别</th><th>UA</th><th>时间</th></tr></thead>
+                        <tbody>
+                        <?php if (empty($botRows)): ?>
+                            <tr><td colspan="4" class="muted">暂无蜘蛛抓取</td></tr>
+                        <?php else: ?>
+                            <?php foreach ($botRows as $row): ?>
+                                <?php $botPath = htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8'); ?>
+                                <tr>
+                                    <td><span class="url-ellipsis" title="<?= $botPath ?>"><?= $botPath ?></span></td>
+                                    <td><?= htmlspecialchars($row['engine'], ENT_QUOTES, 'UTF-8') ?></td>
+                                    <td class="muted" style="max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                                        <?= htmlspecialchars($row['user_agent'], ENT_QUOTES, 'UTF-8') ?>
+                                    </td>
+                                    <td><?= htmlspecialchars($row['occurred_at'], ENT_QUOTES, 'UTF-8') ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
                 <?php render_pagination($page, $totalPages, '/bot.php', [
                     'site' => (int) $siteId,
                     'range' => $range,
