@@ -56,6 +56,23 @@ CREATE TABLE IF NOT EXISTS pageview_rollups (
     INDEX idx_bucket_time (bucket_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS pageview_dimension_rollups (
+    site_id INT UNSIGNED NOT NULL,
+    bucket_start DATETIME NOT NULL,
+    dimension_type VARCHAR(64) NOT NULL,
+    dimension_value VARCHAR(255) NOT NULL,
+    pv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    uv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    ip_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    session_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    duration_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    PRIMARY KEY (site_id, bucket_start, dimension_type, dimension_value),
+    INDEX idx_dimension_type (dimension_type, dimension_value),
+    INDEX idx_dimension_time (bucket_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS site_domains (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     site_id INT UNSIGNED NOT NULL,

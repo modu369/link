@@ -235,17 +235,38 @@ class Tracker
             ':continent_code' => $continentCode,
         ]);
 
+        $now = new DateTimeImmutable('now');
+        $browser = $this->detectBrowser($userAgent);
+        $engine = $this->detectSearchEngine($payload['referrer'] ?? '', $userAgent);
+        $referrerHost = $this->referrerHost($payload['referrer'] ?? '');
+        $entryPath = $this->captureEntryPath((int) $site['id'], $sessionId, $path);
+
         $this->updateRollups(
             (int) $site['id'],
-            new DateTimeImmutable('now'),
+            $now,
             $duration,
             $pageCount,
             $isUnique,
-            $sessionId
+            $sessionId,
+            [
+                'path' => $path,
+                'keyword' => $keyword,
+                'engine' => $engine,
+                'referrer_host' => $referrerHost,
+                'is_mobile' => $isMobile,
+                'browser' => $browser,
+                'region' => [
+                    'country' => $countryName,
+                    'region' => $regionName,
+                ],
+                'isp' => $ispName,
+                'entry_path' => $entryPath,
+                'is_unique' => $isUnique,
+            ]
         );
     }
 
-    private function updateRollups(int $siteId, DateTimeImmutable $occurredAt, int $duration, int $pageCount, bool $isUnique, ?string $sessionId): void
+    private function updateRollups(int $siteId, DateTimeImmutable $occurredAt, int $duration, int $pageCount, bool $isUnique, ?string $sessionId, array $dimensions = []): void
     {
         $bucketStart = $occurredAt->setTime((int) $occurredAt->format('H'), 0, 0);
         $bucketKey = $bucketStart->format('Y-m-d H:i:s');
@@ -294,6 +315,18 @@ class Tracker
             ':page_sum' => $pageIncrement,
             ':bounce_count' => $bounceIncrement,
         ]);
+
+        $this->updateDimensionRollups(
+            $siteId,
+            $bucketKey,
+            $uvIncrement,
+            $ipIncrement,
+            $sessionIncrement,
+            $durationIncrement,
+            $pageIncrement,
+            $bounceIncrement,
+            $dimensions
+        );
     }
 
     private function rollupRangeBounds(string $range): array
@@ -341,6 +374,240 @@ class Tracker
             'page_sum' => (int) ($row['page_sum'] ?? 0),
             'bounce_count' => (int) ($row['bounce_count'] ?? 0),
         ];
+    }
+
+    private function updateDimensionRollups(
+        int $siteId,
+        string $bucketKey,
+        int $uvIncrement,
+        int $ipIncrement,
+        int $sessionIncrement,
+        int $durationIncrement,
+        int $pageIncrement,
+        int $bounceIncrement,
+        array $dimensions
+    ): void {
+        $entries = [];
+
+        $path = $dimensions['path'] ?? '/';
+        $path = $path ?: '/';
+        $keyword = trim($dimensions['keyword'] ?? '') ?: null;
+        $engine = trim($dimensions['engine'] ?? '') ?: null;
+        $referrerHost = trim($dimensions['referrer_host'] ?? '') ?: null;
+        $browser = trim($dimensions['browser'] ?? '') ?: null;
+        $isp = trim($dimensions['isp'] ?? '') ?: null;
+        $isMobile = (bool) ($dimensions['is_mobile'] ?? false);
+        $isUnique = (bool) ($dimensions['is_unique'] ?? false);
+
+        if ($keyword) {
+            $entries[] = ['keyword', $keyword];
+            if ($engine) {
+                $entries[] = ['keyword_engine', $this->dimensionKey([$keyword, $engine, $path])];
+            }
+        }
+
+        if ($engine && $engine !== '其他') {
+            $entries[] = ['search_engine', $engine];
+        }
+
+        if ($referrerHost) {
+            $entries[] = ['referrer_host', $referrerHost];
+        }
+
+        $entries[] = ['page_path', $path];
+
+        if (!empty($dimensions['entry_path'])) {
+            $entries[] = ['entry_path', $dimensions['entry_path']];
+        }
+
+        $entries[] = ['device', $isMobile ? 'mobile' : 'desktop'];
+
+        if ($browser) {
+            $entries[] = ['browser', $browser];
+        }
+
+        if (!empty($dimensions['region'])) {
+            $regionLabel = $this->regionLabel(
+                $dimensions['region']['country'] ?? '',
+                $dimensions['region']['region'] ?? ''
+            );
+            $entries[] = ['region', $regionLabel];
+            $country = trim($dimensions['region']['country'] ?? '') ?: '未知';
+            $entries[] = ['country', $country];
+        }
+
+        if ($isp) {
+            $entries[] = ['isp', $isp];
+        }
+
+        $entries[] = ['audience', $isUnique ? 'new' : 'returning'];
+
+        foreach ($entries as [$dimension, $value]) {
+            $this->upsertDimensionRollup(
+                $siteId,
+                $bucketKey,
+                $dimension,
+                $value,
+                $uvIncrement,
+                $ipIncrement,
+                $sessionIncrement,
+                $durationIncrement,
+                $pageIncrement,
+                $bounceIncrement,
+                $isUnique
+            );
+        }
+    }
+
+    private function upsertDimensionRollup(
+        int $siteId,
+        string $bucketKey,
+        string $dimension,
+        string $value,
+        int $uvIncrement,
+        int $ipIncrement,
+        int $sessionIncrement,
+        int $durationIncrement,
+        int $pageIncrement,
+        int $bounceIncrement,
+        bool $isUnique
+    ): void {
+        $value = mb_substr($value, 0, 255);
+
+        $stmt = $this->db->prepare(
+            'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+             VALUES (:site_id, :bucket_start, :dimension_type, :dimension_value, 1, :uv, :ip_count, :session_count, :duration_sum, :page_sum, :bounce_count)
+             ON DUPLICATE KEY UPDATE
+                pv = pv + 1,
+                uv = uv + VALUES(uv),
+                ip_count = ip_count + VALUES(ip_count),
+                session_count = session_count + VALUES(session_count),
+                duration_sum = duration_sum + VALUES(duration_sum),
+                page_sum = page_sum + VALUES(page_sum),
+                bounce_count = bounce_count + VALUES(bounce_count)'
+        );
+
+        $stmt->execute([
+            ':site_id' => $siteId,
+            ':bucket_start' => $bucketKey,
+            ':dimension_type' => $dimension,
+            ':dimension_value' => $value,
+            ':uv' => $isUnique ? 1 : 0,
+            ':ip_count' => $isUnique ? 1 : 0,
+            ':session_count' => $sessionIncrement,
+            ':duration_sum' => $durationIncrement,
+            ':page_sum' => $pageIncrement,
+            ':bounce_count' => $bounceIncrement,
+        ]);
+    }
+
+    private function aggregateDimensionRollups(int $siteId, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
+    {
+        $statement = $this->db->prepare(
+            'SELECT dimension_value, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ips, SUM(session_count) as sessions, SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count
+             FROM pageview_dimension_rollups
+             WHERE site_id = :site_id AND dimension_type = :dimension AND bucket_start >= :start AND bucket_start < :end
+             GROUP BY dimension_value
+             ORDER BY views DESC
+             LIMIT :limit'
+        );
+
+        $statement->bindValue(':site_id', $siteId, PDO::PARAM_INT);
+        $statement->bindValue(':dimension', $dimension, PDO::PARAM_STR);
+        $statement->bindValue(':start', $start->format('Y-m-d H:i:s'), PDO::PARAM_STR);
+        $statement->bindValue(':end', $end->format('Y-m-d H:i:s'), PDO::PARAM_STR);
+        $statement->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $statement->execute();
+
+        return $statement->fetchAll();
+    }
+
+    private function detectBrowser(string $userAgent): string
+    {
+        $ua = strtolower($userAgent);
+        return match (true) {
+            str_contains($ua, 'micromessenger') => 'WeChat',
+            (bool) preg_match('/bytedancewebview|aweme/', $ua) => 'Douyin',
+            str_contains($ua, 'baiduboxapp') => 'Baidu',
+            (bool) preg_match('/mqqbrowser|qqbrowser/', $ua) => 'QQ',
+            str_contains($ua, 'ucbrowser') => 'UC',
+            str_contains($ua, 'quark') => 'Quark',
+            str_contains($ua, 'xiaomi') || str_contains($ua, 'miuibrowser') => 'Mi',
+            str_contains($ua, 'huawei') => 'Huawei',
+            str_contains($ua, 'vivobrowser') => 'Vivo',
+            str_contains($ua, 'heytapbrowser') || str_contains($ua, 'oppobrowser') => 'OPPO',
+            (bool) preg_match('/edg(a|ios)/', $ua) => 'Edge',
+            (bool) preg_match('/chrome|crios/', $ua) => 'Chrome',
+            (bool) preg_match('/firefox|fxios/', $ua) => 'Firefox',
+            (bool) preg_match('/safari/', $ua) && !(bool) preg_match('/chrome|crios|edg/', $ua) => 'Safari',
+            (bool) preg_match('/360se|360ee/', $ua) => '360',
+            (bool) preg_match('/msie|trident/', $ua) => 'IE',
+            default => '其他浏览器',
+        };
+    }
+
+    private function detectSearchEngine(string $referrer, string $userAgent): string
+    {
+        $ref = strtolower($referrer);
+        $ua = strtolower($userAgent);
+
+        return match (true) {
+            str_contains($ref, 'baidu.com') || str_contains($ua, 'baiduspider') => '百度',
+            str_contains($ref, 'google') || str_contains($ua, 'googlebot') => '谷歌',
+            str_contains($ref, 'bing.com') || str_contains($ua, 'bingbot') => '必应',
+            str_contains($ref, 'so.com') || str_contains($ua, '360spider') => '360',
+            str_contains($ref, 'toutiao.com') || str_contains($ua, 'bytedance') => '头条',
+            str_contains($ref, 'sogou.com') || str_contains($ua, 'sogou') => '搜狗',
+            str_contains($ref, 'sm.cn') || str_contains($ua, 'yisouspider') => '神马',
+            str_contains($ref, 'quark.cn') => '夸克',
+            default => '其他',
+        };
+    }
+
+    private function referrerHost(?string $referrer): ?string
+    {
+        if (!$referrer) {
+            return null;
+        }
+
+        $host = parse_url($referrer, PHP_URL_HOST) ?: '';
+        return $host ? strtolower($host) : null;
+    }
+
+    private function captureEntryPath(int $siteId, ?string $sessionId, string $path): ?string
+    {
+        if (!$sessionId) {
+            return null;
+        }
+
+        $key = sprintf('entry:first:%d:%s', $siteId, $sessionId);
+        if ($this->redis->setnx($key, $path ?: '/')) {
+            $this->redis->expire($key, 172800);
+            return $path ?: '/';
+        }
+
+        return null;
+    }
+
+    private function regionLabel(string $country, string $region): string
+    {
+        $country = trim($country);
+        $region = trim($region);
+
+        if ($country === '' || $country === '未知' || $country === '保留地址') {
+            return '未知';
+        }
+
+        if (str_starts_with($country, '中国')) {
+            return $region !== '' ? $region : '未知';
+        }
+
+        return $country;
+    }
+
+    private function dimensionKey(array $parts): string
+    {
+        return implode('|', array_map(fn ($p) => str_replace('|', '/', (string) $p), $parts));
     }
 
     private function rollupSummaryStats(array $rollupTotals): array
@@ -1186,6 +1453,40 @@ class Tracker
 
     private function getKeywords(int $siteId, string $range): array
     {
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $rollup = $this->aggregateDimensionRollups($siteId, 'keyword_engine', $start, $end, 500);
+
+        if (!empty($rollup)) {
+            $keywords = [];
+
+            foreach ($rollup as $row) {
+                [$keyword, $engine, $entry] = array_pad(explode('|', $row['dimension_value'] ?? '', 3), 3, '/');
+                if ($keyword === '') {
+                    continue;
+                }
+                if (!isset($keywords[$keyword])) {
+                    $keywords[$keyword] = [
+                        'keyword' => $keyword,
+                        'views' => 0,
+                        'engines' => [],
+                        'entry' => $entry ?: '/',
+                    ];
+                }
+
+                $keywords[$keyword]['views'] += (int) ($row['views'] ?? 0);
+                $keywords[$keyword]['engines'][] = $engine ?: '其他';
+
+                if (($row['views'] ?? 0) >= ($keywords[$keyword]['views'] ?? 0)) {
+                    $keywords[$keyword]['entry'] = $entry ?: '/';
+                }
+            }
+
+            return array_values(array_map(function ($item) {
+                $item['engines'] = implode(' / ', array_unique($item['engines']));
+                return $item;
+            }, $keywords));
+        }
+
         [$rangeSql, $params] = $this->rangeClause($range);
         $engineCase = $this->searchEngineCase();
         $statement = $this->db->prepare(
@@ -1676,6 +1977,25 @@ class Tracker
                 INDEX idx_bucket_time (bucket_start)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
         );
+
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS pageview_dimension_rollups (
+                site_id INT UNSIGNED NOT NULL,
+                bucket_start DATETIME NOT NULL,
+                dimension_type VARCHAR(64) NOT NULL,
+                dimension_value VARCHAR(255) NOT NULL,
+                pv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                uv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                ip_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                session_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                duration_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                PRIMARY KEY (site_id, bucket_start, dimension_type, dimension_value),
+                INDEX idx_dimension_type (dimension_type, dimension_value),
+                INDEX idx_dimension_time (bucket_start)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
     }
 
     private function ensureIpDbExists(): void
@@ -1842,6 +2162,13 @@ class Tracker
 
     private function getSearchEngines(int $siteId, string $range): array
     {
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $rollup = $this->aggregateDimensionRollups($siteId, 'search_engine', $start, $end, 50);
+
+        if (!empty($rollup)) {
+            return array_values(array_filter($rollup, fn ($row) => ($row['dimension_value'] ?? '其他') !== '其他'));
+        }
+
         [$rangeSql, $params] = $this->rangeClause($range);
         $engineCase = $this->searchEngineCase();
         $statement = $this->db->prepare(
@@ -1863,9 +2190,46 @@ class Tracker
 
     private function getExternalLinks(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
+        [$start, $end] = $this->rollupRangeBounds($range);
         $site = $this->getSite($siteId);
         $domain = $site['domain'] ?? '';
+        $blocked = ['baidu', 'google', 'bing.', 'sm.cn', 'quark.cn', 'so.com', 'sogou', 'bytedance', 'toutiao'];
+
+        $rollup = $this->aggregateDimensionRollups($siteId, 'referrer_host', $start, $end, 200);
+        $filtered = [];
+
+        if (!empty($rollup)) {
+            foreach ($rollup as $row) {
+                $host = strtolower($row['dimension_value'] ?? '');
+                if ($host === '' || $host === '直接访问') {
+                    continue;
+                }
+
+                $skip = false;
+                foreach ($blocked as $needle) {
+                    if (str_contains($host, $needle)) {
+                        $skip = true;
+                        break;
+                    }
+                }
+
+                if ($domain && (str_ends_with($host, $domain) || str_ends_with($host, 'www.' . ltrim($domain, '.')))) {
+                    $skip = true;
+                }
+
+                if (!$skip) {
+                    $filtered[] = [
+                        'host' => $host,
+                        'views' => (int) ($row['views'] ?? 0),
+                        'ips' => (int) ($row['ips'] ?? 0),
+                    ];
+                }
+            }
+
+            return $filtered;
+        }
+
+        [$rangeSql, $params] = $this->rangeClause($range);
 
         $statement = $this->db->prepare(
             "SELECT host, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
@@ -1883,7 +2247,6 @@ class Tracker
         $statement->execute(array_merge([':site_id' => $siteId], $params));
         $rows = $statement->fetchAll();
 
-        $blocked = ['baidu', 'google', 'bing.', 'sm.cn', 'quark.cn', 'so.com', 'sogou', 'bytedance', 'toutiao'];
         $filtered = [];
         foreach ($rows as $row) {
             $host = strtolower($row['host'] ?? '');
@@ -1907,6 +2270,25 @@ class Tracker
 
     private function getDeviceBreakdown(int $siteId, string $range): array
     {
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $rollup = $this->aggregateDimensionRollups($siteId, 'device', $start, $end, 2);
+
+        if (!empty($rollup)) {
+            $desktop = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'desktop'))[0] ?? [];
+            $mobile = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'mobile'))[0] ?? [];
+
+            return [
+                'desktop' => [
+                    'views' => (int) ($desktop['views'] ?? 0),
+                    'ips' => (int) ($desktop['ips'] ?? 0),
+                ],
+                'mobile' => [
+                    'views' => (int) ($mobile['views'] ?? 0),
+                    'ips' => (int) ($mobile['ips'] ?? 0),
+                ],
+            ];
+        }
+
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
             "SELECT SUM(is_mobile = 0) as desktop_views, SUM(is_mobile = 1) as mobile_views,
@@ -1933,6 +2315,17 @@ class Tracker
 
     private function getBrowserBreakdown(int $siteId, string $range, int $limit = 10): array
     {
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $rollup = $this->aggregateDimensionRollups($siteId, 'browser', $start, $end, $limit);
+
+        if (!empty($rollup)) {
+            return array_map(fn ($row) => [
+                'browser' => $row['dimension_value'],
+                'views' => (int) ($row['views'] ?? 0),
+                'ips' => (int) ($row['ips'] ?? 0),
+            ], $rollup);
+        }
+
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
             "SELECT browser, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips FROM (
@@ -1970,6 +2363,17 @@ class Tracker
 
     private function getRegionStats(int $siteId, string $range, int $limit = 50): array
     {
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $rollup = $this->aggregateDimensionRollups($siteId, 'region', $start, $end, $limit);
+
+        if (!empty($rollup)) {
+            return array_map(fn ($row) => [
+                'region' => $row['dimension_value'],
+                'views' => (int) ($row['views'] ?? 0),
+                'ips' => (int) ($row['ips'] ?? 0),
+            ], $rollup);
+        }
+
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
             "SELECT
@@ -2011,6 +2415,17 @@ class Tracker
 
     private function getIspStats(int $siteId, string $range, int $limit = 50): array
     {
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $rollup = $this->aggregateDimensionRollups($siteId, 'isp', $start, $end, $limit);
+
+        if (!empty($rollup)) {
+            return array_map(fn ($row) => [
+                'isp' => $row['dimension_value'],
+                'views' => (int) ($row['views'] ?? 0),
+                'ips' => (int) ($row['ips'] ?? 0),
+            ], $rollup);
+        }
+
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
             "SELECT COALESCE(NULLIF(isp_domain,''), '未知运营商') as isp, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
@@ -2027,9 +2442,24 @@ class Tracker
 
     private function getNewVsReturning(int $siteId, string $range): array
     {
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $rollup = $this->aggregateDimensionRollups($siteId, 'audience', $start, $end, 2);
+
+        if (!empty($rollup)) {
+            $new = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'new'))[0] ?? [];
+            $returning = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'returning'))[0] ?? [];
+
+            return [
+                'new' => (int) ($new['views'] ?? 0),
+                'returning' => (int) ($returning['views'] ?? 0),
+                'new_ips' => (int) ($new['ips'] ?? 0),
+                'returning_ips' => (int) ($returning['ips'] ?? 0),
+            ];
+        }
+
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT 
+            "SELECT
                 SUM(is_unique) as new_users,
                 COUNT(*) - SUM(is_unique) as returning,
                 COUNT(DISTINCT CASE WHEN is_unique = 1 THEN ip_hash END) as new_ips,
