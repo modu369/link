@@ -269,10 +269,10 @@ class Tracker
         ];
     }
 
-    public function getBotData(int $siteId, string $range = 'today'): array
+    public function getBotData(int $siteId, string $range = 'today', ?string $engine = null): array
     {
         return [
-            'bot' => $this->getBotTraffic($siteId, $range),
+            'bot' => $this->getBotTraffic($siteId, $range, $engine),
         ];
     }
 
@@ -1000,24 +1000,27 @@ class Tracker
         }, $keywords));
     }
 
-    private function getBotTraffic(int $siteId, string $range): array
+    private function getBotTraffic(int $siteId, string $range, ?string $engine = null): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
+        $engineCase = $this->searchEngineCase();
+        $engineFilter = '';
+
+        if ($engine !== null && $engine !== '' && $engine !== 'all') {
+            $engineFilter = " AND {$engineCase} = :engine";
+            $params[':engine'] = $engine;
+        }
+
         $statement = $this->db->prepare(
-            "SELECT path, referrer, user_agent, occurred_at
+            "SELECT path, referrer, user_agent, occurred_at, {$engineCase} as engine
             FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 1 {$rangeSql}
+            WHERE site_id = :site_id AND is_bot = 1 {$rangeSql}{$engineFilter}
             ORDER BY occurred_at DESC
             LIMIT 200"
         );
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
-        $rows = $statement->fetchAll();
-        foreach ($rows as &$row) {
-            $row['engine'] = $this->identifySearchEngine($row['user_agent'], $row['referrer']);
-        }
-
-        return $rows;
+        return $statement->fetchAll();
     }
 
     private function getVisitAverages(int $siteId, string $range): array

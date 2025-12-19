@@ -4,7 +4,13 @@ require __DIR__ . '/layout.php';
 
 $page = max(1, (int) ($_GET['page'] ?? 1));
 $perPage = 50;
-$data = $selectedSite ? $tracker->getBotData($siteId, $range) : null;
+$engine = $_GET['engine'] ?? 'all';
+$engineLabels = ['百度', '谷歌', '必应', '360', '头条', '搜狗', '神马', '夸克', '其他'];
+if ($engine !== 'all' && !in_array($engine, $engineLabels, true)) {
+    $engine = 'all';
+}
+
+$data = $selectedSite ? $tracker->getBotData($siteId, $range, $engine === 'all' ? null : $engine) : null;
 $totalBot = $data ? count($data['bot'] ?? []) : 0;
 $totalPages = max(1, (int) ceil($totalBot / $perPage));
 if ($page > $totalPages) {
@@ -22,12 +28,25 @@ render_topbar($branding);
             <div class="card empty">请选择或创建站点后查看数据。</div>
         <?php else: ?>
             <section class="card">
-                <div class="section-title">
+                <div class="section-title" style="gap:12px;flex-wrap:wrap;align-items:flex-start;">
                     <div>
                         <h2 style="margin:0;">蜘蛛流量</h2>
                         <p class="muted" style="margin:2px 0 0;">单独展示，不入核心数据</p>
                     </div>
-                    <?php render_range_filters($allowedRanges, $range, 'bot', (int) $selectedSite['id']); ?>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                        <form method="get" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <input type="hidden" name="site" value="<?= (int) $siteId ?>" />
+                            <input type="hidden" name="range" value="<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>" />
+                            <label class="muted" for="engine">搜索引擎</label>
+                            <select id="engine" name="engine" onchange="this.form.submit()" style="padding:6px 8px;">
+                                <option value="all" <?= $engine === 'all' ? 'selected' : '' ?>>全部</option>
+                                <?php foreach ($engineLabels as $label): ?>
+                                    <option value="<?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?>" <?= $engine === $label ? 'selected' : '' ?>><?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </form>
+                        <?php render_range_filters($allowedRanges, $range, 'bot', (int) $selectedSite['id']); ?>
+                    </div>
                 </div>
             </section>
 
@@ -52,7 +71,11 @@ render_topbar($branding);
                     <?php endif; ?>
                     </tbody>
                 </table>
-                <?php render_pagination($page, $totalPages, '/bot.php', ['site' => (int) $siteId, 'range' => $range]); ?>
+                <?php render_pagination($page, $totalPages, '/bot.php', [
+                    'site' => (int) $siteId,
+                    'range' => $range,
+                    'engine' => $engine,
+                ]); ?>
             </section>
         <?php endif; ?>
     </main>
