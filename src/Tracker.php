@@ -221,16 +221,7 @@ class Tracker
 
     public function getOverview(int $siteId, string $range = 'today'): array
     {
-        $cacheKey = "overview:{$siteId}:{$range}";
-        $cached = $this->redis->get($cacheKey);
-        if ($cached) {
-            $decoded = json_decode($cached, true);
-            if (is_array($decoded)) {
-                return $decoded;
-            }
-        }
-
-        $overview = [
+        return [
             'totals' => $this->getTotals($siteId, $range),
             'daily' => $this->getDailyStats($siteId, $range),
             'hourly' => $this->getHourlyStats($siteId, $range),
@@ -246,11 +237,6 @@ class Tracker
             'top_pages' => $this->getTopPages($siteId, $range, 10),
             'entry_pages' => $this->getEntryPages($siteId, $range, 15),
         ];
-
-        // 缓存短期概览数据，减轻大数据量下的频繁聚合压力
-        $this->redis->setex($cacheKey, 120, json_encode($overview));
-
-        return $overview;
     }
 
     public function getContentData(int $siteId, string $range = 'today', array $filters = [], int $page = 1, int $perPage = 50): array
