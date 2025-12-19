@@ -34,6 +34,22 @@ class Tracker
         $this->maybeCleanupRetention();
     }
 
+    private function cacheAggregate(string $key, int $ttlSeconds, callable $builder): array
+    {
+        $cached = $this->redis->get($key);
+        if ($cached !== false) {
+            $decoded = json_decode($cached, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        }
+
+        $result = $builder();
+        $this->redis->setex($key, $ttlSeconds, json_encode($result));
+
+        return $result;
+    }
+
     public function createSite(string $name, string $domain): array
     {
         $trackingId = bin2hex(random_bytes(8));
@@ -417,23 +433,32 @@ class Tracker
 
     public function getKeywordData(int $siteId, string $range = 'today'): array
     {
-        return [
-            'keywords' => $this->getKeywords($siteId, $range),
-        ];
+        $cacheKey = sprintf('rollup:data:keywords:%d:%s', $siteId, $range);
+        return $this->cacheAggregate($cacheKey, 300, function () use ($siteId, $range) {
+            return [
+                'keywords' => $this->getKeywords($siteId, $range),
+            ];
+        });
     }
 
     public function getSearchEngineData(int $siteId, string $range = 'today'): array
     {
-        return [
-            'engines' => $this->getSearchEngines($siteId, $range),
-        ];
+        $cacheKey = sprintf('rollup:data:search_engines:%d:%s', $siteId, $range);
+        return $this->cacheAggregate($cacheKey, 300, function () use ($siteId, $range) {
+            return [
+                'engines' => $this->getSearchEngines($siteId, $range),
+            ];
+        });
     }
 
     public function getExternalLinkData(int $siteId, string $range = 'today'): array
     {
-        return [
-            'links' => $this->getExternalLinks($siteId, $range),
-        ];
+        $cacheKey = sprintf('rollup:data:external_links:%d:%s', $siteId, $range);
+        return $this->cacheAggregate($cacheKey, 300, function () use ($siteId, $range) {
+            return [
+                'links' => $this->getExternalLinks($siteId, $range),
+            ];
+        });
     }
 
     public function getBotData(int $siteId, string $range = 'today', ?string $engine = null): array
@@ -446,9 +471,12 @@ class Tracker
 
     public function getMobileData(int $siteId, string $range = 'today'): array
     {
-        return [
-            'breakdown' => $this->getMobileBreakdown($siteId, $range),
-        ];
+        $cacheKey = sprintf('rollup:data:mobile:%d:%s', $siteId, $range);
+        return $this->cacheAggregate($cacheKey, 300, function () use ($siteId, $range) {
+            return [
+                'breakdown' => $this->getMobileBreakdown($siteId, $range),
+            ];
+        });
     }
 
     public function getTrendData(int $siteId, string $range = 'today'): array
@@ -525,59 +553,86 @@ class Tracker
 
     public function getVisitorEnv(int $siteId, string $range = 'today'): array
     {
-        return [
-            'devices' => $this->getDeviceBreakdown($siteId, $range),
-            'browsers' => $this->getBrowserBreakdown($siteId, $range),
-        ];
+        $cacheKey = sprintf('rollup:data:env:%d:%s', $siteId, $range);
+        return $this->cacheAggregate($cacheKey, 300, function () use ($siteId, $range) {
+            return [
+                'devices' => $this->getDeviceBreakdown($siteId, $range),
+                'browsers' => $this->getBrowserBreakdown($siteId, $range),
+            ];
+        });
     }
 
     public function getRegionData(int $siteId, string $range = 'today'): array
     {
-        return [
-            'regions' => $this->getRegionStats($siteId, $range, 200),
-            'countries' => $this->getCountryStats($siteId, $range, 200),
-        ];
+        $cacheKey = sprintf('rollup:data:region:%d:%s', $siteId, $range);
+        return $this->cacheAggregate($cacheKey, 300, function () use ($siteId, $range) {
+            return [
+                'regions' => $this->getRegionStats($siteId, $range, 200),
+                'countries' => $this->getCountryStats($siteId, $range, 200),
+            ];
+        });
     }
 
     public function getIspData(int $siteId, string $range = 'today'): array
     {
-        return [
-            'isps' => $this->getIspStats($siteId, $range),
-        ];
+        $cacheKey = sprintf('rollup:data:isp:%d:%s', $siteId, $range);
+        return $this->cacheAggregate($cacheKey, 300, function () use ($siteId, $range) {
+            return [
+                'isps' => $this->getIspStats($siteId, $range),
+            ];
+        });
     }
 
     public function getAudienceData(int $siteId, string $range = 'today'): array
     {
-        return [
-            'new_vs_returning' => $this->getNewVsReturning($siteId, $range),
-        ];
+        $cacheKey = sprintf('rollup:data:audience:%d:%s', $siteId, $range);
+        return $this->cacheAggregate($cacheKey, 300, function () use ($siteId, $range) {
+            return [
+                'new_vs_returning' => $this->getNewVsReturning($siteId, $range),
+            ];
+        });
     }
 
     public function getReferrerData(int $siteId, string $range = 'today', array $filters = []): array
     {
-        $refs = $this->getReferrerSummary($siteId, $range, $filters);
-        return [
-            'referrers' => $refs['rows'],
-            'ref_summary' => $refs['summary'],
-        ];
+        $cacheKey = sprintf(
+            'rollup:data:referrer:%d:%s:%s:%s',
+            $siteId,
+            $range,
+            $filters['device'] ?? 'all',
+            $filters['visitor'] ?? 'all'
+        );
+        return $this->cacheAggregate($cacheKey, 180, function () use ($siteId, $range, $filters) {
+            $refs = $this->getReferrerSummary($siteId, $range, $filters);
+            return [
+                'referrers' => $refs['rows'],
+                'ref_summary' => $refs['summary'],
+            ];
+        });
     }
 
     public function getEntryData(int $siteId, string $range = 'today', array $filters = []): array
     {
-        $entry = $this->getEntrySummary($siteId, $range);
-        return [
-            'entries' => $entry['rows'],
-            'entry_summary' => $entry['summary'],
-        ];
+        $cacheKey = sprintf('rollup:data:entry:%d:%s', $siteId, $range);
+        return $this->cacheAggregate($cacheKey, 180, function () use ($siteId, $range) {
+            $entry = $this->getEntrySummary($siteId, $range);
+            return [
+                'entries' => $entry['rows'],
+                'entry_summary' => $entry['summary'],
+            ];
+        });
     }
 
     public function getPageData(int $siteId, string $range = 'today'): array
     {
-        $pages = $this->getPageSummary($siteId, $range);
-        return [
-            'pages' => $pages['rows'],
-            'page_summary' => $pages['summary'],
-        ];
+        $cacheKey = sprintf('rollup:data:pages:%d:%s', $siteId, $range);
+        return $this->cacheAggregate($cacheKey, 180, function () use ($siteId, $range) {
+            $pages = $this->getPageSummary($siteId, $range);
+            return [
+                'pages' => $pages['rows'],
+                'page_summary' => $pages['summary'],
+            ];
+        });
     }
 
     public function getDashboardData(int $siteId): array
