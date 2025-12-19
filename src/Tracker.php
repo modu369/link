@@ -2166,7 +2166,23 @@ class Tracker
         $rollup = $this->aggregateDimensionRollups($siteId, 'search_engine', $start, $end, 50);
 
         if (!empty($rollup)) {
-            return array_values(array_filter($rollup, fn ($row) => ($row['dimension_value'] ?? '其他') !== '其他'));
+            $mapped = [];
+
+            foreach ($rollup as $row) {
+                $engine = $row['dimension_value'] ?? '其他';
+
+                if ($engine === '其他') {
+                    continue;
+                }
+
+                $mapped[] = [
+                    'engine' => $engine,
+                    'views' => (int) ($row['views'] ?? 0),
+                    'ips' => (int) ($row['ips'] ?? 0),
+                ];
+            }
+
+            return $mapped;
         }
 
         [$rangeSql, $params] = $this->rangeClause($range);
