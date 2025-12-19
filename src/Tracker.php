@@ -350,8 +350,34 @@ class Tracker
         return [$start, $end];
     }
 
+    private function rollupsCoverRange(int $siteId, DateTimeImmutable $start): bool
+    {
+        $statement = $this->db->prepare('SELECT MIN(bucket_start) as first_bucket FROM pageview_rollups WHERE site_id = :site_id');
+        $statement->execute([':site_id' => $siteId]);
+        $first = $statement->fetchColumn();
+
+        if (!$first) {
+            return false;
+        }
+
+        return new DateTimeImmutable($first) <= $start;
+    }
+
     private function aggregateRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
+        if (!$this->rollupsCoverRange($siteId, $start)) {
+            return [
+                'has_data' => false,
+                'views' => 0,
+                'uniques' => 0,
+                'ip_count' => 0,
+                'session_count' => 0,
+                'duration_sum' => 0,
+                'page_sum' => 0,
+                'bounce_count' => 0,
+            ];
+        }
+
         $statement = $this->db->prepare(
             'SELECT SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ip_count, SUM(session_count) as session_count,
                 SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count,
@@ -507,6 +533,10 @@ class Tracker
 
     private function aggregateDimensionRollups(int $siteId, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
     {
+        if (!$this->rollupsCoverRange($siteId, $start)) {
+            return [];
+        }
+
         $statement = $this->db->prepare(
             'SELECT dimension_value, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ips, SUM(session_count) as sessions, SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count
              FROM pageview_dimension_rollups
@@ -638,6 +668,10 @@ class Tracker
 
     private function getRollupDailyStats(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
+        if (!$this->rollupsCoverRange($siteId, $start)) {
+            return [];
+        }
+
         $statement = $this->db->prepare(
             "SELECT DATE(bucket_start) as day, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ip_count
              FROM pageview_rollups
@@ -657,6 +691,10 @@ class Tracker
 
     private function getRollupHourlyStats(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
+        if (!$this->rollupsCoverRange($siteId, $start)) {
+            return [];
+        }
+
         $statement = $this->db->prepare(
             "SELECT bucket_start as hour, pv as views, uv as uniques, ip_count as ips
              FROM pageview_rollups
