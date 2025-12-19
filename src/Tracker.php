@@ -327,6 +327,28 @@ class Tracker
         ];
     }
 
+    private function rollupSummaryStats(array $rollupTotals): array
+    {
+        $sessions = max(0, (int) ($rollupTotals['session_count'] ?? 0));
+        $views = (int) ($rollupTotals['views'] ?? 0);
+        $uniques = (int) ($rollupTotals['uniques'] ?? 0);
+        $ips = (int) ($rollupTotals['ip_count'] ?? 0);
+        $durationSum = (int) ($rollupTotals['duration_sum'] ?? 0);
+        $pageSum = (int) ($rollupTotals['page_sum'] ?? 0);
+        $bounceCount = (int) ($rollupTotals['bounce_count'] ?? 0);
+
+        return [
+            'ips' => $ips,
+            'views' => $views,
+            'uv' => $uniques,
+            'new' => $uniques,
+            'sessions' => $sessions,
+            'avg_pages' => $sessions > 0 ? round($pageSum / $sessions, 2) : 0,
+            'avg_duration' => $sessions > 0 ? ($durationSum / $sessions) : 0,
+            'bounce_rate' => $sessions > 0 ? ($bounceCount / $sessions) : 0,
+        ];
+    }
+
     private function getRollupDailyStats(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
         $statement = $this->db->prepare(
@@ -759,15 +781,21 @@ class Tracker
             ) s
             JOIN pageviews p ON p.id = s.first_id";
 
-        $summaryStmt = $this->db->prepare(
-            "SELECT COUNT(*) as sessions, COUNT(DISTINCT p.ip_hash) as ips, SUM(p.is_unique) as uniques,
-                SUM(p.page_count) as views, AVG(p.page_count) as avg_pages,
-                AVG(p.duration_seconds) as avg_duration,
-                AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            {$base}"
-        );
-        $summaryStmt->execute(array_merge([':site_id' => $siteId], $params));
-        $summary = $summaryStmt->fetch() ?: [];
+        [$rollupStart, $rollupEnd] = $this->rollupRangeBounds($range);
+        $rollupTotals = $this->aggregateRollups($siteId, $rollupStart, $rollupEnd);
+        $summary = $rollupTotals['has_data'] ? $this->rollupSummaryStats($rollupTotals) : null;
+
+        if ($summary === null) {
+            $summaryStmt = $this->db->prepare(
+                "SELECT COUNT(*) as sessions, COUNT(DISTINCT p.ip_hash) as ips, SUM(p.is_unique) as uniques,
+                    SUM(p.page_count) as views, AVG(p.page_count) as avg_pages,
+                    AVG(p.duration_seconds) as avg_duration,
+                    AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
+                {$base}"
+            );
+            $summaryStmt->execute(array_merge([':site_id' => $siteId], $params));
+            $summary = $summaryStmt->fetch() ?: [];
+        }
 
         $rowsStmt = $this->db->prepare(
             "SELECT p.path, COUNT(*) as sessions, COUNT(DISTINCT p.ip_hash) as ips,
@@ -786,8 +814,8 @@ class Tracker
             'summary' => [
                 'ips' => (int) ($summary['ips'] ?? 0),
                 'views' => (int) ($summary['views'] ?? 0),
-                'uv' => (int) ($summary['uniques'] ?? 0),
-                'new' => (int) ($summary['uniques'] ?? 0),
+                'uv' => (int) ($summary['uv'] ?? ($summary['uniques'] ?? 0)),
+                'new' => (int) ($summary['new'] ?? ($summary['uniques'] ?? 0)),
                 'sessions' => (int) ($summary['sessions'] ?? 0),
                 'avg_pages' => round((float) ($summary['avg_pages'] ?? 0), 2),
                 'avg_duration' => (float) ($summary['avg_duration'] ?? 0),
@@ -802,15 +830,21 @@ class Tracker
         [$rangeSql, $params] = $this->rangeClause($range);
         $baseWhere = "site_id = :site_id AND is_bot = 0 {$rangeSql}";
 
-        $summaryStmt = $this->db->prepare(
-            "SELECT COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips, SUM(is_unique) as uniques,
-                COUNT(DISTINCT session_id) as sessions,
-                AVG(page_count) as avg_pages, AVG(duration_seconds) as avg_duration,
-                AVG(CASE WHEN page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            FROM pageviews WHERE {$baseWhere}"
-        );
-        $summaryStmt->execute(array_merge([':site_id' => $siteId], $params));
-        $summary = $summaryStmt->fetch() ?: [];
+        [$rollupStart, $rollupEnd] = $this->rollupRangeBounds($range);
+        $rollupTotals = $this->aggregateRollups($siteId, $rollupStart, $rollupEnd);
+        $summary = $rollupTotals['has_data'] ? $this->rollupSummaryStats($rollupTotals) : null;
+
+        if ($summary === null) {
+            $summaryStmt = $this->db->prepare(
+                "SELECT COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips, SUM(is_unique) as uniques,
+                    COUNT(DISTINCT session_id) as sessions,
+                    AVG(page_count) as avg_pages, AVG(duration_seconds) as avg_duration,
+                    AVG(CASE WHEN page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
+                FROM pageviews WHERE {$baseWhere}"
+            );
+            $summaryStmt->execute(array_merge([':site_id' => $siteId], $params));
+            $summary = $summaryStmt->fetch() ?: [];
+        }
 
         $rowsStmt = $this->db->prepare(
             "SELECT COALESCE(path,'/') as path, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
@@ -828,8 +862,8 @@ class Tracker
             'summary' => [
                 'ips' => (int) ($summary['ips'] ?? 0),
                 'views' => (int) ($summary['views'] ?? 0),
-                'uv' => (int) ($summary['uniques'] ?? 0),
-                'new' => (int) ($summary['uniques'] ?? 0),
+                'uv' => (int) ($summary['uv'] ?? ($summary['uniques'] ?? 0)),
+                'new' => (int) ($summary['new'] ?? ($summary['uniques'] ?? 0)),
                 'sessions' => (int) ($summary['sessions'] ?? 0),
                 'avg_pages' => round((float) ($summary['avg_pages'] ?? 0), 2),
                 'avg_duration' => (float) ($summary['avg_duration'] ?? 0),
