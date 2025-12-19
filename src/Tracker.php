@@ -1095,32 +1095,91 @@ class Tracker
 
     private function getPredictions(int $siteId): array
     {
+        $now = new DateTimeImmutable('now');
+        $cacheKey = "predictions:{$siteId}:" . $now->format('YmdHi');
+
+        $cached = $this->redis->get($cacheKey);
+        if ($cached) {
+            return json_decode($cached, true);
+        }
+
+        $todayStart = $now->setTime(0, 0, 0);
+        $yesterdayStart = $todayStart->sub(new DateInterval('P1D'));
+        $yesterdaySameTime = $yesterdayStart->setTime((int) $now->format('H'), (int) $now->format('i'), (int) $now->format('s'));
+
+        $today = $this->getRangeStats($siteId, $todayStart, $now);
+        $yesterdayFull = $this->getRangeStats($siteId, $yesterdayStart, $todayStart);
+        $yesterdayPace = $this->getRangeStats($siteId, $yesterdayStart, $yesterdaySameTime);
+        $averages = $this->getHistoricalAverages($siteId, 30);
+
+        $predictions = [
+            'views' => $this->projectDayMetric($today['views'], $yesterdayFull['views'], $yesterdayPace['views'], $averages['views']),
+            'uniques' => $this->projectDayMetric($today['uniques'], $yesterdayFull['uniques'], $yesterdayPace['uniques'], $averages['uniques']),
+            'ips' => $this->projectDayMetric($today['ips'], $yesterdayFull['ips'], $yesterdayPace['ips'], $averages['ips']),
+        ];
+
+        $this->redis->setex($cacheKey, 55, json_encode($predictions));
+
+        return $predictions;
+    }
+
+    private function getHistoricalAverages(int $siteId, int $days): array
+    {
         $statement = $this->db->prepare(
             'SELECT DATE(occurred_at) as day, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips, SUM(is_unique) as uniques
             FROM pageviews
             WHERE site_id = :site_id AND is_bot = 0 AND occurred_at < CURDATE()
             GROUP BY day
             ORDER BY day DESC
-            LIMIT 30'
+            LIMIT :limit'
         );
-        $statement->execute([':site_id' => $siteId]);
+        $statement->bindValue(':site_id', $siteId, PDO::PARAM_INT);
+        $statement->bindValue(':limit', $days, PDO::PARAM_INT);
+        $statement->execute();
         $rows = $statement->fetchAll();
 
         if (empty($rows)) {
             return ['views' => 0, 'uniques' => 0, 'ips' => 0];
         }
 
-        $views = array_column($rows, 'views');
-        $uniques = array_column($rows, 'uniques');
-        $ips = array_column($rows, 'ips');
-
         $denominator = max(count($rows), 1);
 
         return [
-            'views' => (int) round(array_sum($views) / $denominator),
-            'uniques' => (int) round(array_sum($uniques) / $denominator),
-            'ips' => (int) round(array_sum($ips) / $denominator),
+            'views' => (int) round(array_sum(array_column($rows, 'views')) / $denominator),
+            'uniques' => (int) round(array_sum(array_column($rows, 'uniques')) / $denominator),
+            'ips' => (int) round(array_sum(array_column($rows, 'ips')) / $denominator),
         ];
+    }
+
+    private function getRangeStats(int $siteId, DateTimeInterface $start, DateTimeInterface $end): array
+    {
+        $statement = $this->db->prepare(
+            'SELECT COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips, SUM(is_unique) as uniques
+            FROM pageviews
+            WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end'
+        );
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        $row = $statement->fetch();
+
+        return [
+            'views' => (int) ($row['views'] ?? 0),
+            'ips' => (int) ($row['ips'] ?? 0),
+            'uniques' => (int) ($row['uniques'] ?? 0),
+        ];
+    }
+
+    private function projectDayMetric(int $today, int $yesterdayFull, int $yesterdayPartial, int $average): int
+    {
+        $baseline = $yesterdayFull > 0 ? $yesterdayFull : ($average > 0 ? $average : $today);
+        $pace = $yesterdayPartial > 0 ? max(0.1, $today / $yesterdayPartial) : 1.0;
+        $estimate = (int) round($baseline * $pace);
+
+        return max($today, $estimate);
     }
 
     private function isBot(string $userAgent): bool
