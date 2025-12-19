@@ -376,11 +376,14 @@ class Tracker
             return false;
         }
 
-        if ($end === null) {
-            return $coverageStart <= $start;
+        $windowEnd = $end ?? $coverageEnd;
+        if ($coverageStart > $start || $coverageEnd < $windowEnd) {
+            return false;
         }
 
-        return $coverageStart <= $start && $coverageEnd >= $end;
+        $windowStart = max($start, $coverageStart);
+
+        return $this->rollupWindowComplete($siteId, $windowStart, $windowEnd);
     }
 
     private function aggregateRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
@@ -419,6 +422,24 @@ class Tracker
         ]);
 
         $row = $statement->fetch() ?: [];
+        $bucketCount = (int) ($row['buckets'] ?? 0);
+        $expectedBuckets = (int) ceil(($end->getTimestamp() - $rollupStart->getTimestamp()) / 3600);
+
+        if ($bucketCount < $expectedBuckets) {
+            return [
+                'has_data' => false,
+                'coverage_start' => $coverageStart,
+                'coverage_end' => $coverageEnd,
+                'views' => 0,
+                'uniques' => 0,
+                'ip_count' => 0,
+                'session_count' => 0,
+                'duration_sum' => 0,
+                'page_sum' => 0,
+                'bounce_count' => 0,
+            ];
+        }
+
         $firstBucket = $row['first_bucket'] ?? null;
         $lastBucket = $row['last_bucket'] ?? null;
 
@@ -426,7 +447,7 @@ class Tracker
         $coverageWindowEnd = $lastBucket ? (new DateTimeImmutable($lastBucket))->modify('+1 hour') : $coverageEnd;
 
         return [
-            'has_data' => ((int) ($row['buckets'] ?? 0)) > 0,
+            'has_data' => $bucketCount > 0,
             'coverage_start' => $coverageWindowStart,
             'coverage_end' => $coverageWindowEnd,
             'views' => (int) ($row['views'] ?? 0),
@@ -437,6 +458,30 @@ class Tracker
             'page_sum' => (int) ($row['page_sum'] ?? 0),
             'bounce_count' => (int) ($row['bounce_count'] ?? 0),
         ];
+    }
+
+    private function rollupWindowComplete(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): bool
+    {
+        $expectedBuckets = (int) ceil(($end->getTimestamp() - $start->getTimestamp()) / 3600);
+        if ($expectedBuckets <= 0) {
+            return false;
+        }
+
+        $statement = $this->db->prepare(
+            'SELECT COUNT(DISTINCT bucket_start) as buckets
+             FROM pageview_rollups
+             WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end'
+        );
+
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        $row = $statement->fetch() ?: [];
+
+        return ((int) ($row['buckets'] ?? 0)) >= $expectedBuckets;
     }
 
     private function aggregateRawWindow(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
