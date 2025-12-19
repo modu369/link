@@ -265,6 +265,7 @@ class Tracker
                 ],
                 'isp' => $ispName,
                 'entry_path' => $entryPath,
+                'canonical_host' => $canonicalHost ?: '未知域名',
                 'is_unique' => $isUnique,
             ]
         );
@@ -384,6 +385,17 @@ class Tracker
         $windowStart = max($start, $coverageStart);
 
         return $this->rollupWindowComplete($siteId, $windowStart, $windowEnd);
+    }
+
+    private function rollupsCoverRangeForSites(array $siteIds, DateTimeImmutable $start, DateTimeImmutable $end): bool
+    {
+        foreach ($siteIds as $siteId) {
+            if (!$this->rollupsCoverRange((int) $siteId, $start, $end)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function aggregateRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
@@ -604,6 +616,7 @@ class Tracker
         $isp = trim($dimensions['isp'] ?? '') ?: null;
         $isMobile = (bool) ($dimensions['is_mobile'] ?? false);
         $isUnique = (bool) ($dimensions['is_unique'] ?? false);
+        $canonicalHost = trim($dimensions['canonical_host'] ?? '') ?: '未知域名';
 
         if ($keyword) {
             $entries[] = ['keyword', $keyword];
@@ -621,6 +634,11 @@ class Tracker
         }
 
         $entries[] = ['page_path', $path];
+
+        if ($canonicalHost !== '') {
+            $entries[] = ['host', $canonicalHost];
+            $entries[] = ['host_device', $this->dimensionKey([$canonicalHost, $isMobile ? 'mobile' : 'desktop'])];
+        }
 
         if (!empty($dimensions['entry_path'])) {
             $entries[] = ['entry_path', $dimensions['entry_path']];
@@ -727,6 +745,47 @@ class Tracker
         $statement->bindValue(':start', $start->format('Y-m-d H:i:s'), PDO::PARAM_STR);
         $statement->bindValue(':end', $end->format('Y-m-d H:i:s'), PDO::PARAM_STR);
         $statement->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $statement->execute();
+
+        return $statement->fetchAll();
+    }
+
+    private function aggregateDimensionRollupsForSites(array $siteIds, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
+    {
+        if (empty($siteIds)) {
+            return [];
+        }
+
+        $placeholders = [];
+        $bindings = [
+            ':dimension' => $dimension,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+            ':limit' => $limit,
+        ];
+
+        foreach (array_values($siteIds) as $idx => $siteId) {
+            $ph = ':sid' . $idx;
+            $placeholders[] = $ph;
+            $bindings[$ph] = (int) $siteId;
+        }
+
+        $sql = sprintf(
+            'SELECT dimension_value, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ips, SUM(session_count) as sessions, SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count
+             FROM pageview_dimension_rollups
+             WHERE site_id IN (%s) AND dimension_type = :dimension AND bucket_start >= :start AND bucket_start < :end
+             GROUP BY dimension_value
+             ORDER BY views DESC
+             LIMIT :limit',
+            implode(',', $placeholders)
+        );
+
+        $statement = $this->db->prepare($sql);
+        foreach ($bindings as $key => $value) {
+            $paramType = (str_starts_with($key, ':sid') || $key === ':limit') ? PDO::PARAM_INT : PDO::PARAM_STR;
+            $statement->bindValue($key, $value, $paramType);
+        }
+
         $statement->execute();
 
         return $statement->fetchAll();
@@ -2250,6 +2309,59 @@ class Tracker
 
     private function getMobileBreakdown(int $siteId, string $range): array
     {
+        [$start, $end] = $this->rollupRangeBounds($range);
+
+        if ($this->rollupsCoverRange($siteId, $start, $end)) {
+            $hosts = $this->aggregateDimensionRollups($siteId, 'host', $start, $end, 200);
+            $hostDevices = $this->aggregateDimensionRollups($siteId, 'host_device', $start, $end, 400);
+
+            if (!empty($hosts)) {
+                $deviceMap = [];
+
+                foreach ($hostDevices as $deviceRow) {
+                    [$hostValue, $device] = array_pad(explode('|', $deviceRow['dimension_value'] ?? '', 2), 2, '');
+                    if ($device !== 'mobile') {
+                        continue;
+                    }
+
+                    $deviceMap[$hostValue]['views'] = ($deviceMap[$hostValue]['views'] ?? 0) + (int) ($deviceRow['views'] ?? 0);
+                    $deviceMap[$hostValue]['ips'] = ($deviceMap[$hostValue]['ips'] ?? 0) + (int) ($deviceRow['ips'] ?? 0);
+                }
+
+                $rows = [];
+                $totals = [
+                    'domain' => '汇总',
+                    'views' => 0,
+                    'ips' => 0,
+                    'mobile_views' => 0,
+                    'mobile_ips' => 0,
+                ];
+
+                foreach ($hosts as $row) {
+                    $domain = $row['dimension_value'] ?? '未知域名';
+                    $views = (int) ($row['views'] ?? 0);
+                    $ips = (int) ($row['ips'] ?? 0);
+                    $mobileViews = (int) ($deviceMap[$domain]['views'] ?? 0);
+                    $mobileIps = (int) ($deviceMap[$domain]['ips'] ?? 0);
+
+                    $rows[] = [
+                        'domain' => $domain,
+                        'views' => $views,
+                        'ips' => $ips,
+                        'mobile_views' => $mobileViews,
+                        'mobile_ips' => $mobileIps,
+                    ];
+
+                    $totals['views'] += $views;
+                    $totals['ips'] += $ips;
+                    $totals['mobile_views'] += $mobileViews;
+                    $totals['mobile_ips'] += $mobileIps;
+                }
+
+                return array_merge([$totals], $rows);
+            }
+        }
+
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
             "SELECT COALESCE(canonical_host, '未知域名') as domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
@@ -3153,6 +3265,62 @@ class Tracker
         $share = $this->getShareByToken($token);
         if (!$share || empty($share['site_ids'])) {
             return null;
+        }
+
+        [$start, $end] = $this->rollupRangeBounds($range);
+
+        if ($this->rollupsCoverRangeForSites($share['site_ids'], $start, $end)) {
+            $hosts = $this->aggregateDimensionRollupsForSites($share['site_ids'], 'host', $start, $end, 500);
+            $hostDevices = $this->aggregateDimensionRollupsForSites($share['site_ids'], 'host_device', $start, $end, 1000);
+
+            if (!empty($hosts)) {
+                $deviceMap = [];
+
+                foreach ($hostDevices as $deviceRow) {
+                    [$hostValue, $device] = array_pad(explode('|', $deviceRow['dimension_value'] ?? '', 2), 2, '');
+                    if ($device !== 'mobile') {
+                        continue;
+                    }
+
+                    $deviceMap[$hostValue]['views'] = ($deviceMap[$hostValue]['views'] ?? 0) + (int) ($deviceRow['views'] ?? 0);
+                    $deviceMap[$hostValue]['ips'] = ($deviceMap[$hostValue]['ips'] ?? 0) + (int) ($deviceRow['ips'] ?? 0);
+                }
+
+                $rows = [];
+                $totals = [
+                    'domain' => '汇总',
+                    'views' => 0,
+                    'ips' => 0,
+                    'mobile_views' => 0,
+                    'mobile_ips' => 0,
+                ];
+
+                foreach ($hosts as $row) {
+                    $domain = $row['dimension_value'] ?? '未知域名';
+                    $views = (int) ($row['views'] ?? 0);
+                    $ips = (int) ($row['ips'] ?? 0);
+                    $mobileViews = (int) ($deviceMap[$domain]['views'] ?? 0);
+                    $mobileIps = (int) ($deviceMap[$domain]['ips'] ?? 0);
+
+                    $rows[] = [
+                        'domain' => $domain,
+                        'views' => $views,
+                        'ips' => $ips,
+                        'mobile_views' => $mobileViews,
+                        'mobile_ips' => $mobileIps,
+                    ];
+
+                    $totals['views'] += $views;
+                    $totals['ips'] += $ips;
+                    $totals['mobile_views'] += $mobileViews;
+                    $totals['mobile_ips'] += $mobileIps;
+                }
+
+                return [
+                    'share' => $share,
+                    'rows' => array_merge([$totals], $rows),
+                ];
+            }
         }
 
         [$rangeSql, $params] = $this->rangeClause($range);
