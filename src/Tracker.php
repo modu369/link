@@ -202,7 +202,7 @@ class Tracker
         $countryCode = $ipMeta['country_code'] ?? '';
         $continentCode = $ipMeta['continent_code'] ?? '';
 
-        if ($ipHash) {
+        if (!$isBot && $ipHash) {
             $isUnique = (bool) $this->redis->sAdd($uniqueKey, $ipHash);
             $this->redis->expire($uniqueKey, 172800);
         }
@@ -234,6 +234,10 @@ class Tracker
             ':country_code' => $countryCode,
             ':continent_code' => $continentCode,
         ]);
+
+        if ($isBot) {
+            return;
+        }
 
         $now = new DateTimeImmutable('now');
         $browser = $this->detectBrowser($userAgent);
