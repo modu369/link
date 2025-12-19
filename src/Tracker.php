@@ -350,24 +350,38 @@ class Tracker
         return [$start, $end];
     }
 
-    private function rollupsCoverRange(int $siteId, DateTimeImmutable $start): bool
+    private function rollupCoverageStart(int $siteId): ?DateTimeImmutable
     {
         $statement = $this->db->prepare('SELECT MIN(bucket_start) as first_bucket FROM pageview_rollups WHERE site_id = :site_id');
         $statement->execute([':site_id' => $siteId]);
         $first = $statement->fetchColumn();
 
         if (!$first) {
+            return null;
+        }
+
+        return new DateTimeImmutable($first);
+    }
+
+    private function rollupsCoverRange(int $siteId, DateTimeImmutable $start): bool
+    {
+        $coverageStart = $this->rollupCoverageStart($siteId);
+        if (!$coverageStart) {
             return false;
         }
 
-        return new DateTimeImmutable($first) <= $start;
+        return $coverageStart <= $start;
     }
 
     private function aggregateRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
-        if (!$this->rollupsCoverRange($siteId, $start)) {
+        $coverageStart = $this->rollupCoverageStart($siteId);
+        $rollupStart = $coverageStart ? max($start, $coverageStart) : null;
+
+        if (!$rollupStart || $rollupStart >= $end) {
             return [
                 'has_data' => false,
+                'coverage_start' => $coverageStart,
                 'views' => 0,
                 'uniques' => 0,
                 'ip_count' => 0,
@@ -388,7 +402,7 @@ class Tracker
 
         $statement->execute([
             ':site_id' => $siteId,
-            ':start' => $start->format('Y-m-d H:i:s'),
+            ':start' => $rollupStart->format('Y-m-d H:i:s'),
             ':end' => $end->format('Y-m-d H:i:s'),
         ]);
 
@@ -396,6 +410,7 @@ class Tracker
 
         return [
             'has_data' => ((int) ($row['buckets'] ?? 0)) > 0,
+            'coverage_start' => $rollupStart,
             'views' => (int) ($row['views'] ?? 0),
             'uniques' => (int) ($row['uniques'] ?? 0),
             'ip_count' => (int) ($row['ip_count'] ?? 0),
@@ -404,6 +419,98 @@ class Tracker
             'page_sum' => (int) ($row['page_sum'] ?? 0),
             'bounce_count' => (int) ($row['bounce_count'] ?? 0),
         ];
+    }
+
+    private function aggregateRawWindow(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        $totalsStmt = $this->db->prepare(
+            'SELECT COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
+             FROM pageviews
+             WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end'
+        );
+        $totalsStmt->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        $totals = $totalsStmt->fetch() ?: [];
+
+        $sessionStmt = $this->db->prepare(
+            'SELECT COUNT(*) as session_count, SUM(duration_seconds) as duration_sum, SUM(page_count) as page_sum, SUM(bounce) as bounce_count
+             FROM (
+                SELECT COALESCE(MAX(duration_seconds), 0) as duration_seconds,
+                       COALESCE(MAX(page_count), 0) as page_count,
+                       CASE WHEN MAX(page_count) <= 1 THEN 1 ELSE 0 END as bounce
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL AND occurred_at >= :start AND occurred_at < :end
+                GROUP BY session_id
+             ) t'
+        );
+        $sessionStmt->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        $sessions = $sessionStmt->fetch() ?: [];
+
+        return [
+            'has_data' => true,
+            'coverage_start' => $start,
+            'views' => (int) ($totals['views'] ?? 0),
+            'uniques' => (int) ($totals['uniques'] ?? 0),
+            'ip_count' => (int) ($totals['ip_count'] ?? 0),
+            'session_count' => (int) ($sessions['session_count'] ?? 0),
+            'duration_sum' => (int) ($sessions['duration_sum'] ?? 0),
+            'page_sum' => (int) ($sessions['page_sum'] ?? 0),
+            'bounce_count' => (int) ($sessions['bounce_count'] ?? 0),
+        ];
+    }
+
+    private function combineTotals(array ...$segments): array
+    {
+        $result = [
+            'has_data' => false,
+            'views' => 0,
+            'uniques' => 0,
+            'ip_count' => 0,
+            'session_count' => 0,
+            'duration_sum' => 0,
+            'page_sum' => 0,
+            'bounce_count' => 0,
+        ];
+
+        foreach ($segments as $segment) {
+            foreach (['views', 'uniques', 'ip_count', 'session_count', 'duration_sum', 'page_sum', 'bounce_count'] as $key) {
+                $result[$key] += (int) ($segment[$key] ?? 0);
+            }
+
+            if (!empty($segment['has_data']) || (($segment['views'] ?? 0) + ($segment['session_count'] ?? 0) > 0)) {
+                $result['has_data'] = true;
+            }
+        }
+
+        return $result;
+    }
+
+    private function aggregateTotalsWithRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        $rollups = $this->aggregateRollups($siteId, $start, $end);
+
+        if (!$rollups['has_data']) {
+            return $this->aggregateRawWindow($siteId, $start, $end);
+        }
+
+        $segments = [$rollups];
+        $gapStart = $start;
+        $gapEnd = $rollups['coverage_start'] ?? $end;
+
+        if ($gapStart < $gapEnd) {
+            $segments[] = $this->aggregateRawWindow($siteId, $gapStart, min($gapEnd, $end));
+        }
+
+        return $this->combineTotals(...$segments);
     }
 
     private function updateDimensionRollups(
@@ -922,45 +1029,14 @@ class Tracker
     private function getTotals(int $siteId, string $range): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
-        $rollupTotals = $this->aggregateRollups($siteId, $start, $end);
-
-        if ($rollupTotals['has_data']) {
-            return [
-                'views' => $rollupTotals['views'],
-                'uniques' => $rollupTotals['uniques'],
-                'ip_count' => $rollupTotals['ip_count'],
-                'averages' => $this->getVisitAverages($siteId, $range, $rollupTotals),
-                'bounce_rate' => $this->getBounceRate($siteId, $range, $rollupTotals),
-            ];
-        }
-
-        $rawTotals = $this->getTotalsFromRaw($siteId, $range);
+        $rollupTotals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
 
         return [
-            'views' => $rawTotals['views'],
-            'uniques' => $rawTotals['uniques'],
-            'ip_count' => $rawTotals['ip_count'],
+            'views' => $rollupTotals['views'],
+            'uniques' => $rollupTotals['uniques'],
+            'ip_count' => $rollupTotals['ip_count'],
             'averages' => $this->getVisitAverages($siteId, $range, $rollupTotals),
             'bounce_rate' => $this->getBounceRate($siteId, $range, $rollupTotals),
-        ];
-    }
-
-    private function getTotalsFromRaw(int $siteId, string $range): array
-    {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-        $row = $statement->fetch();
-
-        return [
-            'views' => (int) ($row['views'] ?? 0),
-            'uniques' => (int) ($row['uniques'] ?? 0),
-            'ip_count' => (int) ($row['ip_count'] ?? 0),
         ];
     }
 
@@ -1738,23 +1814,16 @@ class Tracker
 
     private function getRangeStats(int $siteId, DateTimeInterface $start, DateTimeInterface $end): array
     {
-        $statement = $this->db->prepare(
-            'SELECT COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips, SUM(is_unique) as uniques
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end'
+        $totals = $this->aggregateTotalsWithRollups(
+            $siteId,
+            new DateTimeImmutable($start->format('Y-m-d H:i:s')),
+            new DateTimeImmutable($end->format('Y-m-d H:i:s'))
         );
-        $statement->execute([
-            ':site_id' => $siteId,
-            ':start' => $start->format('Y-m-d H:i:s'),
-            ':end' => $end->format('Y-m-d H:i:s'),
-        ]);
-
-        $row = $statement->fetch();
 
         return [
-            'views' => (int) ($row['views'] ?? 0),
-            'ips' => (int) ($row['ips'] ?? 0),
-            'uniques' => (int) ($row['uniques'] ?? 0),
+            'views' => (int) ($totals['views'] ?? 0),
+            'ips' => (int) ($totals['ip_count'] ?? 0),
+            'uniques' => (int) ($totals['uniques'] ?? 0),
         ];
     }
 
