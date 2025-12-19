@@ -5,12 +5,15 @@ require __DIR__ . '/layout.php';
 $page = max(1, (int) ($_GET['page'] ?? 1));
 $perPage = 50;
 $engine = $_GET['engine'] ?? 'all';
-$engineLabels = ['百度', '谷歌', '必应', '360', '头条', '搜狗', '神马', '夸克', '其他'];
+$data = $selectedSite ? $tracker->getBotData($siteId, $range, $engine === 'all' ? null : $engine) : null;
+$engineOptions = is_array($data) ? ($data['engines'] ?? []) : [];
+$engineLabels = array_column($engineOptions, 'engine');
 if ($engine !== 'all' && !in_array($engine, $engineLabels, true)) {
     $engine = 'all';
+    if ($selectedSite) {
+        $data['bot'] = $tracker->getBotData($siteId, $range)['bot'];
+    }
 }
-
-$data = $selectedSite ? $tracker->getBotData($siteId, $range, $engine === 'all' ? null : $engine) : null;
 $totalBot = $data ? count($data['bot'] ?? []) : 0;
 $totalPages = max(1, (int) ceil($totalBot / $perPage));
 if ($page > $totalPages) {
@@ -40,8 +43,8 @@ render_topbar($branding);
                             <label class="muted" for="engine">搜索引擎</label>
                             <select id="engine" name="engine" onchange="this.form.submit()" style="padding:6px 8px;">
                                 <option value="all" <?= $engine === 'all' ? 'selected' : '' ?>>全部</option>
-                                <?php foreach ($engineLabels as $label): ?>
-                                    <option value="<?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?>" <?= $engine === $label ? 'selected' : '' ?>><?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?></option>
+                                <?php foreach ($engineOptions as $option): ?>
+                                    <option value="<?= htmlspecialchars($option['engine'], ENT_QUOTES, 'UTF-8') ?>" <?= $engine === $option['engine'] ? 'selected' : '' ?>><?= htmlspecialchars($option['engine'], ENT_QUOTES, 'UTF-8') ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </form>

@@ -273,6 +273,7 @@ class Tracker
     {
         return [
             'bot' => $this->getBotTraffic($siteId, $range, $engine),
+            'engines' => $this->getBotEngines($siteId, $range),
         ];
     }
 
@@ -1018,6 +1019,26 @@ class Tracker
             ORDER BY occurred_at DESC
             LIMIT 200"
         );
+        $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+        return $statement->fetchAll();
+    }
+
+    private function getBotEngines(int $siteId, string $range): array
+    {
+        [$rangeSql, $params] = $this->rangeClause($range);
+        $engineCase = $this->searchEngineCase();
+
+        $statement = $this->db->prepare(
+            "SELECT engine, COUNT(*) as total FROM (
+                SELECT {$engineCase} as engine
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 1 {$rangeSql}
+            ) t
+            GROUP BY engine
+            ORDER BY total DESC"
+        );
+
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         return $statement->fetchAll();
