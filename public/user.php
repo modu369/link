@@ -149,7 +149,7 @@ render_topbar($branding);
             <input type="number" name="cleanup_days" min="1" placeholder="清理多少天前" style="padding:10px 12px;border-radius:8px;border:1px solid #e2e8f0;">
             <button type="submit" class="ghost">立即清理</button>
         </form>
-        <p class="muted" style="margin-top:10px;">建议在业务低峰通过计划任务调用本页或 CLI 清理，避免高峰 IO；表已按站点/时间索引优化，清理会自动走索引。</p>
+        <p class="muted" style="margin-top:10px;">自动与手动清理会同步删除 pageviews、pageview_rollups 与 pageview_dimension_rollups 中超期数据；pageviews 按批次删除以降低大表锁定时间。建议在业务低峰通过计划任务调用本页或 CLI 清理，避免高峰 IO。</p>
     </section>
 </div>
 <?php render_footer(); ?>

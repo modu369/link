@@ -2863,12 +2863,34 @@ class Tracker
 
     public function manualCleanup(int $days): void
     {
+        $this->cleanupDataOlderThan($days);
+    }
+
+    private function cleanupDataOlderThan(int $days): void
+    {
         if ($days <= 0) {
             return;
         }
 
-        $stmt = $this->db->prepare('DELETE FROM pageviews WHERE occurred_at < DATE_SUB(NOW(), INTERVAL :days DAY)');
-        $stmt->execute([':days' => $days]);
+        $cutoff = (new \DateTimeImmutable('now'))->modify("-{$days} days")->format('Y-m-d H:i:s');
+
+        // Rollup tables are small enough to delete in a single pass while still using time indexes.
+        $rollupStmt = $this->db->prepare('DELETE FROM pageview_rollups WHERE bucket_start < :cutoff');
+        $rollupStmt->execute([':cutoff' => $cutoff]);
+
+        $dimRollupStmt = $this->db->prepare('DELETE FROM pageview_dimension_rollups WHERE bucket_start < :cutoff');
+        $dimRollupStmt->execute([':cutoff' => $cutoff]);
+
+        // Pageviews can be very large; delete in batches to limit lock time and reduce replication lag.
+        $batchSize = 50000;
+        $pageviewStmt = $this->db->prepare('DELETE FROM pageviews WHERE occurred_at < :cutoff LIMIT :batch');
+        $pageviewStmt->bindValue(':cutoff', $cutoff);
+        $pageviewStmt->bindValue(':batch', $batchSize, PDO::PARAM_INT);
+
+        do {
+            $pageviewStmt->execute();
+            $deleted = $pageviewStmt->rowCount();
+        } while ($deleted === $batchSize);
     }
 
     public function createSharePage(string $name, array $siteIds): array
@@ -3037,8 +3059,7 @@ class Tracker
 
         if ($this->redis->setnx($key, '1')) {
             $this->redis->expire($key, 86400);
-            $stmt = $this->db->prepare('DELETE FROM pageviews WHERE occurred_at < DATE_SUB(NOW(), INTERVAL :days DAY)');
-            $stmt->execute([':days' => $this->retentionDays]);
+            $this->cleanupDataOlderThan($this->retentionDays);
         }
     }
 
