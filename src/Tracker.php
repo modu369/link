@@ -221,7 +221,16 @@ class Tracker
 
     public function getOverview(int $siteId, string $range = 'today'): array
     {
-        return [
+        $cacheKey = "overview:{$siteId}:{$range}";
+        $cached = $this->redis->get($cacheKey);
+        if ($cached) {
+            $decoded = json_decode($cached, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        }
+
+        $overview = [
             'totals' => $this->getTotals($siteId, $range),
             'daily' => $this->getDailyStats($siteId, $range),
             'hourly' => $this->getHourlyStats($siteId, $range),
@@ -237,6 +246,11 @@ class Tracker
             'top_pages' => $this->getTopPages($siteId, $range, 10),
             'entry_pages' => $this->getEntryPages($siteId, $range, 15),
         ];
+
+        // 缓存短期概览数据，减轻大数据量下的频繁聚合压力
+        $this->redis->setex($cacheKey, 120, json_encode($overview));
+
+        return $overview;
     }
 
     public function getContentData(int $siteId, string $range = 'today', array $filters = [], int $page = 1, int $perPage = 50): array
@@ -1096,7 +1110,8 @@ class Tracker
     private function getPredictions(int $siteId): array
     {
         $now = new DateTimeImmutable('now');
-        $cacheKey = "predictions:{$siteId}:" . $now->format('YmdHi');
+        $minuteBucket = (int) floor($now->getTimestamp() / 300); // 5 分钟粒度缓存
+        $cacheKey = "predictions:{$siteId}:{$minuteBucket}";
 
         $cached = $this->redis->get($cacheKey);
         if ($cached) {
@@ -1118,7 +1133,7 @@ class Tracker
             'ips' => $this->projectDayMetric($today['ips'], $yesterdayFull['ips'], $yesterdayPace['ips'], $averages['ips']),
         ];
 
-        $this->redis->setex($cacheKey, 55, json_encode($predictions));
+        $this->redis->setex($cacheKey, 300, json_encode($predictions));
 
         return $predictions;
     }
