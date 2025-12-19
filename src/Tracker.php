@@ -165,7 +165,7 @@ class Tracker
         if ($canonicalHost && !empty($allowedDomains) && !in_array($canonicalHost, $allowedDomains, true)) {
             return;
         }
-        $ip = $payload['ip'] ?? '';
+        $ip = $this->sanitizeIp($payload['ip'] ?? null);
         $ipHash = $ip ? hash('sha256', $ip) : null;
         $uniqueKey = sprintf('unique:%s:%s', $site['id'], date('Y-m-d'));
         $isUnique = false;
@@ -1180,6 +1180,29 @@ class Tracker
             'canonical' => $canonical,
             'path' => $path,
         ];
+    }
+
+    private function sanitizeIp(?string $ip): string
+    {
+        if ($ip === null) {
+            return '';
+        }
+
+        $parts = preg_split('/\s*,\s*/', $ip) ?: [];
+        foreach ($parts as $candidate) {
+            $trimmed = trim($candidate);
+            if ($trimmed === '') {
+                continue;
+            }
+
+            if (filter_var($trimmed, FILTER_VALIDATE_IP)) {
+                return $trimmed;
+            }
+        }
+
+        $fallback = trim($parts[0] ?? '');
+
+        return $fallback === '' ? '' : substr($fallback, 0, 45);
     }
 
     private function resolveIpMeta(?string $ip): array
