@@ -350,38 +350,49 @@ class Tracker
         return [$start, $end];
     }
 
-    private function rollupCoverageStart(int $siteId): ?DateTimeImmutable
+    private function rollupCoverageBounds(int $siteId): array
     {
-        $statement = $this->db->prepare('SELECT MIN(bucket_start) as first_bucket FROM pageview_rollups WHERE site_id = :site_id');
+        $statement = $this->db->prepare('SELECT MIN(bucket_start) as first_bucket, MAX(bucket_start) as last_bucket FROM pageview_rollups WHERE site_id = :site_id');
         $statement->execute([':site_id' => $siteId]);
-        $first = $statement->fetchColumn();
+        $row = $statement->fetch() ?: [];
 
-        if (!$first) {
-            return null;
-        }
+        $start = !empty($row['first_bucket']) ? new DateTimeImmutable($row['first_bucket']) : null;
+        $end = !empty($row['last_bucket']) ? (new DateTimeImmutable($row['last_bucket']))->modify('+1 hour') : null;
 
-        return new DateTimeImmutable($first);
+        return [$start, $end];
     }
 
-    private function rollupsCoverRange(int $siteId, DateTimeImmutable $start): bool
+    private function rollupCoverageStart(int $siteId): ?DateTimeImmutable
     {
-        $coverageStart = $this->rollupCoverageStart($siteId);
-        if (!$coverageStart) {
+        [$start] = $this->rollupCoverageBounds($siteId);
+
+        return $start;
+    }
+
+    private function rollupsCoverRange(int $siteId, DateTimeImmutable $start, ?DateTimeImmutable $end = null): bool
+    {
+        [$coverageStart, $coverageEnd] = $this->rollupCoverageBounds($siteId);
+        if (!$coverageStart || !$coverageEnd) {
             return false;
         }
 
-        return $coverageStart <= $start;
+        if ($end === null) {
+            return $coverageStart <= $start;
+        }
+
+        return $coverageStart <= $start && $coverageEnd >= $end;
     }
 
     private function aggregateRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
-        $coverageStart = $this->rollupCoverageStart($siteId);
+        [$coverageStart, $coverageEnd] = $this->rollupCoverageBounds($siteId);
         $rollupStart = $coverageStart ? max($start, $coverageStart) : null;
 
         if (!$rollupStart || $rollupStart >= $end) {
             return [
                 'has_data' => false,
                 'coverage_start' => $coverageStart,
+                'coverage_end' => $coverageEnd,
                 'views' => 0,
                 'uniques' => 0,
                 'ip_count' => 0,
@@ -393,7 +404,8 @@ class Tracker
         }
 
         $statement = $this->db->prepare(
-            'SELECT SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ip_count, SUM(session_count) as session_count,
+            'SELECT MIN(bucket_start) as first_bucket, MAX(bucket_start) as last_bucket,
+                SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ip_count, SUM(session_count) as session_count,
                 SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count,
                 COUNT(*) as buckets
              FROM pageview_rollups
@@ -407,10 +419,16 @@ class Tracker
         ]);
 
         $row = $statement->fetch() ?: [];
+        $firstBucket = $row['first_bucket'] ?? null;
+        $lastBucket = $row['last_bucket'] ?? null;
+
+        $coverageWindowStart = $firstBucket ? new DateTimeImmutable($firstBucket) : $rollupStart;
+        $coverageWindowEnd = $lastBucket ? (new DateTimeImmutable($lastBucket))->modify('+1 hour') : $coverageEnd;
 
         return [
             'has_data' => ((int) ($row['buckets'] ?? 0)) > 0,
-            'coverage_start' => $rollupStart,
+            'coverage_start' => $coverageWindowStart,
+            'coverage_end' => $coverageWindowEnd,
             'views' => (int) ($row['views'] ?? 0),
             'uniques' => (int) ($row['uniques'] ?? 0),
             'ip_count' => (int) ($row['ip_count'] ?? 0),
@@ -502,12 +520,18 @@ class Tracker
             return $this->aggregateRawWindow($siteId, $start, $end);
         }
 
-        $segments = [$rollups];
-        $gapStart = $start;
-        $gapEnd = $rollups['coverage_start'] ?? $end;
+        $segments = [];
+        $coverageStart = $rollups['coverage_start'] ?? $start;
+        $coverageEnd = $rollups['coverage_end'] ?? $start;
 
-        if ($gapStart < $gapEnd) {
-            $segments[] = $this->aggregateRawWindow($siteId, $gapStart, min($gapEnd, $end));
+        if ($start < $coverageStart) {
+            $segments[] = $this->aggregateRawWindow($siteId, $start, min($coverageStart, $end));
+        }
+
+        $segments[] = $rollups;
+
+        if ($coverageEnd < $end) {
+            $segments[] = $this->aggregateRawWindow($siteId, $coverageEnd, $end);
         }
 
         return $this->combineTotals(...$segments);
@@ -640,7 +664,7 @@ class Tracker
 
     private function aggregateDimensionRollups(int $siteId, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
     {
-        if (!$this->rollupsCoverRange($siteId, $start)) {
+        if (!$this->rollupsCoverRange($siteId, $start, $end)) {
             return [];
         }
 
@@ -775,7 +799,7 @@ class Tracker
 
     private function getRollupDailyStats(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
-        if (!$this->rollupsCoverRange($siteId, $start)) {
+        if (!$this->rollupsCoverRange($siteId, $start, $end)) {
             return [];
         }
 
@@ -798,7 +822,7 @@ class Tracker
 
     private function getRollupHourlyStats(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
-        if (!$this->rollupsCoverRange($siteId, $start)) {
+        if (!$this->rollupsCoverRange($siteId, $start, $end)) {
             return [];
         }
 
