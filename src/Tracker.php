@@ -1498,20 +1498,8 @@ class Tracker
         $baseWhere = "site_id = :site_id AND is_bot = 0 {$rangeSql}";
 
         [$rollupStart, $rollupEnd] = $this->rollupRangeBounds($range);
-        $rollupTotals = $this->aggregateRollups($siteId, $rollupStart, $rollupEnd);
-        $summary = $rollupTotals['has_data'] ? $this->rollupSummaryStats($rollupTotals) : null;
-
-        if ($summary === null) {
-            $summaryStmt = $this->db->prepare(
-                "SELECT COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips, SUM(is_unique) as uniques,
-                    COUNT(DISTINCT session_id) as sessions,
-                    AVG(page_count) as avg_pages, AVG(duration_seconds) as avg_duration,
-                    AVG(CASE WHEN page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-                FROM pageviews WHERE {$baseWhere}"
-            );
-            $summaryStmt->execute(array_merge([':site_id' => $siteId], $params));
-            $summary = $summaryStmt->fetch() ?: [];
-        }
+        $summaryTotals = $this->aggregateTotalsWithRollups($siteId, $rollupStart, $rollupEnd);
+        $summary = $this->rollupSummaryStats($summaryTotals);
 
         $rowsStmt = $this->db->prepare(
             "SELECT COALESCE(path,'/') as path, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
