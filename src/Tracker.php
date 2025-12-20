@@ -10,6 +10,7 @@ class Tracker
     private string $defaultLoginEntry = 'admin';
     private string $ipdbPath = '';
     private IpResolver $ipResolver;
+    private bool $hasIpHashColumn = false;
 
     public function __construct(
         private PDO $db,
@@ -498,10 +499,12 @@ class Tracker
 
     private function aggregateRawWindow(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
+        $ipExpr = $this->ipHashExpr('pageviews');
+
         $totalsStmt = $this->db->prepare(
-            'SELECT COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
+            "SELECT COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT {$ipExpr}) as ip_count
              FROM pageviews
-             WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end'
+             WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end"
         );
         $totalsStmt->execute([
             ':site_id' => $siteId,
@@ -851,11 +854,14 @@ class Tracker
             $bindings[$ph] = $value;
         }
 
-        $sql = sprintf(
-            "SELECT label, COUNT(DISTINCT p.ip_hash) as ips, COUNT(DISTINCT p.ip_hash) as uniques FROM (\n                SELECT %s as label, p.ip_hash\n                FROM pageviews p\n                WHERE p.site_id = :site_id AND %s AND p.occurred_at >= :start AND p.occurred_at < :end\n            ) derived\n            WHERE label IN (%s)\n            GROUP BY label",
-            $labelExpr,
-            $whereExtra ?: '1=1',
-            implode(',', $placeholders)
+        $sql = $this->replaceIpHash(
+            sprintf(
+                "SELECT label, COUNT(DISTINCT p.ip_hash) as ips, COUNT(DISTINCT p.ip_hash) as uniques FROM (\n                SELECT %s as label, p.ip_hash\n                FROM pageviews p\n                WHERE p.site_id = :site_id AND %s AND p.occurred_at >= :start AND p.occurred_at < :end\n            ) derived\n            WHERE label IN (%s)\n            GROUP BY label",
+                $labelExpr,
+                $whereExtra ?: '1=1',
+                implode(',', $placeholders)
+            ),
+            'p'
         );
 
         $stmt = $this->db->prepare($sql);
@@ -1293,13 +1299,15 @@ class Tracker
         }
 
         [$rangeSql, $params] = $this->rangeClause($range, true);
-        $statement = $this->db->prepare(
+        $sql = $this->replaceIpHash(
             "SELECT DATE(occurred_at) as day, COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
             FROM pageviews
             WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
             GROUP BY day
-            ORDER BY day ASC"
+            ORDER BY day ASC",
+            'pageviews'
         );
+        $statement = $this->db->prepare($sql);
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         return $statement->fetchAll();
@@ -1308,14 +1316,16 @@ class Tracker
     private function getTopPages(int $siteId, string $range, int $limit = 50): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
+        $sql = $this->replaceIpHash(
             "SELECT path, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
             FROM pageviews
             WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
             GROUP BY path
             ORDER BY ips DESC
-            LIMIT {$limit}"
+            LIMIT {$limit}",
+            'pageviews'
         );
+        $statement = $this->db->prepare($sql);
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         return $statement->fetchAll();
@@ -1325,14 +1335,16 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $domains = $this->getAllSiteDomains($siteId);
-        $statement = $this->db->prepare(
+        $sql = $this->replaceIpHash(
             "SELECT referrer, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
             FROM pageviews
             WHERE site_id = :site_id AND referrer IS NOT NULL AND referrer != '' AND is_bot = 0 {$rangeSql}
             GROUP BY referrer
             ORDER BY ips DESC
-            LIMIT 50"
+            LIMIT 50",
+            'pageviews'
         );
+        $statement = $this->db->prepare($sql);
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         $rows = $statement->fetchAll();
@@ -1394,7 +1406,7 @@ class Tracker
     private function getEntryPages(int $siteId, string $range, int $limit = 20): array
     {
         [$rangeSql, $params] = $this->rangeClause($range, true);
-        $statement = $this->db->prepare(
+        $sql = $this->replaceIpHash(
             "SELECT p.path, COUNT(*) as views, COUNT(DISTINCT p.ip_hash) as ips, SUM(p.is_unique) as uniques,
                 AVG(p.page_count) as avg_pages, AVG(p.duration_seconds) as avg_duration,
                 AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
@@ -1407,9 +1419,11 @@ class Tracker
             JOIN pageviews p ON p.id = s.first_id
             GROUP BY p.path
             ORDER BY ips DESC
-            LIMIT {$limit}"
+            LIMIT {$limit}",
+            'p'
         );
 
+        $statement = $this->db->prepare($sql);
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
         return $statement->fetchAll();
@@ -1431,18 +1445,20 @@ class Tracker
         $summary = $rollupTotals['has_data'] ? $this->rollupSummaryStats($rollupTotals) : null;
 
         if ($summary === null) {
-            $summaryStmt = $this->db->prepare(
+            $summarySql = $this->replaceIpHash(
                 "SELECT COUNT(*) as sessions, COUNT(DISTINCT p.ip_hash) as ips, SUM(p.is_unique) as uniques,
                     SUM(p.page_count) as views, AVG(p.page_count) as avg_pages,
                     AVG(p.duration_seconds) as avg_duration,
                     AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-                {$base}"
+                {$base}",
+                'p'
             );
+            $summaryStmt = $this->db->prepare($summarySql);
             $summaryStmt->execute(array_merge([':site_id' => $siteId], $params));
             $summary = $summaryStmt->fetch() ?: [];
         }
 
-        $rowsStmt = $this->db->prepare(
+        $rowsSql = $this->replaceIpHash(
             "SELECT p.path, COUNT(*) as sessions, COUNT(DISTINCT p.ip_hash) as ips,
                 SUM(p.is_unique) as uniques, SUM(p.page_count) as views,
                 AVG(p.page_count) as avg_pages, AVG(p.duration_seconds) as avg_duration,
@@ -1450,8 +1466,10 @@ class Tracker
             {$base}
             GROUP BY p.path
             ORDER BY ips DESC
-            LIMIT 200"
+            LIMIT 200",
+            'p'
         );
+        $rowsStmt = $this->db->prepare($rowsSql);
         $rowsStmt->execute($this->filterParams($rowsStmt->queryString, array_merge([':site_id' => $siteId], $params)));
         $rows = $rowsStmt->fetchAll();
 
@@ -2186,6 +2204,25 @@ class Tracker
         return $fallback === '' ? '' : substr($fallback, 0, 45);
     }
 
+    private function ipHashExpr(string $alias = 'p'): string
+    {
+        $alias = trim($alias);
+
+        if ($this->hasIpHashColumn) {
+            return sprintf(
+                'COALESCE(%1$s.ip_hash, SHA2(COALESCE(%1$s.ip_address, ""), 256))',
+                $alias
+            );
+        }
+
+        return sprintf('SHA2(COALESCE(%s.ip_address, ""), 256)', $alias);
+    }
+
+    private function replaceIpHash(string $sql, string $alias = 'p'): string
+    {
+        return str_replace('ip_hash', $this->ipHashExpr($alias), $sql);
+    }
+
     private function resolveIpMeta(?string $ip): array
     {
         if (!$ip) {
@@ -2299,6 +2336,7 @@ class Tracker
         $ensureColumn('is_unique', 'TINYINT(1) DEFAULT 0');
         $ensureColumn('occurred_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
         $ensureColumn('ip_address', 'VARCHAR(45)');
+        $ensureColumn('ip_hash', 'CHAR(64)');
         $ensureColumn('country_name', 'VARCHAR(128)');
         $ensureColumn('region_name', 'VARCHAR(128)');
         $ensureColumn('city_name', 'VARCHAR(128)');
@@ -2313,6 +2351,21 @@ class Tracker
         $ensureIndex('idx_site_country', 'site_id, country_name, occurred_at');
         $ensureIndex('idx_site_region', 'site_id, region_name, occurred_at');
         $ensureIndex('idx_site_isp', 'site_id, isp_domain, occurred_at');
+
+        $this->hasIpHashColumn = $columnExists('ip_hash');
+
+        if ($this->hasIpHashColumn) {
+            $needsBackfill = $this->db->query(
+                "SELECT 1 FROM pageviews WHERE (ip_hash IS NULL OR ip_hash = '') LIMIT 1"
+            )->fetchColumn();
+
+            if ($needsBackfill !== false) {
+                $this->db->exec(
+                    "UPDATE pageviews SET ip_hash = SHA2(COALESCE(ip_address, ''), 256)
+                    WHERE (ip_hash IS NULL OR ip_hash = '') LIMIT 50000"
+                );
+            }
+        }
     }
 
     private function ensureRollupSchema(): void
