@@ -2220,7 +2220,11 @@ class Tracker
 
     private function replaceIpHash(string $sql, string $alias = 'p'): string
     {
-        return str_replace('ip_hash', $this->ipHashExpr($alias), $sql);
+        $expr = $this->ipHashExpr($alias);
+
+        $sql = preg_replace('/\b' . preg_quote($alias, '/') . '\.ip_hash\b/', $expr, $sql);
+
+        return preg_replace('/\bip_hash\b/', $expr, $sql);
     }
 
     private function resolveIpMeta(?string $ip): array
