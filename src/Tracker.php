@@ -1441,8 +1441,12 @@ class Tracker
             JOIN pageviews p ON p.id = s.first_id";
 
         [$rollupStart, $rollupEnd] = $this->rollupRangeBounds($range);
-        $rollupTotals = $this->aggregateRollups($siteId, $rollupStart, $rollupEnd);
-        $summary = $rollupTotals['has_data'] ? $this->rollupSummaryStats($rollupTotals) : null;
+        $summary = null;
+
+        if ($this->rollupsCoverRange($siteId, $rollupStart, $rollupEnd)) {
+            $rollupTotals = $this->aggregateRollups($siteId, $rollupStart, $rollupEnd);
+            $summary = $rollupTotals['has_data'] ? $this->rollupSummaryStats($rollupTotals) : null;
+        }
 
         if ($summary === null) {
             $summarySql = $this->replaceIpHash(
@@ -1834,37 +1838,39 @@ class Tracker
     private function getKeywords(int $siteId, string $range): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
-        $rollup = $this->aggregateDimensionRollups($siteId, 'keyword_engine', $start, $end, 500);
+        if ($this->rollupsCoverRange($siteId, $start, $end)) {
+            $rollup = $this->aggregateDimensionRollups($siteId, 'keyword_engine', $start, $end, 500);
 
-        if (!empty($rollup)) {
-            $keywords = [];
+            if (!empty($rollup)) {
+                $keywords = [];
 
-            foreach ($rollup as $row) {
-                [$keyword, $engine, $entry] = array_pad(explode('|', $row['dimension_value'] ?? '', 3), 3, '/');
-                if ($keyword === '') {
-                    continue;
+                foreach ($rollup as $row) {
+                    [$keyword, $engine, $entry] = array_pad(explode('|', $row['dimension_value'] ?? '', 3), 3, '/');
+                    if ($keyword === '') {
+                        continue;
+                    }
+                    if (!isset($keywords[$keyword])) {
+                        $keywords[$keyword] = [
+                            'keyword' => $keyword,
+                            'views' => 0,
+                            'engines' => [],
+                            'entry' => $entry ?: '/',
+                        ];
+                    }
+
+                    $keywords[$keyword]['views'] += (int) ($row['views'] ?? 0);
+                    $keywords[$keyword]['engines'][] = $engine ?: '其他';
+
+                    if (($row['views'] ?? 0) >= ($keywords[$keyword]['views'] ?? 0)) {
+                        $keywords[$keyword]['entry'] = $entry ?: '/';
+                    }
                 }
-                if (!isset($keywords[$keyword])) {
-                    $keywords[$keyword] = [
-                        'keyword' => $keyword,
-                        'views' => 0,
-                        'engines' => [],
-                        'entry' => $entry ?: '/',
-                    ];
-                }
 
-                $keywords[$keyword]['views'] += (int) ($row['views'] ?? 0);
-                $keywords[$keyword]['engines'][] = $engine ?: '其他';
-
-                if (($row['views'] ?? 0) >= ($keywords[$keyword]['views'] ?? 0)) {
-                    $keywords[$keyword]['entry'] = $entry ?: '/';
-                }
+                return array_values(array_map(function ($item) {
+                    $item['engines'] = implode(' / ', array_unique($item['engines']));
+                    return $item;
+                }, $keywords));
             }
-
-            return array_values(array_map(function ($item) {
-                $item['engines'] = implode(' / ', array_unique($item['engines']));
-                return $item;
-            }, $keywords));
         }
 
         [$rangeSql, $params] = $this->rangeClause($range);
@@ -2630,26 +2636,28 @@ class Tracker
     private function getSearchEngines(int $siteId, string $range): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
-        $rollup = $this->aggregateDimensionRollups($siteId, 'search_engine', $start, $end, 50);
+        if ($this->rollupsCoverRange($siteId, $start, $end)) {
+            $rollup = $this->aggregateDimensionRollups($siteId, 'search_engine', $start, $end, 50);
 
-        if (!empty($rollup)) {
-            $mapped = [];
+            if (!empty($rollup)) {
+                $mapped = [];
 
-            foreach ($rollup as $row) {
-                $engine = $row['dimension_value'] ?? '其他';
+                foreach ($rollup as $row) {
+                    $engine = $row['dimension_value'] ?? '其他';
 
-                if ($engine === '其他') {
-                    continue;
+                    if ($engine === '其他') {
+                        continue;
+                    }
+
+                    $mapped[] = [
+                        'engine' => $engine,
+                        'views' => (int) ($row['views'] ?? 0),
+                        'ips' => (int) ($row['ips'] ?? 0),
+                    ];
                 }
 
-                $mapped[] = [
-                    'engine' => $engine,
-                    'views' => (int) ($row['views'] ?? 0),
-                    'ips' => (int) ($row['ips'] ?? 0),
-                ];
+                return $mapped;
             }
-
-            return $mapped;
         }
 
         [$rangeSql, $params] = $this->rangeClause($range);
@@ -2678,38 +2686,40 @@ class Tracker
         $domain = $site['domain'] ?? '';
         $blocked = ['baidu', 'google', 'bing.', 'sm.cn', 'quark.cn', 'so.com', 'sogou', 'bytedance', 'toutiao'];
 
-        $rollup = $this->aggregateDimensionRollups($siteId, 'referrer_host', $start, $end, 200);
-        $filtered = [];
+        if ($this->rollupsCoverRange($siteId, $start, $end)) {
+            $rollup = $this->aggregateDimensionRollups($siteId, 'referrer_host', $start, $end, 200);
+            $filtered = [];
 
-        if (!empty($rollup)) {
-            foreach ($rollup as $row) {
-                $host = strtolower($row['dimension_value'] ?? '');
-                if ($host === '' || $host === '直接访问') {
-                    continue;
-                }
+            if (!empty($rollup)) {
+                foreach ($rollup as $row) {
+                    $host = strtolower($row['dimension_value'] ?? '');
+                    if ($host === '' || $host === '直接访问') {
+                        continue;
+                    }
 
-                $skip = false;
-                foreach ($blocked as $needle) {
-                    if (str_contains($host, $needle)) {
+                    $skip = false;
+                    foreach ($blocked as $needle) {
+                        if (str_contains($host, $needle)) {
+                            $skip = true;
+                            break;
+                        }
+                    }
+
+                    if ($domain && (str_ends_with($host, $domain) || str_ends_with($host, 'www.' . ltrim($domain, '.')))) {
                         $skip = true;
-                        break;
+                    }
+
+                    if (!$skip) {
+                        $filtered[] = [
+                            'host' => $host,
+                            'views' => (int) ($row['views'] ?? 0),
+                            'ips' => (int) ($row['ips'] ?? 0),
+                        ];
                     }
                 }
 
-                if ($domain && (str_ends_with($host, $domain) || str_ends_with($host, 'www.' . ltrim($domain, '.')))) {
-                    $skip = true;
-                }
-
-                if (!$skip) {
-                    $filtered[] = [
-                        'host' => $host,
-                        'views' => (int) ($row['views'] ?? 0),
-                        'ips' => (int) ($row['ips'] ?? 0),
-                    ];
-                }
+                return $filtered;
             }
-
-            return $filtered;
         }
 
         [$rangeSql, $params] = $this->rangeClause($range);
@@ -2754,22 +2764,24 @@ class Tracker
     private function getDeviceBreakdown(int $siteId, string $range): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
-        $rollup = $this->aggregateDimensionRollups($siteId, 'device', $start, $end, 2);
+        if ($this->rollupsCoverRange($siteId, $start, $end)) {
+            $rollup = $this->aggregateDimensionRollups($siteId, 'device', $start, $end, 2);
 
-        if (!empty($rollup)) {
-            $desktop = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'desktop'))[0] ?? [];
-            $mobile = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'mobile'))[0] ?? [];
+            if (!empty($rollup)) {
+                $desktop = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'desktop'))[0] ?? [];
+                $mobile = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'mobile'))[0] ?? [];
 
-            return [
-                'desktop' => [
-                    'views' => (int) ($desktop['views'] ?? 0),
-                    'ips' => (int) ($desktop['ips'] ?? 0),
-                ],
-                'mobile' => [
-                    'views' => (int) ($mobile['views'] ?? 0),
-                    'ips' => (int) ($mobile['ips'] ?? 0),
-                ],
-            ];
+                return [
+                    'desktop' => [
+                        'views' => (int) ($desktop['views'] ?? 0),
+                        'ips' => (int) ($desktop['ips'] ?? 0),
+                    ],
+                    'mobile' => [
+                        'views' => (int) ($mobile['views'] ?? 0),
+                        'ips' => (int) ($mobile['ips'] ?? 0),
+                    ],
+                ];
+            }
         }
 
         [$rangeSql, $params] = $this->rangeClause($range);
@@ -2799,14 +2811,16 @@ class Tracker
     private function getBrowserBreakdown(int $siteId, string $range, int $limit = 10): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
-        $rollup = $this->aggregateDimensionRollups($siteId, 'browser', $start, $end, $limit);
+        if ($this->rollupsCoverRange($siteId, $start, $end)) {
+            $rollup = $this->aggregateDimensionRollups($siteId, 'browser', $start, $end, $limit);
 
-        if (!empty($rollup)) {
-            return array_map(fn ($row) => [
-                'browser' => $row['dimension_value'],
-                'views' => (int) ($row['views'] ?? 0),
-                'ips' => (int) ($row['ips'] ?? 0),
-            ], $rollup);
+            if (!empty($rollup)) {
+                return array_map(fn ($row) => [
+                    'browser' => $row['dimension_value'],
+                    'views' => (int) ($row['views'] ?? 0),
+                    'ips' => (int) ($row['ips'] ?? 0),
+                ], $rollup);
+            }
         }
 
         [$rangeSql, $params] = $this->rangeClause($range);
@@ -2847,14 +2861,16 @@ class Tracker
     private function getRegionStats(int $siteId, string $range, int $limit = 50): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
-        $rollup = $this->aggregateDimensionRollups($siteId, 'region', $start, $end, $limit);
+        if ($this->rollupsCoverRange($siteId, $start, $end)) {
+            $rollup = $this->aggregateDimensionRollups($siteId, 'region', $start, $end, $limit);
 
-        if (!empty($rollup)) {
-            return array_map(fn ($row) => [
-                'region' => $row['dimension_value'],
-                'views' => (int) ($row['views'] ?? 0),
-                'ips' => (int) ($row['ips'] ?? 0),
-            ], $rollup);
+            if (!empty($rollup)) {
+                return array_map(fn ($row) => [
+                    'region' => $row['dimension_value'],
+                    'views' => (int) ($row['views'] ?? 0),
+                    'ips' => (int) ($row['ips'] ?? 0),
+                ], $rollup);
+            }
         }
 
         [$rangeSql, $params] = $this->rangeClause($range);
@@ -2899,14 +2915,16 @@ class Tracker
     private function getIspStats(int $siteId, string $range, int $limit = 50): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
-        $rollup = $this->aggregateDimensionRollups($siteId, 'isp', $start, $end, $limit);
+        if ($this->rollupsCoverRange($siteId, $start, $end)) {
+            $rollup = $this->aggregateDimensionRollups($siteId, 'isp', $start, $end, $limit);
 
-        if (!empty($rollup)) {
-            return array_map(fn ($row) => [
-                'isp' => $row['dimension_value'],
-                'views' => (int) ($row['views'] ?? 0),
-                'ips' => (int) ($row['ips'] ?? 0),
-            ], $rollup);
+            if (!empty($rollup)) {
+                return array_map(fn ($row) => [
+                    'isp' => $row['dimension_value'],
+                    'views' => (int) ($row['views'] ?? 0),
+                    'ips' => (int) ($row['ips'] ?? 0),
+                ], $rollup);
+            }
         }
 
         [$rangeSql, $params] = $this->rangeClause($range);
@@ -2926,18 +2944,20 @@ class Tracker
     private function getNewVsReturning(int $siteId, string $range): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
-        $rollup = $this->aggregateDimensionRollups($siteId, 'audience', $start, $end, 2);
+        if ($this->rollupsCoverRange($siteId, $start, $end)) {
+            $rollup = $this->aggregateDimensionRollups($siteId, 'audience', $start, $end, 2);
 
-        if (!empty($rollup)) {
-            $new = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'new'))[0] ?? [];
-            $returning = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'returning'))[0] ?? [];
+            if (!empty($rollup)) {
+                $new = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'new'))[0] ?? [];
+                $returning = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'returning'))[0] ?? [];
 
-            return [
-                'new' => (int) ($new['views'] ?? 0),
-                'returning' => (int) ($returning['views'] ?? 0),
-                'new_ips' => (int) ($new['ips'] ?? 0),
-                'returning_ips' => (int) ($returning['ips'] ?? 0),
-            ];
+                return [
+                    'new' => (int) ($new['views'] ?? 0),
+                    'returning' => (int) ($returning['views'] ?? 0),
+                    'new_ips' => (int) ($new['ips'] ?? 0),
+                    'returning_ips' => (int) ($returning['ips'] ?? 0),
+                ];
+            }
         }
 
         [$rangeSql, $params] = $this->rangeClause($range);
