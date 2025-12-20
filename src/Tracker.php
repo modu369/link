@@ -758,7 +758,9 @@ class Tracker
         $statement->bindValue(':limit', $limit, PDO::PARAM_INT);
         $statement->execute();
 
-        return $statement->fetchAll();
+        $rows = $statement->fetchAll();
+
+        return $this->recalcRollupIps($siteId, $dimension, $start, $end, $rows);
     }
 
     private function aggregateDimensionRollupsForSites(array $siteIds, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
@@ -799,7 +801,83 @@ class Tracker
 
         $statement->execute();
 
-        return $statement->fetchAll();
+        $rows = $statement->fetchAll();
+
+        return $this->recalcRollupIps(null, $dimension, $start, $end, $rows);
+    }
+
+    private function recalcRollupIps(?int $siteId, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, array $rows): array
+    {
+        $values = array_values(array_unique(array_filter(array_map(fn ($row) => $row['dimension_value'] ?? '', $rows))));
+        if (empty($values) || $siteId === null) {
+            return $rows;
+        }
+
+        [$labelExpr, $whereExtra] = match ($dimension) {
+            'search_engine' => [$this->searchEngineCase('p'), 'p.is_bot = 0'],
+            'referrer_host' => [
+                "COALESCE(NULLIF(SUBSTRING_INDEX(SUBSTRING_INDEX(p.referrer, '/', 3), '//', -1), ''), '直接访问')",
+                "p.is_bot = 0 AND p.referrer IS NOT NULL AND p.referrer != ''",
+            ],
+            'browser' => [$this->browserCase('p'), 'p.is_bot = 0'],
+            'region' => [
+                "CASE\n                    WHEN COALESCE(p.country_name,'') LIKE '中国%' THEN COALESCE(NULLIF(p.region_name,''), '未知')\n                    WHEN COALESCE(p.country_name,'') = '' THEN '未知'\n                    ELSE COALESCE(p.country_name, '未知')\n                END",
+                'p.is_bot = 0',
+            ],
+            'isp' => ["COALESCE(p.isp_domain, '未知运营商')", 'p.is_bot = 0'],
+            'device' => ["CASE WHEN p.is_mobile = 1 THEN 'mobile' ELSE 'desktop' END", 'p.is_bot = 0'],
+            'host_device' => [
+                "CONCAT(COALESCE(NULLIF(p.canonical_host,''), '未知域名'), '|', CASE WHEN p.is_mobile = 1 THEN 'mobile' ELSE 'desktop' END)",
+                'p.is_bot = 0',
+            ],
+            'page_path' => ["COALESCE(p.path,'/')", 'p.is_bot = 0'],
+            default => [null, ''],
+        };
+
+        if ($labelExpr === null) {
+            return $rows;
+        }
+
+        $bindings = [
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ];
+
+        $placeholders = [];
+        foreach ($values as $idx => $value) {
+            $ph = ':v' . $idx;
+            $placeholders[] = $ph;
+            $bindings[$ph] = $value;
+        }
+
+        $sql = sprintf(
+            "SELECT label, COUNT(DISTINCT p.ip_hash) as ips FROM (\n                SELECT %s as label, p.ip_hash\n                FROM pageviews p\n                WHERE p.site_id = :site_id AND %s AND p.occurred_at >= :start AND p.occurred_at < :end\n            ) derived\n            WHERE label IN (%s)\n            GROUP BY label",
+            $labelExpr,
+            $whereExtra ?: '1=1',
+            implode(',', $placeholders)
+        );
+
+        $stmt = $this->db->prepare($sql);
+        foreach ($bindings as $key => $value) {
+            $paramType = is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR;
+            $stmt->bindValue($key, $value, $paramType);
+        }
+        $stmt->execute();
+
+        $ipMap = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $ipMap[$row['label']] = (int) ($row['ips'] ?? 0);
+        }
+
+        return array_map(function ($row) use ($ipMap) {
+            $label = $row['dimension_value'] ?? '';
+            if (array_key_exists($label, $ipMap)) {
+                $row['ips'] = $ipMap[$label];
+            }
+
+            return $row;
+        }, $rows);
     }
 
     private function detectBrowser(string $userAgent): string
@@ -824,6 +902,31 @@ class Tracker
             (bool) preg_match('/msie|trident/', $ua) => 'IE',
             default => '其他浏览器',
         };
+    }
+
+    private function browserCase(string $alias = ''): string
+    {
+        $prefix = $alias ? $alias . '.' : '';
+
+        return "CASE
+            WHEN LOWER({$prefix}user_agent) REGEXP 'micromessenger' THEN 'WeChat'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'bytedancewebview|aweme' THEN 'Douyin'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'baiduboxapp' THEN 'Baidu'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'mqqbrowser|qqbrowser' THEN 'QQ'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'ucbrowser' THEN 'UC'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'quark' THEN 'Quark'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'xiaomi|miuibrowser' THEN 'Mi'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'huawei' THEN 'Huawei'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'vivobrowser' THEN 'Vivo'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'heytapbrowser|oppobrowser' THEN 'OPPO'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'edg(a|ios)' THEN 'Edge'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'chrome|crios' THEN 'Chrome'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'firefox|fxios' THEN 'Firefox'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'safari' AND LOWER({$prefix}user_agent) NOT REGEXP 'chrome|crios|edg' THEN 'Safari'
+            WHEN LOWER({$prefix}user_agent) REGEXP '360se|360ee' THEN '360'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'msie|trident' THEN 'IE'
+            ELSE '其他浏览器'
+        END";
     }
 
     private function detectSearchEngine(string $referrer, string $userAgent): string
@@ -1983,7 +2086,7 @@ class Tracker
 
         $ua = strtolower($userAgent);
         $bots = [
-            'bot', 'spider', 'monitor', 'crawler', 'postman', 'curl/', 'bingpreview/', 'wget/',
+            'bot', 'spider', 'monitor', 'crawler', 'postman', 'curl/', 'wget/',
             'windowspowershell/', 'python-', 'httpclient/', 'go-http-client/', 'libwww-perl',
             'feedburner/', 'headless', 'cloudflare', 'gocolly/', 'scrapy/', 'zgrab/',
             'phantomjs', 'axios', 'apachebench', 'wkhtmltopdf',
