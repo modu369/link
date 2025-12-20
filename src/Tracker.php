@@ -852,7 +852,7 @@ class Tracker
         }
 
         $sql = sprintf(
-            "SELECT label, COUNT(DISTINCT p.ip_hash) as ips FROM (\n                SELECT %s as label, p.ip_hash\n                FROM pageviews p\n                WHERE p.site_id = :site_id AND %s AND p.occurred_at >= :start AND p.occurred_at < :end\n            ) derived\n            WHERE label IN (%s)\n            GROUP BY label",
+            "SELECT label, COUNT(DISTINCT p.ip_hash) as ips, COUNT(DISTINCT p.ip_hash) as uniques FROM (\n                SELECT %s as label, p.ip_hash\n                FROM pageviews p\n                WHERE p.site_id = :site_id AND %s AND p.occurred_at >= :start AND p.occurred_at < :end\n            ) derived\n            WHERE label IN (%s)\n            GROUP BY label",
             $labelExpr,
             $whereExtra ?: '1=1',
             implode(',', $placeholders)
@@ -865,15 +865,17 @@ class Tracker
         }
         $stmt->execute();
 
-        $ipMap = [];
+        $distinctMap = [];
         foreach ($stmt->fetchAll() as $row) {
-            $ipMap[$row['label']] = (int) ($row['ips'] ?? 0);
+            $count = (int) ($row['ips'] ?? 0);
+            $distinctMap[$row['label']] = $count;
         }
 
-        return array_map(function ($row) use ($ipMap) {
+        return array_map(function ($row) use ($distinctMap) {
             $label = $row['dimension_value'] ?? '';
-            if (array_key_exists($label, $ipMap)) {
-                $row['ips'] = $ipMap[$label];
+            if (array_key_exists($label, $distinctMap)) {
+                $row['ips'] = $distinctMap[$label];
+                $row['uniques'] = $distinctMap[$label];
             }
 
             return $row;
@@ -2090,7 +2092,7 @@ class Tracker
             'windowspowershell/', 'python-', 'httpclient/', 'go-http-client/', 'libwww-perl',
             'feedburner/', 'headless', 'cloudflare', 'gocolly/', 'scrapy/', 'zgrab/',
             'phantomjs', 'axios', 'apachebench', 'wkhtmltopdf',
-            'baiduspider', 'googlebot', 'bingbot', '360spider', 'bytespider', 'sogouspider', 'sogou web spider',
+            'baiduspider', 'googlebot', 'bingbot', 'bingpreview', '360spider', 'bytespider', 'sogouspider', 'sogou web spider',
             'yisouspider'
         ];
 
