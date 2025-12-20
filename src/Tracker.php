@@ -2931,39 +2931,31 @@ class Tracker
 
     private function getNewVsReturning(int $siteId, string $range): array
     {
-        [$start, $end] = $this->rollupRangeBounds($range);
-        if ($this->rollupsCoverRange($siteId, $start, $end)) {
-            $rollup = $this->aggregateDimensionRollups($siteId, 'audience', $start, $end, 2);
-
-            if (!empty($rollup)) {
-                $new = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'new'))[0] ?? [];
-                $returning = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'returning'))[0] ?? [];
-
-                return [
-                    'new' => (int) ($new['views'] ?? 0),
-                    'returning' => (int) ($returning['views'] ?? 0),
-                    'new_ips' => (int) ($new['ips'] ?? 0),
-                    'returning_ips' => (int) ($returning['ips'] ?? 0),
-                ];
-            }
-        }
-
         [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
+        $sql = $this->replaceIpHash(
             "SELECT
-                SUM(is_unique) as new_users,
-                COUNT(*) - SUM(is_unique) as returning,
-                COUNT(DISTINCT CASE WHEN is_unique = 1 THEN ip_hash END) as new_ips,
-                COUNT(DISTINCT CASE WHEN is_unique = 0 THEN ip_hash END) as returning_ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}"
+                SUM(CASE WHEN has_new = 1 THEN pv ELSE 0 END) as new_views,
+                SUM(CASE WHEN has_new = 0 THEN pv ELSE 0 END) as returning_views,
+                SUM(CASE WHEN has_new = 1 THEN 1 ELSE 0 END) as new_ips,
+                SUM(CASE WHEN has_new = 0 THEN 1 ELSE 0 END) as returning_ips
+            FROM (
+                SELECT p.ip_hash,
+                    MAX(CASE WHEN p.is_unique = 1 THEN 1 ELSE 0 END) as has_new,
+                    COUNT(*) as pv
+                FROM pageviews p
+                WHERE p.site_id = :site_id AND p.is_bot = 0 {$rangeSql}
+                GROUP BY p.ip_hash
+            ) derived",
+            'p'
         );
+
+        $statement = $this->db->prepare($sql);
         $statement->execute(array_merge([':site_id' => $siteId], $params));
         $row = $statement->fetch();
 
         return [
-            'new' => (int) ($row['new_users'] ?? 0),
-            'returning' => (int) ($row['returning'] ?? 0),
+            'new' => (int) ($row['new_views'] ?? 0),
+            'returning' => (int) ($row['returning_views'] ?? 0),
             'new_ips' => (int) ($row['new_ips'] ?? 0),
             'returning_ips' => (int) ($row['returning_ips'] ?? 0),
         ];
