@@ -2352,7 +2352,20 @@ class Tracker
         $ensureIndex('idx_site_region', 'site_id, region_name, occurred_at');
         $ensureIndex('idx_site_isp', 'site_id, isp_domain, occurred_at');
 
-        $this->hasIpHashColumn = $columnExists('ip_hash');
+        $this->hasIpHashColumn = false;
+
+        // If the column is missing (or inaccessible), attempt to add it and gracefully fall back.
+        try {
+            $this->db->query('SELECT ip_hash FROM pageviews LIMIT 0');
+            $this->hasIpHashColumn = true;
+        } catch (PDOException $e) {
+            try {
+                $this->db->exec('ALTER TABLE pageviews ADD COLUMN ip_hash CHAR(64)');
+                $this->hasIpHashColumn = true;
+            } catch (PDOException $inner) {
+                $this->hasIpHashColumn = false;
+            }
+        }
 
         if ($this->hasIpHashColumn) {
             $needsBackfill = $this->db->query(
@@ -2934,18 +2947,22 @@ class Tracker
         [$rangeSql, $params] = $this->rangeClause($range);
         $sql = $this->replaceIpHash(
             "SELECT
-                SUM(CASE WHEN has_new = 1 THEN pv ELSE 0 END) as new_views,
-                SUM(CASE WHEN has_new = 0 THEN pv ELSE 0 END) as returning_views,
-                SUM(CASE WHEN has_new = 1 THEN 1 ELSE 0 END) as new_ips,
-                SUM(CASE WHEN has_new = 0 THEN 1 ELSE 0 END) as returning_ips
+                SUM(CASE WHEN fs.first_seen >= :start AND fs.first_seen < :end THEN 1 ELSE 0 END) as new_ips,
+                SUM(CASE WHEN fs.first_seen < :start THEN 1 ELSE 0 END) as returning_ips,
+                SUM(CASE WHEN fs.first_seen >= :start AND fs.first_seen < :end THEN h.views ELSE 0 END) as new_views,
+                SUM(CASE WHEN fs.first_seen < :start THEN h.views ELSE 0 END) as returning_views
             FROM (
-                SELECT p.ip_hash,
-                    MAX(CASE WHEN p.is_unique = 1 THEN 1 ELSE 0 END) as has_new,
-                    COUNT(*) as pv
+                SELECT p.ip_hash as ip, COUNT(*) as views
                 FROM pageviews p
                 WHERE p.site_id = :site_id AND p.is_bot = 0 {$rangeSql}
                 GROUP BY p.ip_hash
-            ) derived",
+            ) h
+            JOIN (
+                SELECT p.ip_hash as ip, MIN(p.occurred_at) as first_seen
+                FROM pageviews p
+                WHERE p.site_id = :site_id AND p.is_bot = 0
+                GROUP BY p.ip_hash
+            ) fs ON fs.ip = h.ip",
             'p'
         );
 
