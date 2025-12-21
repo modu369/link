@@ -1307,7 +1307,7 @@ class Tracker
             'pageviews'
         );
         $statement = $this->db->prepare($sql);
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $statement->execute($params);
 
         return $statement->fetchAll();
     }
@@ -1325,7 +1325,7 @@ class Tracker
             'pageviews'
         );
         $statement = $this->db->prepare($sql);
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $statement->execute($params);
 
         return $statement->fetchAll();
     }
@@ -1344,7 +1344,7 @@ class Tracker
             'pageviews'
         );
         $statement = $this->db->prepare($sql);
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $statement->execute($params);
 
         $rows = $statement->fetchAll();
 
@@ -1423,7 +1423,7 @@ class Tracker
         );
 
         $statement = $this->db->prepare($sql);
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $statement->execute($params);
 
         return $statement->fetchAll();
     }
@@ -2940,15 +2940,16 @@ class Tracker
 
     private function getNewVsReturning(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
+        [$rangeSql, $rangeParams] = $this->rangeClause($range);
 
-        if (!isset($params[':start'])) {
-            $params[':start'] = '1970-01-01 00:00:00';
-        }
+        $start = $rangeParams[':start'] ?? '1970-01-01 00:00:00';
+        $end = $rangeParams[':end'] ?? (new DateTimeImmutable('now'))->format('Y-m-d H:i:s');
 
-        if (!isset($params[':end'])) {
-            $params[':end'] = (new DateTimeImmutable('now'))->format('Y-m-d H:i:s');
-        }
+        $params = [
+            ':site_id' => $siteId,
+            ':start' => $start,
+            ':end' => $end,
+        ];
 
         $sql = $this->replaceIpHash(
             "SELECT
@@ -2972,7 +2973,7 @@ class Tracker
         );
 
         $statement = $this->db->prepare($sql);
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $statement->execute($params);
         $row = $statement->fetch();
 
         return [
