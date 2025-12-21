@@ -2296,6 +2296,27 @@ class Tracker
         );
     }
 
+    private function ensureHashPartitioned(string $table, int $partitions = 64): void
+    {
+        $method = null;
+        $probe = $this->db->prepare(
+            'SELECT PARTITION_METHOD FROM information_schema.PARTITIONS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table LIMIT 1'
+        );
+        $probe->execute([':table' => $table]);
+        $method = $probe->fetchColumn();
+
+        if ($method === 'HASH') {
+            return;
+        }
+
+        try {
+            $quoted = str_replace('`', '``', $table);
+            $this->db->exec("ALTER TABLE `{$quoted}` PARTITION BY HASH (site_id) PARTITIONS {$partitions}");
+        } catch (PDOException $e) {
+            // If partitioning is unsupported or privileges are missing, continue with the non-partitioned table.
+        }
+    }
+
     private function ensurePageviewSchema(): void
     {
         $columnExists = function (string $column): bool {
@@ -2378,6 +2399,8 @@ class Tracker
                 );
             }
         }
+
+        $this->ensureHashPartitioned('pageviews');
     }
 
     private function ensureRollupSchema(): void
@@ -2416,6 +2439,9 @@ class Tracker
                 INDEX idx_dimension_time (bucket_start)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
         );
+
+        $this->ensureHashPartitioned('pageview_rollups');
+        $this->ensureHashPartitioned('pageview_dimension_rollups');
     }
 
     private function ensureIpDbExists(): void

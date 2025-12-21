@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS pageviews (
     INDEX idx_site_isp (site_id, isp_domain, occurred_at),
     INDEX idx_site_session (site_id, session_id),
     CONSTRAINT fk_pageviews_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+/*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
 
 CREATE TABLE IF NOT EXISTS pageview_rollups (
     site_id INT UNSIGNED NOT NULL,
@@ -54,7 +55,8 @@ CREATE TABLE IF NOT EXISTS pageview_rollups (
     bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
     PRIMARY KEY (site_id, bucket_start),
     INDEX idx_bucket_time (bucket_start)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+/*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
 
 CREATE TABLE IF NOT EXISTS pageview_dimension_rollups (
     site_id INT UNSIGNED NOT NULL,
@@ -71,7 +73,8 @@ CREATE TABLE IF NOT EXISTS pageview_dimension_rollups (
     PRIMARY KEY (site_id, bucket_start, dimension_type, dimension_value),
     INDEX idx_dimension_type (dimension_type, dimension_value),
     INDEX idx_dimension_time (bucket_start)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+/*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
 
 CREATE TABLE IF NOT EXISTS site_domains (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
