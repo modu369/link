@@ -39,8 +39,7 @@ CREATE TABLE IF NOT EXISTS pageviews (
     INDEX idx_site_country (site_id, country_name, occurred_at),
     INDEX idx_site_region (site_id, region_name, occurred_at),
     INDEX idx_site_isp (site_id, isp_domain, occurred_at),
-    INDEX idx_site_session (site_id, session_id),
-    CONSTRAINT fk_pageviews_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+    INDEX idx_site_session (site_id, session_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 /*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
 
