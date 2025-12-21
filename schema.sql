@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS sites (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS pageviews (
-    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    id BIGINT UNSIGNED AUTO_INCREMENT,
     site_id INT UNSIGNED NOT NULL,
     host VARCHAR(255),
     canonical_host VARCHAR(255),
@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS pageviews (
     is_bot TINYINT(1) DEFAULT 0,
     is_unique TINYINT(1) DEFAULT 0,
     occurred_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id, site_id),
     INDEX idx_site_time (site_id, occurred_at),
     INDEX idx_site_bot (site_id, is_bot, occurred_at),
     INDEX idx_site_mobile (site_id, is_mobile, occurred_at),
