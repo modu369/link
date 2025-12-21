@@ -1312,7 +1312,7 @@ class Tracker
         return $statement->fetchAll();
     }
 
-    private function getTopPages(int $siteId, string $range, int $limit = 50): array
+    private function getTopPages(int $siteId, string $range = 'today', int $limit = 50): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $sql = $this->replaceIpHash(
@@ -1325,6 +1325,7 @@ class Tracker
             'pageviews'
         );
         $statement = $this->db->prepare($sql);
+        $params[':site_id'] = $siteId;
         $statement->execute($params);
 
         return $statement->fetchAll();
