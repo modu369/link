@@ -11,6 +11,9 @@ class Tracker
     private string $ipdbPath = '';
     private IpResolver $ipResolver;
     private bool $hasIpHashColumn = false;
+    private string $ingestMode = 'direct';
+    private string $ingestQueueKey = 'tracker:ingest:pageviews';
+    private int $ingestMaxQueueLength = 100000;
 
     public function __construct(
         private PDO $db,
@@ -23,6 +26,10 @@ class Tracker
         $this->retentionDays = max(0, (int) ($this->retentionDefaults['days'] ?? 0));
         $this->cleanupHour = min(23, max(0, (int) ($this->retentionDefaults['cleanup_hour'] ?? 3)));
         $this->ipdbPath = $this->options['ipdb']['path'] ?? (__DIR__ . '/../data/qqwry.ipdb');
+        $ingest = $this->options['ingest'] ?? [];
+        $this->ingestMode = strtolower($ingest['mode'] ?? $this->ingestMode);
+        $this->ingestQueueKey = $ingest['queue_key'] ?? $this->ingestQueueKey;
+        $this->ingestMaxQueueLength = max(0, (int) ($ingest['max_queue_length'] ?? $this->ingestMaxQueueLength));
         $this->ensureIpDbExists();
         $this->ipResolver = new IpResolver($this->ipdbPath);
 
@@ -170,6 +177,17 @@ class Tracker
 
     public function recordPageview(string $trackingId, array $payload): void
     {
+        if ($this->ingestMode === 'queue') {
+            $this->enqueuePageview($trackingId, $payload);
+
+            return;
+        }
+
+        $this->processPageview($trackingId, $payload);
+    }
+
+    private function processPageview(string $trackingId, array $payload): void
+    {
         $site = $this->getSiteByTrackingId($trackingId);
         if (!$site) {
             return;
@@ -270,6 +288,44 @@ class Tracker
                 'is_unique' => $isUnique,
             ]
         );
+    }
+
+    private function enqueuePageview(string $trackingId, array $payload): void
+    {
+        $record = [
+            'tracking_id' => $trackingId,
+            'payload' => $payload,
+            'received_at' => time(),
+        ];
+
+        $this->redis->lPush($this->ingestQueueKey, json_encode($record));
+
+        if ($this->ingestMaxQueueLength > 0) {
+            $this->redis->lTrim($this->ingestQueueKey, 0, $this->ingestMaxQueueLength - 1);
+        }
+    }
+
+    public function drainIngestQueue(int $maxBatch = 500): int
+    {
+        $processed = 0;
+
+        while ($processed < $maxBatch) {
+            $raw = $this->redis->rPop($this->ingestQueueKey);
+
+            if ($raw === false || $raw === null) {
+                break;
+            }
+
+            $decoded = json_decode($raw, true);
+            if (!is_array($decoded) || empty($decoded['tracking_id']) || !isset($decoded['payload']) || !is_array($decoded['payload'])) {
+                continue;
+            }
+
+            $this->processPageview($decoded['tracking_id'], $decoded['payload']);
+            $processed++;
+        }
+
+        return $processed;
     }
 
     private function updateRollups(int $siteId, DateTimeImmutable $occurredAt, int $duration, int $pageCount, bool $isUnique, ?string $sessionId, array $dimensions = []): void

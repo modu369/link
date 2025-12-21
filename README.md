@@ -59,3 +59,9 @@
 - `pageviews` 表默认包含复合索引（站点+时间、站点+蜘蛛、站点+移动端、站点+域名、站点+会话）以支持 20+ 站点与亿级日访问查询。
 - 建议为高并发环境开启 MySQL 分区（如按日期 RANGE 分区或 HASH(site_id) 分区）并启用冷热数据分库分表。
 - Redis 用作 UV 去重和站点缓存，可按 `REDIS_PREFIX` 区分实例或采用哨兵集群；必要时可在业务层增加按天汇总表减少实时聚合压力。
+
+## 大型统计站点的分层架构（新增）
+- **异步采集管道**：`config/ingest.mode` 设为 `queue` 时，上报写入 Redis 队列（`tracker:ingest:pageviews`），由 `cli/ingest_worker.php` 批量入库并驱动 rollup 汇总，削峰填谷、避免前端请求阻塞。
+- **实时与汇总合并**：已有小时级 rollup 会在入库时同步更新，统计页按窗口优先走 rollup，缺口再查原始表，保证在 rollup 完整覆盖时仅需扫聚合表即可。
+- **分区与站点分片**：核心表支持 HASH(site_id) 分区，单站点数据按分区落盘，可在 MySQL 8+ 上保持表规模扩展同时让单站查询命中更小分区；也可按月 RANGE 分区再叠加 HASH 做二级分片。
+- **运维建议**：使用 `php cli/ingest_worker.php --loop --sleep=1 --max=1000` 常驻监听队列，或通过 systemd/cron 定时执行；`config/ingest.max_queue_length` 用于防止异常堆积。
