@@ -854,14 +854,13 @@ class Tracker
             $bindings[$ph] = $value;
         }
 
-        $sql = $this->replaceIpHash(
-            sprintf(
-                "SELECT label, COUNT(DISTINCT p.ip_hash) as ips, COUNT(DISTINCT p.ip_hash) as uniques FROM (\n                SELECT %s as label, p.ip_hash\n                FROM pageviews p\n                WHERE p.site_id = :site_id AND %s AND p.occurred_at >= :start AND p.occurred_at < :end\n            ) derived\n            WHERE label IN (%s)\n            GROUP BY label",
-                $labelExpr,
-                $whereExtra ?: '1=1',
-                implode(',', $placeholders)
-            ),
-            'p'
+        $ipExpr = $this->ipHashExpr('p');
+        $sql = sprintf(
+            "SELECT label, COUNT(DISTINCT ip_val) as ips, COUNT(DISTINCT ip_val) as uniques FROM (\n                SELECT %s as label, %s as ip_val\n                FROM pageviews p\n                WHERE p.site_id = :site_id AND %s AND p.occurred_at >= :start AND p.occurred_at < :end\n            ) derived\n            WHERE label IN (%s)\n            GROUP BY label",
+            $labelExpr,
+            $ipExpr,
+            $whereExtra ?: '1=1',
+            implode(',', $placeholders)
         );
 
         $stmt = $this->db->prepare($sql);
@@ -2352,16 +2351,13 @@ class Tracker
         $ensureIndex('idx_site_region', 'site_id, region_name, occurred_at');
         $ensureIndex('idx_site_isp', 'site_id, isp_domain, occurred_at');
 
-        $this->hasIpHashColumn = false;
+        $this->hasIpHashColumn = $columnExists('ip_hash');
 
         // If the column is missing (or inaccessible), attempt to add it and gracefully fall back.
-        try {
-            $this->db->query('SELECT ip_hash FROM pageviews LIMIT 0');
-            $this->hasIpHashColumn = true;
-        } catch (PDOException $e) {
+        if (!$this->hasIpHashColumn) {
             try {
                 $this->db->exec('ALTER TABLE pageviews ADD COLUMN ip_hash CHAR(64)');
-                $this->hasIpHashColumn = true;
+                $this->hasIpHashColumn = $columnExists('ip_hash');
             } catch (PDOException $inner) {
                 $this->hasIpHashColumn = false;
             }
