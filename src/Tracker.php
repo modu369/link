@@ -2940,45 +2940,46 @@ class Tracker
 
     private function getNewVsReturning(int $siteId, string $range): array
     {
-        [$rangeSql, $rangeParams] = $this->rangeClause($range, true);
-
-        $start = $rangeParams[':start'] ?? '1970-01-01 00:00:00';
-        $end = $rangeParams[':end'] ?? (new DateTimeImmutable('now'))->format('Y-m-d H:i:s');
-
-        $filter = '';
-        if (isset($rangeParams[':start'])) {
-            $filter .= ' AND p.occurred_at >= :start';
-        }
-        if (isset($rangeParams[':end'])) {
-            $filter .= ' AND p.occurred_at < :end';
-        }
+        // Use explicit bounds and positional parameters to avoid placeholder mismatches.
+        [$rangeStart, $rangeEnd] = $this->rollupRangeBounds($range);
+        $start = $rangeStart->format('Y-m-d H:i:s');
+        $end = $rangeEnd->format('Y-m-d H:i:s');
 
         $ipExpr = $this->ipHashExpr('p');
 
         $sql = "WITH ip_first AS (
                 SELECT {$ipExpr} AS ip, MIN(p.occurred_at) AS first_seen
                 FROM pageviews p
-                WHERE p.site_id = :site_id AND p.is_bot = 0 {$filter}
+                WHERE p.site_id = ? AND p.is_bot = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
                 GROUP BY {$ipExpr}
             ), ip_views AS (
                 SELECT {$ipExpr} AS ip, COUNT(*) AS views
                 FROM pageviews p
-                WHERE p.site_id = :site_id AND p.is_bot = 0 {$filter}
+                WHERE p.site_id = ? AND p.is_bot = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
                 GROUP BY {$ipExpr}
             )
             SELECT
-                SUM(CASE WHEN f.first_seen >= :start AND f.first_seen < :end THEN 1 ELSE 0 END) AS new_ips,
-                SUM(CASE WHEN f.first_seen < :start THEN 1 ELSE 0 END) AS returning_ips,
-                SUM(CASE WHEN f.first_seen >= :start AND f.first_seen < :end THEN v.views ELSE 0 END) AS new_views,
-                SUM(CASE WHEN f.first_seen < :start THEN v.views ELSE 0 END) AS returning_views
+                SUM(CASE WHEN f.first_seen >= ? AND f.first_seen < ? THEN 1 ELSE 0 END) AS new_ips,
+                SUM(CASE WHEN f.first_seen < ? THEN 1 ELSE 0 END) AS returning_ips,
+                SUM(CASE WHEN f.first_seen >= ? AND f.first_seen < ? THEN v.views ELSE 0 END) AS new_views,
+                SUM(CASE WHEN f.first_seen < ? THEN v.views ELSE 0 END) AS returning_views
             FROM ip_views v
             JOIN ip_first f ON f.ip = v.ip";
 
         $statement = $this->db->prepare($sql);
         $statement->execute([
-            ':site_id' => $siteId,
-            ':start' => $start,
-            ':end' => $end,
+            $siteId, // ip_first
+            $start,
+            $end,
+            $siteId, // ip_views
+            $start,
+            $end,
+            $start, // new_ips
+            $end,
+            $start, // returning_ips
+            $start, // new_views
+            $end,
+            $start, // returning_views
         ]);
         $row = $statement->fetch();
 
