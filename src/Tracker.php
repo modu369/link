@@ -2941,6 +2941,15 @@ class Tracker
     private function getNewVsReturning(int $siteId, string $range): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
+
+        if (!isset($params[':start'])) {
+            $params[':start'] = '1970-01-01 00:00:00';
+        }
+
+        if (!isset($params[':end'])) {
+            $params[':end'] = (new DateTimeImmutable('now'))->format('Y-m-d H:i:s');
+        }
+
         $sql = $this->replaceIpHash(
             "SELECT
                 SUM(CASE WHEN fs.first_seen >= :start AND fs.first_seen < :end THEN 1 ELSE 0 END) as new_ips,
