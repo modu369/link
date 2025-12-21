@@ -1344,6 +1344,7 @@ class Tracker
             'pageviews'
         );
         $statement = $this->db->prepare($sql);
+        $params[':site_id'] = $siteId;
         $statement->execute($params);
 
         $rows = $statement->fetchAll();
