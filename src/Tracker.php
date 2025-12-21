@@ -198,8 +198,16 @@ class Tracker
         $host = $parsedUrl['host'];
         $canonicalHost = $parsedUrl['canonical'];
         $allowedDomains = $this->getAllSiteDomains((int) $site['id']);
-        if ($canonicalHost && !empty($allowedDomains) && !in_array($canonicalHost, $allowedDomains, true)) {
-            return;
+
+        $referrerHost = $this->referrerHost($payload['referrer'] ?? '');
+        $observedHost = $canonicalHost ?: $this->canonicalHost($referrerHost);
+
+        if (!empty($allowedDomains)) {
+            if (!$observedHost || !in_array($observedHost, $allowedDomains, true)) {
+                return;
+            }
+            // ensure stored canonical host reflects the validated domain
+            $canonicalHost = $observedHost;
         }
         $ip = $this->sanitizeIp($payload['ip'] ?? null);
         $ipHash = $ip ? hash('sha256', $ip) : null;
@@ -1363,6 +1371,7 @@ class Tracker
             'pageviews'
         );
         $statement = $this->db->prepare($sql);
+        $params[':site_id'] = $siteId;
         $statement->execute($params);
 
         return $statement->fetchAll();
