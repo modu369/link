@@ -1407,6 +1407,7 @@ class Tracker
     private function getEntryPages(int $siteId, string $range, int $limit = 20): array
     {
         [$rangeSql, $params] = $this->rangeClause($range, true);
+        $params[':site_id'] = $siteId;
         $sql = $this->replaceIpHash(
             "SELECT p.path, COUNT(*) as views, COUNT(DISTINCT p.ip_hash) as ips, SUM(p.is_unique) as uniques,
                 AVG(p.page_count) as avg_pages, AVG(p.duration_seconds) as avg_duration,
