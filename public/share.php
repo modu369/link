@@ -52,6 +52,7 @@ $window = $tracker->rangeWindow($range);
                     <a class="filter-btn <?= $range === $r ? 'active' : '' ?>" href="/share.php?token=<?= htmlspecialchars($token, ENT_QUOTES, 'UTF-8') ?>&range=<?= $r ?>"><?= ['today'=>'今日','yesterday'=>'昨日','7d'=>'近7天','30d'=>'近30天'][$r] ?></a>
                 <?php endforeach; ?>
             </div>
+            <p class="muted" style="margin:8px 0 0;">移动 IP 以“曾有移动访问”为准，即便该 IP 也访问过电脑端。</p>
             <table>
                 <thead>
                     <tr><th>受访域名</th><th>PV</th><th>IP</th><th>移动PV</th><th>移动IP</th></tr>

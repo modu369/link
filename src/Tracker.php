@@ -2893,46 +2893,52 @@ class Tracker
     private function getDeviceBreakdown(int $siteId, string $range): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
+        $desktopViews = 0;
+        $mobileViews = 0;
+        $mobileIps = 0;
+        $totalIps = 0;
+
         if ($this->rollupsCoverRange($siteId, $start, $end)) {
             $rollup = $this->aggregateDimensionRollups($siteId, 'device', $start, $end, 2);
-
-            if (!empty($rollup)) {
-                $desktop = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'desktop'))[0] ?? [];
-                $mobile = array_values(array_filter($rollup, fn ($r) => ($r['dimension_value'] ?? '') === 'mobile'))[0] ?? [];
-
-                return [
-                    'desktop' => [
-                        'views' => (int) ($desktop['views'] ?? 0),
-                        'ips' => (int) ($desktop['ips'] ?? 0),
-                    ],
-                    'mobile' => [
-                        'views' => (int) ($mobile['views'] ?? 0),
-                        'ips' => (int) ($mobile['ips'] ?? 0),
-                    ],
-                ];
+            $lookup = [];
+            foreach ($rollup as $row) {
+                $lookup[$row['dimension_value'] ?? ''] = $row;
             }
+
+            $mobileViews = (int) ($lookup['mobile']['views'] ?? 0);
+            $mobileIps = (int) ($lookup['mobile']['ips'] ?? 0);
+            $desktopViews = (int) ($lookup['desktop']['views'] ?? 0);
+
+            $totals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
+            $totalIps = (int) ($totals['ip_count'] ?? 0);
         }
 
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT SUM(is_mobile = 0) as desktop_views, SUM(is_mobile = 1) as mobile_views,
-                COUNT(DISTINCT IF(is_mobile = 0, ip_hash, NULL)) as desktop_ips,
-                COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        if (!$this->rollupsCoverRange($siteId, $start, $end)) {
+            [$rangeSql, $params] = $this->rangeClause($range);
+            $sql = $this->replaceIpHash(
+                "SELECT SUM(is_mobile = 0) as desktop_views, SUM(is_mobile = 1) as mobile_views,\n                    COUNT(DISTINCT ip_hash) as total_ips,\n                    COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips\n                FROM pageviews\n                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}",
+                'pageviews'
+            );
+            $statement = $this->db->prepare($sql);
+            $statement->execute(array_merge([':site_id' => $siteId], $params));
 
-        $row = $statement->fetch();
+            $row = $statement->fetch();
+            $desktopViews = (int) ($row['desktop_views'] ?? 0);
+            $mobileViews = (int) ($row['mobile_views'] ?? 0);
+            $mobileIps = (int) ($row['mobile_ips'] ?? 0);
+            $totalIps = (int) ($row['total_ips'] ?? 0);
+        }
+
+        $desktopIps = max(0, $totalIps - $mobileIps);
 
         return [
             'desktop' => [
-                'views' => (int) ($row['desktop_views'] ?? 0),
-                'ips' => (int) ($row['desktop_ips'] ?? 0),
+                'views' => $desktopViews,
+                'ips' => $desktopIps,
             ],
             'mobile' => [
-                'views' => (int) ($row['mobile_views'] ?? 0),
-                'ips' => (int) ($row['mobile_ips'] ?? 0),
+                'views' => $mobileViews,
+                'ips' => $mobileIps,
             ],
         ];
     }

@@ -101,6 +101,7 @@ render_topbar($branding);
                             <div class="metric"><div class="muted">移动端 IP</div><div class="value"><?= (int) $data['devices']['mobile']['ips'] ?></div></div>
                         </div>
                     </div>
+                    <p class="muted" style="margin-top:8px;">只要某 IP 在本区间出现过移动访问即视为移动端 IP，电脑端 IP 不包含这些交叉访客。</p>
                     <div class="section-title" style="margin-top:12px;"><h4 style="margin:0;">浏览器分布（IP）</h4></div>
                     <div class="chart-wrap browser-pie"><canvas id="browserBar" height="576" style="display: block; box-sizing: border-box; height: 384px; width: 384px;" width="576"></canvas></div>
                 </section>
