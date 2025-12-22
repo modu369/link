@@ -827,7 +827,7 @@ class Tracker
 
         $rows = $statement->fetchAll();
 
-        return $this->recalcRollupIps($siteId, $dimension, $start, $end, $rows);
+        return $this->recalcRollupIps([$siteId], $dimension, $start, $end, $rows);
     }
 
     private function aggregateDimensionRollupsForSites(array $siteIds, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
@@ -870,13 +870,13 @@ class Tracker
 
         $rows = $statement->fetchAll();
 
-        return $this->recalcRollupIps(null, $dimension, $start, $end, $rows);
+        return $this->recalcRollupIps($siteIds, $dimension, $start, $end, $rows);
     }
 
-    private function recalcRollupIps(?int $siteId, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, array $rows): array
+    private function recalcRollupIps(?array $siteIds, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, array $rows): array
     {
         $values = array_values(array_unique(array_filter(array_map(fn ($row) => $row['dimension_value'] ?? '', $rows))));
-        if (empty($values) || $siteId === null) {
+        if (empty($values) || empty($siteIds)) {
             return $rows;
         }
 
@@ -906,25 +906,32 @@ class Tracker
         }
 
         $bindings = [
-            ':site_id' => $siteId,
             ':start' => $start->format('Y-m-d H:i:s'),
             ':end' => $end->format('Y-m-d H:i:s'),
         ];
 
-        $placeholders = [];
+        $sitePlaceholders = [];
+        foreach (array_values($siteIds) as $idx => $sid) {
+            $ph = ':sid' . $idx;
+            $sitePlaceholders[] = $ph;
+            $bindings[$ph] = (int) $sid;
+        }
+
+        $valuePlaceholders = [];
         foreach ($values as $idx => $value) {
             $ph = ':v' . $idx;
-            $placeholders[] = $ph;
+            $valuePlaceholders[] = $ph;
             $bindings[$ph] = $value;
         }
 
         $ipExpr = $this->ipHashExpr('p');
         $sql = sprintf(
-            "SELECT label, COUNT(DISTINCT ip_val) as ips, COUNT(DISTINCT ip_val) as uniques FROM (\n                SELECT %s as label, %s as ip_val\n                FROM pageviews p\n                WHERE p.site_id = :site_id AND %s AND p.occurred_at >= :start AND p.occurred_at < :end\n            ) derived\n            WHERE label IN (%s)\n            GROUP BY label",
+            "SELECT label, COUNT(DISTINCT ip_val) as ips, COUNT(DISTINCT ip_val) as uniques FROM (\n                SELECT %s as label, %s as ip_val\n                FROM pageviews p\n                WHERE p.site_id IN (%s) AND %s AND p.occurred_at >= :start AND p.occurred_at < :end\n            ) derived\n            WHERE label IN (%s)\n            GROUP BY label",
             $labelExpr,
             $ipExpr,
+            implode(',', $sitePlaceholders),
             $whereExtra ?: '1=1',
-            implode(',', $placeholders)
+            implode(',', $valuePlaceholders)
         );
 
         $stmt = $this->db->prepare($sql);

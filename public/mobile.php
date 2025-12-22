@@ -17,7 +17,6 @@ render_topbar($branding);
                 <div class="section-title">
                     <div>
                         <h2 style="margin:0;">移动端数据</h2>
-                        <p class="muted" style="margin:2px 0 0;">按域名合并（含 www.），移动 IP 指在区间内出现过移动访问的 IP，即便也访问过电脑端。</p>
                     </div>
                     <?php render_range_filters($allowedRanges, $range, 'mobile', (int) $selectedSite['id']); ?>
                 </div>

@@ -17,7 +17,6 @@ render_topbar($branding);
                 <div class="section-title">
                     <div>
                         <h2 style="margin:0;">系统环境概览</h2>
-                        <p class="muted" style="margin:2px 0 0;">设备类别与浏览器类型按 IP 聚合，移动 IP 定义为在所选区间内出现过移动访问的 IP（即便也访问过电脑端）。</p>
                     </div>
                     <?php render_range_filters($allowedRanges, $range, 'env', (int) $selectedSite['id']); ?>
                 </div>
@@ -32,7 +31,6 @@ render_topbar($branding);
                         <tr><td>移动端</td><td><?= (int) $data['devices']['mobile']['ips'] ?></td></tr>
                     </tbody>
                 </table>
-                <p class="muted" style="margin-top:8px;">只要某 IP 在区间内使用过移动设备访问，即计入移动端 IP，电脑端 IP 不包含这部分交叉用户。</p>
                 <div style="margin-top:14px; display:flex; justify-content:center;">
                     <div style="max-width:400px; width:100%; text-align:center;">
                         <div class="muted" style="margin-bottom:6px;">IP 占比</div>
