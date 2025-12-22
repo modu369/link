@@ -1057,6 +1057,8 @@ class Tracker
 
         $rows = $statement->fetchAll();
 
+        $span = $span ?? ['start' => $start, 'end' => $end];
+
         return $this->recalcRollupIps([$siteId], 'page_path', $span['start'], $span['end'], $rows);
     }
 
@@ -1084,6 +1086,8 @@ class Tracker
 
         $rows = $statement->fetchAll();
 
+        $span = $span ?? ['start' => $start, 'end' => $end];
+
         return $this->recalcEntryRollupIps($siteId, $span['start'], $span['end'], $rows);
     }
 
@@ -1096,8 +1100,8 @@ class Tracker
         $placeholders = [];
         $bindings = [
             ':dimension' => $dimension,
-            ':start' => $span['start']->format('Y-m-d H:i:s'),
-            ':end' => $span['end']->format('Y-m-d H:i:s'),
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
             ':limit' => $limit,
         ];
 
@@ -1132,161 +1136,19 @@ class Tracker
 
     private function recalcRollupIps(?array $siteIds, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, array $rows): array
     {
-        $values = array_values(array_unique(array_filter(array_map(fn ($row) => $row['dimension_value'] ?? '', $rows))));
-        if (empty($values) || empty($siteIds)) {
-            return $rows;
-        }
-
-        $cacheKey = sprintf(
-            'rollup:ips:%s:%s:%s:%s:%s',
-            $dimension,
-            implode('-', array_map('intval', $siteIds)),
-            $start->format('YmdH'),
-            $end->format('YmdH'),
-            md5(json_encode($values))
-        );
-
-        $cached = $this->redis->get($cacheKey);
-        if ($cached !== false) {
-            $decoded = json_decode($cached, true);
-            if (is_array($decoded)) {
-                return $decoded;
-            }
-        }
-
-        if ($dimension === 'entry_path') {
-            $result = $this->recalcEntryRollupIps($siteIds[0], $start, $end, $rows);
-            $this->redis->setex($cacheKey, 120, json_encode($result));
-
-            return $result;
-        }
-
-        [$labelExpr, $whereExtra] = match ($dimension) {
-            'search_engine' => [$this->searchEngineCase('p'), 'p.is_bot = 0'],
-            'referrer_host' => [
-                "COALESCE(NULLIF(SUBSTRING_INDEX(SUBSTRING_INDEX(p.referrer, '/', 3), '//', -1), ''), '直接访问')",
-                "p.is_bot = 0 AND p.referrer IS NOT NULL AND p.referrer != ''",
-            ],
-            'browser' => [$this->browserCase('p'), 'p.is_bot = 0'],
-            'region' => [
-                "CASE\n                    WHEN COALESCE(p.country_name,'') LIKE '中国%' THEN COALESCE(NULLIF(p.region_name,''), '未知')\n                    WHEN COALESCE(p.country_name,'') = '' THEN '未知'\n                    ELSE COALESCE(p.country_name, '未知')\n                END",
-                'p.is_bot = 0',
-            ],
-            'isp' => ["COALESCE(p.isp_domain, '未知运营商')", 'p.is_bot = 0'],
-            'device' => ["CASE WHEN p.is_mobile = 1 THEN 'mobile' ELSE 'desktop' END", 'p.is_bot = 0'],
-            'host_device' => [
-                "CONCAT(COALESCE(NULLIF(p.canonical_host,''), '未知域名'), '|', CASE WHEN p.is_mobile = 1 THEN 'mobile' ELSE 'desktop' END)",
-                'p.is_bot = 0',
-            ],
-            'page_path' => ["COALESCE(p.path,'/')", 'p.is_bot = 0'],
-            default => [null, ''],
-        };
-
-        if ($labelExpr === null) {
-            return $rows;
-        }
-
-        $bindings = [
-            ':start' => $span['start']->format('Y-m-d H:i:s'),
-            ':end' => $span['end']->format('Y-m-d H:i:s'),
-        ];
-
-        $sitePlaceholders = [];
-        foreach (array_values($siteIds) as $idx => $sid) {
-            $ph = ':sid' . $idx;
-            $sitePlaceholders[] = $ph;
-            $bindings[$ph] = (int) $sid;
-        }
-
-        $valuePlaceholders = [];
-        foreach ($values as $idx => $value) {
-            $ph = ':v' . $idx;
-            $valuePlaceholders[] = $ph;
-            $bindings[$ph] = $value;
-        }
-
-        $ipExpr = $this->ipHashExpr('p');
-        $sql = sprintf(
-            "SELECT label, COUNT(DISTINCT ip_val) as ips, COUNT(DISTINCT ip_val) as uniques FROM (\n                SELECT %s as label, %s as ip_val\n                FROM pageviews p\n                WHERE p.site_id IN (%s) AND %s AND p.occurred_at >= :start AND p.occurred_at < :end\n            ) derived\n            WHERE label IN (%s)\n            GROUP BY label",
-            $labelExpr,
-            $ipExpr,
-            implode(',', $sitePlaceholders),
-            $whereExtra ?: '1=1',
-            implode(',', $valuePlaceholders)
-        );
-
-        $stmt = $this->db->prepare($sql);
-        foreach ($bindings as $key => $value) {
-            $paramType = is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR;
-            $stmt->bindValue($key, $value, $paramType);
-        }
-        $stmt->execute();
-
-        $distinctMap = [];
-        foreach ($stmt->fetchAll() as $row) {
-            $count = (int) ($row['ips'] ?? 0);
-            $distinctMap[$row['label']] = $count;
-        }
-
-        $result = array_map(function ($row) use ($distinctMap) {
-            $label = $row['dimension_value'] ?? '';
-            if (array_key_exists($label, $distinctMap)) {
-                $row['ips'] = $distinctMap[$label];
-                $row['uniques'] = $distinctMap[$label];
-            }
+        return array_map(function ($row) {
+            $row['ips'] = (int) ($row['ips'] ?? ($row['ip_count'] ?? 0));
+            $row['uniques'] = (int) ($row['uniques'] ?? ($row['uv'] ?? 0));
 
             return $row;
         }, $rows);
-
-        $this->redis->setex($cacheKey, 120, json_encode($result));
-
-        return $result;
     }
 
     private function recalcEntryRollupIps(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, array $rows): array
     {
-        $values = array_values(array_unique(array_filter(array_map(fn ($row) => $row['dimension_value'] ?? '', $rows))));
-        if (empty($values)) {
-            return $rows;
-        }
-
-        $bindings = [
-            ':site_id' => $siteId,
-            ':start' => $span['start']->format('Y-m-d H:i:s'),
-            ':end' => $span['end']->format('Y-m-d H:i:s'),
-        ];
-
-        $valuePlaceholders = [];
-        foreach ($values as $idx => $value) {
-            $placeholder = ':v' . $idx;
-            $valuePlaceholders[] = $placeholder;
-            $bindings[$placeholder] = $value;
-        }
-
-        $ipExpr = $this->ipHashExpr('p');
-        $sql = sprintf(
-            "SELECT label, COUNT(DISTINCT ip_val) as ips, COUNT(DISTINCT ip_val) as uniques FROM (\n                SELECT COALESCE(p.path,'/') as label, %s as ip_val\n                FROM (\n                    SELECT MIN(id) as first_id\n                    FROM pageviews\n                    WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL\n                      AND occurred_at >= :start AND occurred_at < :end\n                    GROUP BY session_id\n                ) s\n                JOIN pageviews p ON p.id = s.first_id\n                WHERE COALESCE(p.path,'/') IN (%s)\n            ) derived\n            GROUP BY label",
-            $ipExpr,
-            implode(',', $valuePlaceholders)
-        );
-
-        $stmt = $this->db->prepare($sql);
-        foreach ($bindings as $key => $value) {
-            $stmt->bindValue($key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
-        }
-        $stmt->execute();
-
-        $distinctMap = [];
-        foreach ($stmt->fetchAll() as $row) {
-            $distinctMap[$row['label']] = (int) ($row['ips'] ?? 0);
-        }
-
-        return array_map(function ($row) use ($distinctMap) {
-            $label = $row['dimension_value'] ?? '';
-            if (array_key_exists($label, $distinctMap)) {
-                $row['ips'] = $distinctMap[$label];
-                $row['uniques'] = $distinctMap[$label];
-            }
+        return array_map(function ($row) {
+            $row['ips'] = (int) ($row['ips'] ?? ($row['ip_count'] ?? 0));
+            $row['uniques'] = (int) ($row['uniques'] ?? ($row['uv'] ?? 0));
 
             return $row;
         }, $rows);
