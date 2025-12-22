@@ -428,6 +428,54 @@ class Tracker
         return [$start, $end];
     }
 
+    private function rollupSpanForRange(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): ?array
+    {
+        [$coverageStart, $coverageEnd] = $this->rollupCoverageBounds($siteId);
+        if (!$coverageStart || !$coverageEnd) {
+            return null;
+        }
+
+        $windowStart = max($start, $coverageStart);
+        $windowEnd = min($end, $coverageEnd);
+
+        if ($windowStart >= $windowEnd) {
+            return null;
+        }
+
+        $statement = $this->db->prepare(
+            'SELECT MIN(bucket_start) as first_bucket, MAX(bucket_start) as last_bucket, COUNT(DISTINCT bucket_start) as buckets
+             FROM pageview_rollups
+             WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end'
+        );
+
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $windowStart->format('Y-m-d H:i:s'),
+            ':end' => $windowEnd->format('Y-m-d H:i:s'),
+        ]);
+
+        $row = $statement->fetch() ?: [];
+        $bucketCount = (int) ($row['buckets'] ?? 0);
+        if ($bucketCount === 0 || empty($row['last_bucket'])) {
+            return null;
+        }
+
+        $lastBucket = new DateTimeImmutable($row['last_bucket']);
+        $firstBucket = !empty($row['first_bucket']) ? new DateTimeImmutable($row['first_bucket']) : $lastBucket;
+        $contiguousStart = $lastBucket->modify('-' . ($bucketCount - 1) . ' hour');
+        $spanStart = max($windowStart, $firstBucket, $contiguousStart);
+        $spanEnd = min($windowEnd, $lastBucket->modify('+1 hour'));
+
+        if ($spanStart >= $spanEnd) {
+            return null;
+        }
+
+        return [
+            'start' => $spanStart,
+            'end' => $spanEnd,
+        ];
+    }
+
     private function rollupCoverageStart(int $siteId): ?DateTimeImmutable
     {
         [$start] = $this->rollupCoverageBounds($siteId);
@@ -437,19 +485,14 @@ class Tracker
 
     private function rollupsCoverRange(int $siteId, DateTimeImmutable $start, ?DateTimeImmutable $end = null): bool
     {
-        [$coverageStart, $coverageEnd] = $this->rollupCoverageBounds($siteId);
-        if (!$coverageStart || !$coverageEnd) {
+        $windowEnd = $end ?? $start;
+        $span = $this->rollupSpanForRange($siteId, $start, $windowEnd);
+
+        if (!$span) {
             return false;
         }
 
-        $windowEnd = $end ?? $coverageEnd;
-        if ($coverageStart > $start || $coverageEnd < $windowEnd) {
-            return false;
-        }
-
-        $windowStart = max($start, $coverageStart);
-
-        return $this->rollupWindowComplete($siteId, $windowStart, $windowEnd);
+        return $span['start'] <= $start && $span['end'] >= $windowEnd;
     }
 
     private function rollupsCoverRangeForSites(array $siteIds, DateTimeImmutable $start, DateTimeImmutable $end): bool
@@ -465,10 +508,10 @@ class Tracker
 
     private function aggregateRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
-        [$coverageStart, $coverageEnd] = $this->rollupCoverageBounds($siteId);
-        $rollupStart = $coverageStart ? max($start, $coverageStart) : null;
+        $span = $this->rollupSpanForRange($siteId, $start, $end);
 
-        if (!$rollupStart || $rollupStart >= $end) {
+        if (!$span) {
+            [$coverageStart, $coverageEnd] = $this->rollupCoverageBounds($siteId);
             return [
                 'has_data' => false,
                 'coverage_start' => $coverageStart,
@@ -484,49 +527,24 @@ class Tracker
         }
 
         $statement = $this->db->prepare(
-            'SELECT MIN(bucket_start) as first_bucket, MAX(bucket_start) as last_bucket,
-                SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ip_count, SUM(session_count) as session_count,
-                SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count,
-                COUNT(*) as buckets
+            'SELECT SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ip_count, SUM(session_count) as session_count,
+                SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count
              FROM pageview_rollups
              WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end'
         );
 
         $statement->execute([
             ':site_id' => $siteId,
-            ':start' => $rollupStart->format('Y-m-d H:i:s'),
-            ':end' => $end->format('Y-m-d H:i:s'),
+            ':start' => $span['start']->format('Y-m-d H:i:s'),
+            ':end' => $span['end']->format('Y-m-d H:i:s'),
         ]);
 
         $row = $statement->fetch() ?: [];
-        $bucketCount = (int) ($row['buckets'] ?? 0);
-        $expectedBuckets = (int) ceil(($end->getTimestamp() - $rollupStart->getTimestamp()) / 3600);
-
-        if ($bucketCount < $expectedBuckets) {
-            return [
-                'has_data' => false,
-                'coverage_start' => $coverageStart,
-                'coverage_end' => $coverageEnd,
-                'views' => 0,
-                'uniques' => 0,
-                'ip_count' => 0,
-                'session_count' => 0,
-                'duration_sum' => 0,
-                'page_sum' => 0,
-                'bounce_count' => 0,
-            ];
-        }
-
-        $firstBucket = $row['first_bucket'] ?? null;
-        $lastBucket = $row['last_bucket'] ?? null;
-
-        $coverageWindowStart = $firstBucket ? new DateTimeImmutable($firstBucket) : $rollupStart;
-        $coverageWindowEnd = $lastBucket ? (new DateTimeImmutable($lastBucket))->modify('+1 hour') : $coverageEnd;
 
         return [
-            'has_data' => $bucketCount > 0,
-            'coverage_start' => $coverageWindowStart,
-            'coverage_end' => $coverageWindowEnd,
+            'has_data' => true,
+            'coverage_start' => $span['start'],
+            'coverage_end' => $span['end'],
             'views' => (int) ($row['views'] ?? 0),
             'uniques' => (int) ($row['uniques'] ?? 0),
             'ip_count' => (int) ($row['ip_count'] ?? 0),
@@ -660,6 +678,98 @@ class Tracker
         }
 
         return $this->combineTotals(...$segments);
+    }
+
+    private function uncoveredRanges(?array $span, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        if (!$span) {
+            return [[$start, $end]];
+        }
+
+        $ranges = [];
+
+        if ($start < $span['start']) {
+            $ranges[] = [$start, $span['start']];
+        }
+
+        if ($span['end'] < $end) {
+            $ranges[] = [$span['end'], $end];
+        }
+
+        return $ranges;
+    }
+
+    private function mergeDimensionRows(string $key, array ...$rowSets): array
+    {
+        $numeric = ['views', 'ips', 'uniques', 'sessions', 'duration_sum', 'page_sum', 'bounce_count'];
+        $merged = [];
+
+        foreach ($rowSets as $rows) {
+            foreach ($rows as $row) {
+                if (!isset($row[$key])) {
+                    continue;
+                }
+
+                $label = $row[$key];
+                if (!array_key_exists($label, $merged)) {
+                    $merged[$label] = [$key => $label];
+                }
+
+                foreach ($numeric as $field) {
+                    $merged[$label][$field] = ($merged[$label][$field] ?? 0) + (float) ($row[$field] ?? 0);
+                }
+            }
+        }
+
+        return array_values(array_map(function ($row) {
+            $sessions = (float) ($row['sessions'] ?? 0);
+            if ($sessions > 0) {
+                $row['avg_pages'] = ($row['page_sum'] ?? 0) / $sessions;
+                $row['avg_duration'] = ($row['duration_sum'] ?? 0) / $sessions;
+                $row['bounce_rate'] = ($row['bounce_count'] ?? 0) / $sessions;
+            }
+
+            return $row;
+        }, $merged));
+    }
+
+    private function normalizePathRows(array $rows): array
+    {
+        return array_map(function ($row) {
+            return [
+                'path' => $row['dimension_value'] ?? $row['path'] ?? '/',
+                'views' => (int) ($row['views'] ?? 0),
+                'ips' => (int) ($row['ips'] ?? 0),
+            ];
+        }, $rows);
+    }
+
+    private function normalizeEntryRows(array $rows): array
+    {
+        return array_map(function ($row) {
+            $sessions = (int) ($row['sessions'] ?? ($row['views'] ?? 0));
+            $avgPages = (float) ($row['avg_pages'] ?? 0);
+            $avgDuration = (float) ($row['avg_duration'] ?? 0);
+            $bounceRate = (float) ($row['bounce_rate'] ?? 0);
+
+            $pageSum = $row['page_sum'] ?? ($sessions * $avgPages);
+            $durationSum = $row['duration_sum'] ?? ($sessions * $avgDuration);
+            $bounceCount = $row['bounce_count'] ?? ($sessions * $bounceRate);
+
+            return [
+                'path' => $row['dimension_value'] ?? $row['path'] ?? '/',
+                'sessions' => $sessions,
+                'views' => (int) ($row['views'] ?? 0),
+                'ips' => (int) ($row['ips'] ?? 0),
+                'uniques' => (int) ($row['uniques'] ?? 0),
+                'page_sum' => $pageSum,
+                'duration_sum' => $durationSum,
+                'bounce_count' => $bounceCount,
+                'avg_pages' => $avgPages,
+                'avg_duration' => $avgDuration,
+                'bounce_rate' => $bounceRate,
+            ];
+        }, $rows);
     }
 
     private function updateDimensionRollups(
@@ -897,7 +1007,8 @@ class Tracker
 
     private function aggregateDimensionRollups(int $siteId, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
     {
-        if (!$this->rollupsCoverRange($siteId, $start, $end)) {
+        $span = $this->rollupSpanForRange($siteId, $start, $end);
+        if (!$span) {
             return [];
         }
 
@@ -919,12 +1030,13 @@ class Tracker
 
         $rows = $statement->fetchAll();
 
-        return $this->recalcRollupIps([$siteId], $dimension, $start, $end, $rows);
+        return $this->recalcRollupIps([$siteId], $dimension, $span['start'], $span['end'], $rows);
     }
 
     private function aggregatePageRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
     {
-        if (!$this->rollupsCoverRange($siteId, $start, $end)) {
+        $span = $this->rollupSpanForRange($siteId, $start, $end);
+        if (!$span) {
             return [];
         }
 
@@ -945,12 +1057,13 @@ class Tracker
 
         $rows = $statement->fetchAll();
 
-        return $this->recalcRollupIps([$siteId], 'page_path', $start, $end, $rows);
+        return $this->recalcRollupIps([$siteId], 'page_path', $span['start'], $span['end'], $rows);
     }
 
     private function aggregateEntryRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
     {
-        if (!$this->rollupsCoverRange($siteId, $start, $end)) {
+        $span = $this->rollupSpanForRange($siteId, $start, $end);
+        if (!$span) {
             return [];
         }
 
@@ -971,7 +1084,7 @@ class Tracker
 
         $rows = $statement->fetchAll();
 
-        return $this->recalcEntryRollupIps($siteId, $start, $end, $rows);
+        return $this->recalcEntryRollupIps($siteId, $span['start'], $span['end'], $rows);
     }
 
     private function aggregateDimensionRollupsForSites(array $siteIds, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
@@ -983,8 +1096,8 @@ class Tracker
         $placeholders = [];
         $bindings = [
             ':dimension' => $dimension,
-            ':start' => $start->format('Y-m-d H:i:s'),
-            ':end' => $end->format('Y-m-d H:i:s'),
+            ':start' => $span['start']->format('Y-m-d H:i:s'),
+            ':end' => $span['end']->format('Y-m-d H:i:s'),
             ':limit' => $limit,
         ];
 
@@ -1074,8 +1187,8 @@ class Tracker
         }
 
         $bindings = [
-            ':start' => $start->format('Y-m-d H:i:s'),
-            ':end' => $end->format('Y-m-d H:i:s'),
+            ':start' => $span['start']->format('Y-m-d H:i:s'),
+            ':end' => $span['end']->format('Y-m-d H:i:s'),
         ];
 
         $sitePlaceholders = [];
@@ -1139,8 +1252,8 @@ class Tracker
 
         $bindings = [
             ':site_id' => $siteId,
-            ':start' => $start->format('Y-m-d H:i:s'),
-            ':end' => $end->format('Y-m-d H:i:s'),
+            ':start' => $span['start']->format('Y-m-d H:i:s'),
+            ':end' => $span['end']->format('Y-m-d H:i:s'),
         ];
 
         $valuePlaceholders = [];
@@ -1629,37 +1742,46 @@ class Tracker
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
             [$start, $end] = $this->rollupRangeBounds($range);
 
-            if ($this->rollupsCoverRange($siteId, $start, $end)) {
-                $rollupRows = $this->aggregatePageRollups($siteId, $start, $end, $limit);
-                if (!empty($rollupRows)) {
-                    usort($rollupRows, fn($a, $b) => ($b['ips'] ?? 0) <=> ($a['ips'] ?? 0));
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            $rawLimit = max($limit * 3, 100);
+            $rows = [];
 
-                    return array_map(function ($row) {
-                        return [
-                            'path' => $row['dimension_value'] ?? '/',
-                            'views' => (int) ($row['views'] ?? 0),
-                            'ips' => (int) ($row['ips'] ?? 0),
-                        ];
-                    }, array_slice($rollupRows, 0, $limit));
-                }
+            if ($span) {
+                $rows = array_merge($rows, $this->normalizePathRows($this->aggregatePageRollups($siteId, $span['start'], $span['end'], $rawLimit)));
             }
 
-            [$rangeSql, $params] = $this->rangeClause($range);
-            $sql = $this->replaceIpHash(
-                "SELECT path, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-                GROUP BY path
-                ORDER BY ips DESC
-                LIMIT {$limit}",
-                'pageviews'
-            );
-            $statement = $this->db->prepare($sql);
-            $params[':site_id'] = $siteId;
-            $statement->execute($params);
+            foreach ($this->uncoveredRanges($span, $start, $end) as [$rawStart, $rawEnd]) {
+                $rows = array_merge($rows, $this->getTopPagesRaw($siteId, $rawStart, $rawEnd, $rawLimit));
+            }
 
-            return $statement->fetchAll();
+            $merged = $this->mergeDimensionRows('path', $rows);
+
+            usort($merged, fn($a, $b) => ($b['ips'] ?? 0) <=> ($a['ips'] ?? 0));
+
+            return array_slice($merged, 0, $limit);
         });
+    }
+
+    private function getTopPagesRaw(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, int $limit): array
+    {
+        $sql = $this->replaceIpHash(
+            "SELECT path, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
+            FROM pageviews
+            WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
+            GROUP BY path
+            ORDER BY ips DESC
+            LIMIT {$limit}",
+            'pageviews'
+        );
+
+        $statement = $this->db->prepare($sql);
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        return $statement->fetchAll();
     }
 
     public function getTopReferrers(int $siteId, string $range): array
@@ -1744,38 +1866,57 @@ class Tracker
         $cacheKey = "entry_pages:{$siteId}:{$range}:{$limit}";
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
-            $rollupRows = $this->getEntryRollupRows($siteId, $range, $limit);
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            $rawLimit = max($limit * 3, 100);
 
-            if (!empty($rollupRows)) {
-                usort($rollupRows, fn($a, $b) => ($b['ips'] ?? 0) <=> ($a['ips'] ?? 0));
+            $rows = [];
 
-                return array_slice($rollupRows, 0, $limit);
+            if ($span) {
+                $rows = array_merge($rows, $this->normalizeEntryRows(
+                    $this->aggregateEntryRollups($siteId, $span['start'], $span['end'], $rawLimit)
+                ));
             }
 
-            [$rangeSql, $params] = $this->rangeClause($range, true);
-            $params[':site_id'] = $siteId;
-            $sql = $this->replaceIpHash(
-                "SELECT p.path, COUNT(*) as views, COUNT(DISTINCT p.ip_hash) as ips, SUM(p.is_unique) as uniques,
+            foreach ($this->uncoveredRanges($span, $start, $end) as [$rawStart, $rawEnd]) {
+                $rows = array_merge($rows, $this->getEntryPagesRaw($siteId, $rawStart, $rawEnd, $rawLimit));
+            }
+
+            $merged = $this->mergeDimensionRows('path', $rows);
+
+            usort($merged, fn($a, $b) => ($b['ips'] ?? 0) <=> ($a['ips'] ?? 0));
+
+            return array_slice($merged, 0, $limit);
+        });
+    }
+
+    private function getEntryPagesRaw(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, int $limit): array
+    {
+        $sql = $this->replaceIpHash(
+            "SELECT p.path, COUNT(*) as views, COUNT(DISTINCT p.ip_hash) as ips, SUM(p.is_unique) as uniques,
                     AVG(p.page_count) as avg_pages, AVG(p.duration_seconds) as avg_duration,
                     AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-                FROM (
-                    SELECT MIN(id) as first_id, session_id
-                    FROM pageviews
-                    WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                    GROUP BY session_id
-                ) s
-                JOIN pageviews p ON p.id = s.first_id
-                GROUP BY p.path
-                ORDER BY ips DESC
-                LIMIT {$limit}",
-                'p'
-            );
+            FROM (
+                SELECT MIN(id) as first_id, session_id
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL AND occurred_at >= :start AND occurred_at < :end
+                GROUP BY session_id
+            ) s
+            JOIN pageviews p ON p.id = s.first_id
+            GROUP BY p.path
+            ORDER BY ips DESC
+            LIMIT {$limit}",
+            'p'
+        );
 
-            $statement = $this->db->prepare($sql);
-            $statement->execute($params);
+        $statement = $this->db->prepare($sql);
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
 
-            return $statement->fetchAll();
-        });
+        return $this->normalizeEntryRows($statement->fetchAll());
     }
 
     private function getEntrySummary(int $siteId, string $range): array
