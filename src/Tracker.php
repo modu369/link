@@ -1624,66 +1624,74 @@ class Tracker
 
     public function getTopPages(int $siteId, string $range = 'today', int $limit = 50): array
     {
-        [$start, $end] = $this->rollupRangeBounds($range);
+        $cacheKey = "top_pages:{$siteId}:{$range}:{$limit}";
 
-        if ($this->rollupsCoverRange($siteId, $start, $end)) {
-            $rollupRows = $this->aggregatePageRollups($siteId, $start, $end, $limit);
-            if (!empty($rollupRows)) {
-                usort($rollupRows, fn($a, $b) => ($b['ips'] ?? 0) <=> ($a['ips'] ?? 0));
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
+            [$start, $end] = $this->rollupRangeBounds($range);
 
-                return array_map(function ($row) {
-                    return [
-                        'path' => $row['dimension_value'] ?? '/',
-                        'views' => (int) ($row['views'] ?? 0),
-                        'ips' => (int) ($row['ips'] ?? 0),
-                    ];
-                }, array_slice($rollupRows, 0, $limit));
+            if ($this->rollupsCoverRange($siteId, $start, $end)) {
+                $rollupRows = $this->aggregatePageRollups($siteId, $start, $end, $limit);
+                if (!empty($rollupRows)) {
+                    usort($rollupRows, fn($a, $b) => ($b['ips'] ?? 0) <=> ($a['ips'] ?? 0));
+
+                    return array_map(function ($row) {
+                        return [
+                            'path' => $row['dimension_value'] ?? '/',
+                            'views' => (int) ($row['views'] ?? 0),
+                            'ips' => (int) ($row['ips'] ?? 0),
+                        ];
+                    }, array_slice($rollupRows, 0, $limit));
+                }
             }
-        }
 
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $sql = $this->replaceIpHash(
-            "SELECT path, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY path
-            ORDER BY ips DESC
-            LIMIT {$limit}",
-            'pageviews'
-        );
-        $statement = $this->db->prepare($sql);
-        $params[':site_id'] = $siteId;
-        $statement->execute($params);
+            [$rangeSql, $params] = $this->rangeClause($range);
+            $sql = $this->replaceIpHash(
+                "SELECT path, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+                GROUP BY path
+                ORDER BY ips DESC
+                LIMIT {$limit}",
+                'pageviews'
+            );
+            $statement = $this->db->prepare($sql);
+            $params[':site_id'] = $siteId;
+            $statement->execute($params);
 
-        return $statement->fetchAll();
+            return $statement->fetchAll();
+        });
     }
 
     public function getTopReferrers(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $domains = $this->getAllSiteDomains($siteId);
-        $sql = $this->replaceIpHash(
-            "SELECT referrer, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND referrer IS NOT NULL AND referrer != '' AND is_bot = 0 {$rangeSql}
-            GROUP BY referrer
-            ORDER BY ips DESC
-            LIMIT 50",
-            'pageviews'
-        );
-        $statement = $this->db->prepare($sql);
-        $params[':site_id'] = $siteId;
-        $statement->execute($params);
+        $cacheKey = "top_referrers:{$siteId}:{$range}";
 
-        $rows = $statement->fetchAll();
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$rangeSql, $params] = $this->rangeClause($range);
+            $domains = $this->getAllSiteDomains($siteId);
+            $sql = $this->replaceIpHash(
+                "SELECT referrer, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
+                FROM pageviews
+                WHERE site_id = :site_id AND referrer IS NOT NULL AND referrer != '' AND is_bot = 0 {$rangeSql}
+                GROUP BY referrer
+                ORDER BY ips DESC
+                LIMIT 50",
+                'pageviews'
+            );
+            $statement = $this->db->prepare($sql);
+            $params[':site_id'] = $siteId;
+            $statement->execute($params);
 
-        if ($domains) {
-            $rows = array_values(array_filter($rows, function ($row) use ($domains) {
-                return !$this->isOwnReferrer($row['referrer'] ?? '', $domains);
-            }));
-        }
+            $rows = $statement->fetchAll();
 
-        return $rows;
+            if ($domains) {
+                $rows = array_values(array_filter($rows, function ($row) use ($domains) {
+                    return !$this->isOwnReferrer($row['referrer'] ?? '', $domains);
+                }));
+            }
+
+            return $rows;
+        });
     }
 
     private function getAllSiteDomains(int $siteId): array
@@ -2231,123 +2239,135 @@ class Tracker
 
     private function getKeywords(int $siteId, string $range): array
     {
-        [$start, $end] = $this->rollupRangeBounds($range);
-        if ($this->rollupsCoverRange($siteId, $start, $end)) {
-            $rollup = $this->aggregateDimensionRollups($siteId, 'keyword_engine', $start, $end, 500);
+        $cacheKey = "keywords:{$siteId}:{$range}";
 
-            if (!empty($rollup)) {
-                $keywords = [];
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            if ($this->rollupsCoverRange($siteId, $start, $end)) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'keyword_engine', $start, $end, 500);
 
-                foreach ($rollup as $row) {
-                    [$keyword, $engine, $entry] = array_pad(explode('|', $row['dimension_value'] ?? '', 3), 3, '/');
-                    if ($keyword === '') {
-                        continue;
+                if (!empty($rollup)) {
+                    $keywords = [];
+
+                    foreach ($rollup as $row) {
+                        [$keyword, $engine, $entry] = array_pad(explode('|', $row['dimension_value'] ?? '', 3), 3, '/');
+                        if ($keyword === '') {
+                            continue;
+                        }
+                        if (!isset($keywords[$keyword])) {
+                            $keywords[$keyword] = [
+                                'keyword' => $keyword,
+                                'views' => 0,
+                                'engines' => [],
+                                'entry' => $entry ?: '/',
+                            ];
+                        }
+
+                        $keywords[$keyword]['views'] += (int) ($row['views'] ?? 0);
+                        $keywords[$keyword]['engines'][] = $engine ?: '其他';
+
+                        if (($row['views'] ?? 0) >= ($keywords[$keyword]['views'] ?? 0)) {
+                            $keywords[$keyword]['entry'] = $entry ?: '/';
+                        }
                     }
-                    if (!isset($keywords[$keyword])) {
-                        $keywords[$keyword] = [
-                            'keyword' => $keyword,
-                            'views' => 0,
-                            'engines' => [],
-                            'entry' => $entry ?: '/',
-                        ];
-                    }
 
-                    $keywords[$keyword]['views'] += (int) ($row['views'] ?? 0);
-                    $keywords[$keyword]['engines'][] = $engine ?: '其他';
+                    return array_values(array_map(function ($item) {
+                        $item['engines'] = implode(' / ', array_unique($item['engines']));
+                        return $item;
+                    }, $keywords));
+                }
+            }
 
-                    if (($row['views'] ?? 0) >= ($keywords[$keyword]['views'] ?? 0)) {
-                        $keywords[$keyword]['entry'] = $entry ?: '/';
-                    }
+            [$rangeSql, $params] = $this->rangeClause($range);
+            $engineCase = $this->searchEngineCase();
+            $statement = $this->db->prepare(
+                "SELECT keyword, {$engineCase} as engine, COALESCE(path, '/') as path, COUNT(*) as views
+                FROM pageviews
+                WHERE site_id = :site_id AND keyword IS NOT NULL AND keyword != '' AND is_bot = 0 {$rangeSql}
+                GROUP BY keyword, engine, path
+                ORDER BY views DESC
+                LIMIT 500"
+            );
+            $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+            $rows = $statement->fetchAll();
+            $keywords = [];
+
+            foreach ($rows as $row) {
+                $keyword = $row['keyword'];
+                if (!isset($keywords[$keyword])) {
+                    $keywords[$keyword] = [
+                        'keyword' => $keyword,
+                        'views' => 0,
+                        'engines' => [],
+                        'entry' => $row['path'],
+                    ];
                 }
 
-                return array_values(array_map(function ($item) {
-                    $item['engines'] = implode(' / ', array_unique($item['engines']));
-                    return $item;
-                }, $keywords));
-            }
-        }
+                $keywords[$keyword]['views'] += (int) $row['views'];
+                $keywords[$keyword]['engines'][] = $row['engine'];
 
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $engineCase = $this->searchEngineCase();
-        $statement = $this->db->prepare(
-            "SELECT keyword, {$engineCase} as engine, COALESCE(path, '/') as path, COUNT(*) as views
-            FROM pageviews
-            WHERE site_id = :site_id AND keyword IS NOT NULL AND keyword != '' AND is_bot = 0 {$rangeSql}
-            GROUP BY keyword, engine, path
-            ORDER BY views DESC
-            LIMIT 500"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-        $rows = $statement->fetchAll();
-        $keywords = [];
-
-        foreach ($rows as $row) {
-            $keyword = $row['keyword'];
-            if (!isset($keywords[$keyword])) {
-                $keywords[$keyword] = [
-                    'keyword' => $keyword,
-                    'views' => 0,
-                    'engines' => [],
-                    'entry' => $row['path'],
-                ];
+                if ($row['views'] >= $keywords[$keyword]['views']) {
+                    $keywords[$keyword]['entry'] = $row['path'];
+                }
             }
 
-            $keywords[$keyword]['views'] += (int) $row['views'];
-            $keywords[$keyword]['engines'][] = $row['engine'];
-
-            if ($row['views'] >= $keywords[$keyword]['views']) {
-                $keywords[$keyword]['entry'] = $row['path'];
-            }
-        }
-
-        return array_values(array_map(function ($item) {
-            $item['engines'] = implode(' / ', array_unique($item['engines']));
-            return $item;
-        }, $keywords));
+            return array_values(array_map(function ($item) {
+                $item['engines'] = implode(' / ', array_unique($item['engines']));
+                return $item;
+            }, $keywords));
+        });
     }
 
     private function getBotTraffic(int $siteId, string $range, ?string $engine = null): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $engineCase = $this->searchEngineCase();
-        $engineFilter = '';
+        $cacheKey = "bots:{$siteId}:{$range}:" . ($engine ?? 'all');
 
-        if ($engine !== null && $engine !== '' && $engine !== 'all') {
-            $engineFilter = " AND {$engineCase} = :engine";
-            $params[':engine'] = $engine;
-        }
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $engine) {
+            [$rangeSql, $params] = $this->rangeClause($range);
+            $engineCase = $this->searchEngineCase();
+            $engineFilter = '';
 
-        $statement = $this->db->prepare(
-            "SELECT path, referrer, user_agent, occurred_at, {$engineCase} as engine
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 1 {$rangeSql}{$engineFilter}
-            ORDER BY occurred_at DESC
-            LIMIT 200"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+            if ($engine !== null && $engine !== '' && $engine !== 'all') {
+                $engineFilter = " AND {$engineCase} = :engine";
+                $params[':engine'] = $engine;
+            }
 
-        return $statement->fetchAll();
+            $statement = $this->db->prepare(
+                "SELECT path, referrer, user_agent, occurred_at, {$engineCase} as engine
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 1 {$rangeSql}{$engineFilter}
+                ORDER BY occurred_at DESC
+                LIMIT 200"
+            );
+            $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+            return $statement->fetchAll();
+        });
     }
 
     private function getBotEngines(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $engineCase = $this->searchEngineCase();
+        $cacheKey = "bot_engines:{$siteId}:{$range}";
 
-        $statement = $this->db->prepare(
-            "SELECT engine, COUNT(*) as total FROM (
-                SELECT {$engineCase} as engine
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 1 {$rangeSql}
-            ) t
-            GROUP BY engine
-            ORDER BY total DESC"
-        );
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$rangeSql, $params] = $this->rangeClause($range);
+            $engineCase = $this->searchEngineCase();
 
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+            $statement = $this->db->prepare(
+                "SELECT engine, COUNT(*) as total FROM (
+                    SELECT {$engineCase} as engine
+                    FROM pageviews
+                    WHERE site_id = :site_id AND is_bot = 1 {$rangeSql}
+                ) t
+                GROUP BY engine
+                ORDER BY total DESC"
+            );
 
-        return $statement->fetchAll();
+            $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+            return $statement->fetchAll();
+        });
     }
 
     private function getVisitAverages(int $siteId, string $range, array $rollupTotals = []): array
@@ -3015,88 +3035,92 @@ class Tracker
 
     private function getMobileBreakdown(int $siteId, string $range): array
     {
-        [$start, $end] = $this->rollupRangeBounds($range);
+        $cacheKey = "mobile_breakdown:{$siteId}:{$range}";
 
-        if ($this->rollupsCoverRange($siteId, $start, $end)) {
-            $hosts = $this->aggregateDimensionRollups($siteId, 'host', $start, $end, 200);
-            $hostDevices = $this->aggregateDimensionRollups($siteId, 'host_device', $start, $end, 400);
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
 
-            if (!empty($hosts)) {
-                $deviceMap = [];
+            if ($this->rollupsCoverRange($siteId, $start, $end)) {
+                $hosts = $this->aggregateDimensionRollups($siteId, 'host', $start, $end, 200);
+                $hostDevices = $this->aggregateDimensionRollups($siteId, 'host_device', $start, $end, 400);
 
-                foreach ($hostDevices as $deviceRow) {
-                    [$hostValue, $device] = array_pad(explode('|', $deviceRow['dimension_value'] ?? '', 2), 2, '');
-                    if ($device !== 'mobile') {
-                        continue;
+                if (!empty($hosts)) {
+                    $deviceMap = [];
+
+                    foreach ($hostDevices as $deviceRow) {
+                        [$hostValue, $device] = array_pad(explode('|', $deviceRow['dimension_value'] ?? '', 2), 2, '');
+                        if ($device !== 'mobile') {
+                            continue;
+                        }
+
+                        $deviceMap[$hostValue]['views'] = ($deviceMap[$hostValue]['views'] ?? 0) + (int) ($deviceRow['views'] ?? 0);
+                        $deviceMap[$hostValue]['ips'] = ($deviceMap[$hostValue]['ips'] ?? 0) + (int) ($deviceRow['ips'] ?? 0);
                     }
 
-                    $deviceMap[$hostValue]['views'] = ($deviceMap[$hostValue]['views'] ?? 0) + (int) ($deviceRow['views'] ?? 0);
-                    $deviceMap[$hostValue]['ips'] = ($deviceMap[$hostValue]['ips'] ?? 0) + (int) ($deviceRow['ips'] ?? 0);
-                }
-
-                $rows = [];
-                $totals = [
-                    'domain' => '汇总',
-                    'views' => 0,
-                    'ips' => 0,
-                    'mobile_views' => 0,
-                    'mobile_ips' => 0,
-                ];
-
-                foreach ($hosts as $row) {
-                    $domain = $row['dimension_value'] ?? '未知域名';
-                    $views = (int) ($row['views'] ?? 0);
-                    $ips = (int) ($row['ips'] ?? 0);
-                    $mobileViews = (int) ($deviceMap[$domain]['views'] ?? 0);
-                    $mobileIps = (int) ($deviceMap[$domain]['ips'] ?? 0);
-
-                    $rows[] = [
-                        'domain' => $domain,
-                        'views' => $views,
-                        'ips' => $ips,
-                        'mobile_views' => $mobileViews,
-                        'mobile_ips' => $mobileIps,
+                    $rows = [];
+                    $totals = [
+                        'domain' => '汇总',
+                        'views' => 0,
+                        'ips' => 0,
+                        'mobile_views' => 0,
+                        'mobile_ips' => 0,
                     ];
 
-                    $totals['views'] += $views;
-                    $totals['ips'] += $ips;
-                    $totals['mobile_views'] += $mobileViews;
-                    $totals['mobile_ips'] += $mobileIps;
+                    foreach ($hosts as $row) {
+                        $domain = $row['dimension_value'] ?? '未知域名';
+                        $views = (int) ($row['views'] ?? 0);
+                        $ips = (int) ($row['ips'] ?? 0);
+                        $mobileViews = (int) ($deviceMap[$domain]['views'] ?? 0);
+                        $mobileIps = (int) ($deviceMap[$domain]['ips'] ?? 0);
+
+                        $rows[] = [
+                            'domain' => $domain,
+                            'views' => $views,
+                            'ips' => $ips,
+                            'mobile_views' => $mobileViews,
+                            'mobile_ips' => $mobileIps,
+                        ];
+
+                        $totals['views'] += $views;
+                        $totals['ips'] += $ips;
+                        $totals['mobile_views'] += $mobileViews;
+                        $totals['mobile_ips'] += $mobileIps;
+                    }
+
+                    return array_merge([$totals], $rows);
                 }
-
-                return array_merge([$totals], $rows);
             }
-        }
 
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT COALESCE(canonical_host, '未知域名') as domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
-                SUM(is_mobile) as mobile_views, COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY canonical_host
-            ORDER BY views DESC
-            LIMIT 100"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+            [$rangeSql, $params] = $this->rangeClause($range);
+            $statement = $this->db->prepare(
+                "SELECT COALESCE(canonical_host, '未知域名') as domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
+                    SUM(is_mobile) as mobile_views, COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+                GROUP BY canonical_host
+                ORDER BY views DESC
+                LIMIT 100"
+            );
+            $statement->execute(array_merge([':site_id' => $siteId], $params));
 
-        $rows = $statement->fetchAll();
-        $totals = [
-            'domain' => '汇总',
-            'views' => 0,
-            'ips' => 0,
-            'mobile_views' => 0,
-            'mobile_ips' => 0,
-        ];
+            $rows = $statement->fetchAll();
+            $totals = [
+                'domain' => '汇总',
+                'views' => 0,
+                'ips' => 0,
+                'mobile_views' => 0,
+                'mobile_ips' => 0,
+            ];
 
-        foreach ($rows as $row) {
-            $totals['views'] += (int) $row['views'];
-            $totals['ips'] += (int) $row['ips'];
-            $totals['mobile_views'] += (int) $row['mobile_views'];
-            $totals['mobile_ips'] += (int) $row['mobile_ips'];
-        }
+            foreach ($rows as $row) {
+                $totals['views'] += (int) $row['views'];
+                $totals['ips'] += (int) $row['ips'];
+                $totals['mobile_views'] += (int) $row['mobile_views'];
+                $totals['mobile_ips'] += (int) $row['mobile_ips'];
+            }
 
-        return array_merge([$totals], $rows);
+            return array_merge([$totals], $rows);
+        });
     }
 
     private function identifySearchEngine(?string $ua, ?string $referrer = null): string
@@ -3160,130 +3184,138 @@ class Tracker
 
     private function getSearchEngines(int $siteId, string $range): array
     {
-        [$start, $end] = $this->rollupRangeBounds($range);
-        if ($this->rollupsCoverRange($siteId, $start, $end)) {
-            $rollup = $this->aggregateDimensionRollups($siteId, 'search_engine', $start, $end, 50);
+        $cacheKey = "search_engines:{$siteId}:{$range}";
 
-            if (!empty($rollup)) {
-                $mapped = [];
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            if ($this->rollupsCoverRange($siteId, $start, $end)) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'search_engine', $start, $end, 50);
 
-                foreach ($rollup as $row) {
-                    $engine = $row['dimension_value'] ?? '其他';
+                if (!empty($rollup)) {
+                    $mapped = [];
 
-                    if ($engine === '其他') {
-                        continue;
-                    }
+                    foreach ($rollup as $row) {
+                        $engine = $row['dimension_value'] ?? '其他';
 
-                    $mapped[] = [
-                        'engine' => $engine,
-                        'views' => (int) ($row['views'] ?? 0),
-                        'ips' => (int) ($row['ips'] ?? 0),
-                    ];
-                }
-
-                return $mapped;
-            }
-        }
-
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $engineCase = $this->searchEngineCase();
-        $statement = $this->db->prepare(
-            "SELECT engine, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM (
-                SELECT {$engineCase} as engine, ip_hash
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            ) t
-            GROUP BY engine
-            HAVING engine != '其他'
-            ORDER BY ips DESC"
-        );
-
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-        return $statement->fetchAll();
-    }
-
-    private function getExternalLinks(int $siteId, string $range): array
-    {
-        [$start, $end] = $this->rollupRangeBounds($range);
-        $site = $this->getSite($siteId);
-        $domain = $site['domain'] ?? '';
-        $blocked = ['baidu', 'google', 'bing.', 'sm.cn', 'quark.cn', 'so.com', 'sogou', 'bytedance', 'toutiao'];
-
-        if ($this->rollupsCoverRange($siteId, $start, $end)) {
-            $rollup = $this->aggregateDimensionRollups($siteId, 'referrer_host', $start, $end, 200);
-            $filtered = [];
-
-            if (!empty($rollup)) {
-                foreach ($rollup as $row) {
-                    $host = strtolower($row['dimension_value'] ?? '');
-                    if ($host === '' || $host === '直接访问') {
-                        continue;
-                    }
-
-                    $skip = false;
-                    foreach ($blocked as $needle) {
-                        if (str_contains($host, $needle)) {
-                            $skip = true;
-                            break;
+                        if ($engine === '其他') {
+                            continue;
                         }
-                    }
 
-                    if ($domain && (str_ends_with($host, $domain) || str_ends_with($host, 'www.' . ltrim($domain, '.')))) {
-                        $skip = true;
-                    }
-
-                    if (!$skip) {
-                        $filtered[] = [
-                            'host' => $host,
+                        $mapped[] = [
+                            'engine' => $engine,
                             'views' => (int) ($row['views'] ?? 0),
                             'ips' => (int) ($row['ips'] ?? 0),
                         ];
                     }
+
+                    return $mapped;
                 }
-
-                return $filtered;
             }
-        }
 
-        [$rangeSql, $params] = $this->rangeClause($range);
+            [$rangeSql, $params] = $this->rangeClause($range);
+            $engineCase = $this->searchEngineCase();
+            $statement = $this->db->prepare(
+                "SELECT engine, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
+                FROM (
+                    SELECT {$engineCase} as engine, ip_hash
+                    FROM pageviews
+                    WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+                ) t
+                GROUP BY engine
+                HAVING engine != '其他'
+                ORDER BY ips DESC"
+            );
 
-        $statement = $this->db->prepare(
-            "SELECT host, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM (
-                SELECT COALESCE(NULLIF(SUBSTRING_INDEX(SUBSTRING_INDEX(referrer, '/', 3), '//', -1), ''), '直接访问') as host, ip_hash
-                FROM pageviews
-                WHERE site_id = :site_id AND referrer IS NOT NULL AND referrer != '' AND is_bot = 0 {$rangeSql}
-            ) t
-            WHERE host != '直接访问'
-            GROUP BY host
-            ORDER BY ips DESC
-            LIMIT 200"
-        );
+            $statement->execute(array_merge([':site_id' => $siteId], $params));
 
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
-        $rows = $statement->fetchAll();
+            return $statement->fetchAll();
+        });
+    }
 
-        $filtered = [];
-        foreach ($rows as $row) {
-            $host = strtolower($row['host'] ?? '');
-            $skip = false;
-            foreach ($blocked as $needle) {
-                if (str_contains($host, $needle)) {
+    private function getExternalLinks(int $siteId, string $range): array
+    {
+        $cacheKey = "external_links:{$siteId}:{$range}";
+
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $site = $this->getSite($siteId);
+            $domain = $site['domain'] ?? '';
+            $blocked = ['baidu', 'google', 'bing.', 'sm.cn', 'quark.cn', 'so.com', 'sogou', 'bytedance', 'toutiao'];
+
+            if ($this->rollupsCoverRange($siteId, $start, $end)) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'referrer_host', $start, $end, 200);
+                $filtered = [];
+
+                if (!empty($rollup)) {
+                    foreach ($rollup as $row) {
+                        $host = strtolower($row['dimension_value'] ?? '');
+                        if ($host === '' || $host === '直接访问') {
+                            continue;
+                        }
+
+                        $skip = false;
+                        foreach ($blocked as $needle) {
+                            if (str_contains($host, $needle)) {
+                                $skip = true;
+                                break;
+                            }
+                        }
+
+                        if ($domain && (str_ends_with($host, $domain) || str_ends_with($host, 'www.' . ltrim($domain, '.')))) {
+                            $skip = true;
+                        }
+
+                        if (!$skip) {
+                            $filtered[] = [
+                                'host' => $host,
+                                'views' => (int) ($row['views'] ?? 0),
+                                'ips' => (int) ($row['ips'] ?? 0),
+                            ];
+                        }
+                    }
+
+                    return $filtered;
+                }
+            }
+
+            [$rangeSql, $params] = $this->rangeClause($range);
+
+            $statement = $this->db->prepare(
+                "SELECT host, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
+                FROM (
+                    SELECT COALESCE(NULLIF(SUBSTRING_INDEX(SUBSTRING_INDEX(referrer, '/', 3), '//', -1), ''), '直接访问') as host, ip_hash
+                    FROM pageviews
+                    WHERE site_id = :site_id AND referrer IS NOT NULL AND referrer != '' AND is_bot = 0 {$rangeSql}
+                ) t
+                WHERE host != '直接访问'
+                GROUP BY host
+                ORDER BY ips DESC
+                LIMIT 200"
+            );
+
+            $statement->execute(array_merge([':site_id' => $siteId], $params));
+            $rows = $statement->fetchAll();
+
+            $filtered = [];
+            foreach ($rows as $row) {
+                $host = strtolower($row['host'] ?? '');
+                $skip = false;
+                foreach ($blocked as $needle) {
+                    if (str_contains($host, $needle)) {
+                        $skip = true;
+                        break;
+                    }
+                }
+                if ($domain && (str_ends_with($host, $domain) || str_ends_with($host, 'www.' . ltrim($domain, '.')))) {
                     $skip = true;
-                    break;
+                }
+                if (!$skip) {
+                    $filtered[] = $row;
                 }
             }
-            if ($domain && (str_ends_with($host, $domain) || str_ends_with($host, 'www.' . ltrim($domain, '.')))) {
-                $skip = true;
-            }
-            if (!$skip) {
-                $filtered[] = $row;
-            }
-        }
 
-        return $filtered;
+            return $filtered;
+        });
     }
 
     public function getDeviceBreakdown(int $siteId, string $range): array
@@ -3345,135 +3377,151 @@ class Tracker
 
     public function getBrowserBreakdown(int $siteId, string $range, int $limit = 10): array
     {
-        [$start, $end] = $this->rollupRangeBounds($range);
-        if ($this->rollupsCoverRange($siteId, $start, $end)) {
-            $rollup = $this->aggregateDimensionRollups($siteId, 'browser', $start, $end, $limit);
+        $cacheKey = "browsers:{$siteId}:{$range}:{$limit}";
 
-            if (!empty($rollup)) {
-                return array_map(fn ($row) => [
-                    'browser' => $row['dimension_value'],
-                    'views' => (int) ($row['views'] ?? 0),
-                    'ips' => (int) ($row['ips'] ?? 0),
-                ], $rollup);
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            if ($this->rollupsCoverRange($siteId, $start, $end)) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'browser', $start, $end, $limit);
+
+                if (!empty($rollup)) {
+                    return array_map(fn ($row) => [
+                        'browser' => $row['dimension_value'],
+                        'views' => (int) ($row['views'] ?? 0),
+                        'ips' => (int) ($row['ips'] ?? 0),
+                    ], $rollup);
+                }
             }
-        }
 
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT browser, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips FROM (
-                SELECT CASE
-                    WHEN LOWER(user_agent) REGEXP 'micromessenger' THEN 'WeChat'
-                    WHEN LOWER(user_agent) REGEXP 'bytedancewebview|aweme' THEN 'Douyin'
-                    WHEN LOWER(user_agent) REGEXP 'baiduboxapp' THEN 'Baidu'
-                    WHEN LOWER(user_agent) REGEXP 'mqqbrowser|qqbrowser' THEN 'QQ'
-                    WHEN LOWER(user_agent) REGEXP 'ucbrowser' THEN 'UC'
-                    WHEN LOWER(user_agent) REGEXP 'quark' THEN 'Quark'
-                    WHEN LOWER(user_agent) REGEXP 'xiaomi|miuibrowser' THEN 'Mi'
-                    WHEN LOWER(user_agent) REGEXP 'huawei' THEN 'Huawei'
-                    WHEN LOWER(user_agent) REGEXP 'vivobrowser' THEN 'Vivo'
-                    WHEN LOWER(user_agent) REGEXP 'heytapbrowser|oppobrowser' THEN 'OPPO'
-                    WHEN LOWER(user_agent) REGEXP 'edg(a|ios)' THEN 'Edge'
-                    WHEN LOWER(user_agent) REGEXP 'chrome|crios' THEN 'Chrome'
-                    WHEN LOWER(user_agent) REGEXP 'firefox|fxios' THEN 'Firefox'
-                    WHEN LOWER(user_agent) REGEXP 'safari' AND LOWER(user_agent) NOT REGEXP 'chrome|crios|edg' THEN 'Safari'
-                    WHEN LOWER(user_agent) REGEXP '360se|360ee' THEN '360'
-                    WHEN LOWER(user_agent) REGEXP 'msie|trident' THEN 'IE'
-                    ELSE '其他浏览器'
-                END as browser,
-                ip_hash
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            ) t
-            GROUP BY browser
-            ORDER BY views DESC
-            LIMIT {$limit}"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+            [$rangeSql, $params] = $this->rangeClause($range);
+            $statement = $this->db->prepare(
+                "SELECT browser, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips FROM (
+                    SELECT CASE
+                        WHEN LOWER(user_agent) REGEXP 'micromessenger' THEN 'WeChat'
+                        WHEN LOWER(user_agent) REGEXP 'bytedancewebview|aweme' THEN 'Douyin'
+                        WHEN LOWER(user_agent) REGEXP 'baiduboxapp' THEN 'Baidu'
+                        WHEN LOWER(user_agent) REGEXP 'mqqbrowser|qqbrowser' THEN 'QQ'
+                        WHEN LOWER(user_agent) REGEXP 'ucbrowser' THEN 'UC'
+                        WHEN LOWER(user_agent) REGEXP 'quark' THEN 'Quark'
+                        WHEN LOWER(user_agent) REGEXP 'xiaomi|miuibrowser' THEN 'Mi'
+                        WHEN LOWER(user_agent) REGEXP 'huawei' THEN 'Huawei'
+                        WHEN LOWER(user_agent) REGEXP 'vivobrowser' THEN 'Vivo'
+                        WHEN LOWER(user_agent) REGEXP 'heytapbrowser|oppobrowser' THEN 'OPPO'
+                        WHEN LOWER(user_agent) REGEXP 'edg(a|ios)' THEN 'Edge'
+                        WHEN LOWER(user_agent) REGEXP 'chrome|crios' THEN 'Chrome'
+                        WHEN LOWER(user_agent) REGEXP 'firefox|fxios' THEN 'Firefox'
+                        WHEN LOWER(user_agent) REGEXP 'safari' AND LOWER(user_agent) NOT REGEXP 'chrome|crios|edg' THEN 'Safari'
+                        WHEN LOWER(user_agent) REGEXP '360se|360ee' THEN '360'
+                        WHEN LOWER(user_agent) REGEXP 'msie|trident' THEN 'IE'
+                        ELSE '其他浏览器'
+                    END as browser,
+                    ip_hash
+                    FROM pageviews
+                    WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+                ) t
+                GROUP BY browser
+                ORDER BY views DESC
+                LIMIT {$limit}"
+            );
+            $statement->execute(array_merge([':site_id' => $siteId], $params));
 
-        return $statement->fetchAll();
+            return $statement->fetchAll();
+        });
     }
 
     public function getRegionStats(int $siteId, string $range, int $limit = 50): array
     {
-        [$start, $end] = $this->rollupRangeBounds($range);
-        if ($this->rollupsCoverRange($siteId, $start, $end)) {
-            $rollup = $this->aggregateDimensionRollups($siteId, 'region', $start, $end, $limit);
+        $cacheKey = "regions:{$siteId}:{$range}:{$limit}";
 
-            if (!empty($rollup)) {
-                return array_map(fn ($row) => [
-                    'region' => $row['dimension_value'],
-                    'views' => (int) ($row['views'] ?? 0),
-                    'ips' => (int) ($row['ips'] ?? 0),
-                ], $rollup);
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            if ($this->rollupsCoverRange($siteId, $start, $end)) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'region', $start, $end, $limit);
+
+                if (!empty($rollup)) {
+                    return array_map(fn ($row) => [
+                        'region' => $row['dimension_value'],
+                        'views' => (int) ($row['views'] ?? 0),
+                        'ips' => (int) ($row['ips'] ?? 0),
+                    ], $rollup);
+                }
             }
-        }
 
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT
-                CASE
-                    WHEN COALESCE(country_name,'') LIKE '中国%' THEN COALESCE(NULLIF(region_name,''), '未知')
-                    WHEN COALESCE(country_name,'') = '' THEN '未知'
-                    ELSE COALESCE(country_name, '未知')
-                END as region,
-                COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql} AND (COALESCE(country_name,'') LIKE '中国%' OR COALESCE(country_name,'') = '')
-            GROUP BY region
-            ORDER BY ips DESC
-            LIMIT {$limit}"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+            [$rangeSql, $params] = $this->rangeClause($range);
+            $statement = $this->db->prepare(
+                "SELECT
+                    CASE
+                        WHEN COALESCE(country_name,'') LIKE '中国%' THEN COALESCE(NULLIF(region_name,''), '未知')
+                        WHEN COALESCE(country_name,'') = '' THEN '未知'
+                        ELSE COALESCE(country_name, '未知')
+                    END as region,
+                    COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql} AND (COALESCE(country_name,'') LIKE '中国%' OR COALESCE(country_name,'') = '')
+                GROUP BY region
+                ORDER BY ips DESC
+                LIMIT {$limit}"
+            );
+            $statement->execute(array_merge([':site_id' => $siteId], $params));
 
-        return $statement->fetchAll();
+            return $statement->fetchAll();
+        });
     }
 
     public function getCountryStats(int $siteId, string $range, int $limit = 200): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT
-                COALESCE(NULLIF(country_name,''), '未知') as country,
-                COALESCE(NULLIF(country_code,''), '') as country_code,
-                COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY country, country_code
-            ORDER BY ips DESC
-            LIMIT {$limit}"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $cacheKey = "countries:{$siteId}:{$range}:{$limit}";
 
-        return $statement->fetchAll();
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
+            [$rangeSql, $params] = $this->rangeClause($range);
+            $statement = $this->db->prepare(
+                "SELECT
+                    COALESCE(NULLIF(country_name,''), '未知') as country,
+                    COALESCE(NULLIF(country_code,''), '') as country_code,
+                    COUNT(DISTINCT ip_hash) as ips
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+                GROUP BY country, country_code
+                ORDER BY ips DESC
+                LIMIT {$limit}"
+            );
+            $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+            return $statement->fetchAll();
+        });
     }
 
     private function getIspStats(int $siteId, string $range, int $limit = 50): array
     {
-        [$start, $end] = $this->rollupRangeBounds($range);
-        if ($this->rollupsCoverRange($siteId, $start, $end)) {
-            $rollup = $this->aggregateDimensionRollups($siteId, 'isp', $start, $end, $limit);
+        $cacheKey = "isp:{$siteId}:{$range}:{$limit}";
 
-            if (!empty($rollup)) {
-                return array_map(fn ($row) => [
-                    'isp' => $row['dimension_value'],
-                    'views' => (int) ($row['views'] ?? 0),
-                    'ips' => (int) ($row['ips'] ?? 0),
-                ], $rollup);
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            if ($this->rollupsCoverRange($siteId, $start, $end)) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'isp', $start, $end, $limit);
+
+                if (!empty($rollup)) {
+                    return array_map(fn ($row) => [
+                        'isp' => $row['dimension_value'],
+                        'views' => (int) ($row['views'] ?? 0),
+                        'ips' => (int) ($row['ips'] ?? 0),
+                    ], $rollup);
+                }
             }
-        }
 
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT COALESCE(NULLIF(isp_domain,''), '未知运营商') as isp, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY isp
-            ORDER BY ips DESC
-            LIMIT {$limit}"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+            [$rangeSql, $params] = $this->rangeClause($range);
+            $statement = $this->db->prepare(
+                "SELECT COALESCE(NULLIF(isp_domain,''), '未知运营商') as isp, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+                GROUP BY isp
+                ORDER BY ips DESC
+                LIMIT {$limit}"
+            );
+            $statement->execute(array_merge([':site_id' => $siteId], $params));
 
-        return $statement->fetchAll();
+            return $statement->fetchAll();
+        });
     }
 
     public function getNewVsReturning(int $siteId, string $range): array
