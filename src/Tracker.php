@@ -711,16 +711,38 @@ class Tracker
             $entries[] = ['referrer_host', $referrerHost];
         }
 
-        $entries[] = ['page_path', $path];
-
         if ($canonicalHost !== '') {
             $entries[] = ['host', $canonicalHost];
             $entries[] = ['host_device', $this->dimensionKey([$canonicalHost, $isMobile ? 'mobile' : 'desktop'])];
         }
 
         if (!empty($dimensions['entry_path'])) {
-            $entries[] = ['entry_path', $dimensions['entry_path']];
+            $this->upsertEntryRollup(
+                $siteId,
+                $bucketKey,
+                $dimensions['entry_path'],
+                $uvIncrement,
+                $ipIncrement,
+                $sessionIncrement,
+                $durationIncrement,
+                $pageIncrement,
+                $bounceIncrement,
+                $isUnique
+            );
         }
+
+        $this->upsertPageRollup(
+            $siteId,
+            $bucketKey,
+            $path,
+            $uvIncrement,
+            $ipIncrement,
+            $sessionIncrement,
+            $durationIncrement,
+            $pageIncrement,
+            $bounceIncrement,
+            $isUnique
+        );
 
         $entries[] = ['device', $isMobile ? 'mobile' : 'desktop'];
 
@@ -803,6 +825,86 @@ class Tracker
         ]);
     }
 
+    private function upsertPageRollup(
+        int $siteId,
+        string $bucketKey,
+        string $path,
+        int $uvIncrement,
+        int $ipIncrement,
+        int $sessionIncrement,
+        int $durationIncrement,
+        int $pageIncrement,
+        int $bounceIncrement,
+        bool $isUnique
+    ): void {
+        $path = mb_substr($path ?: '/', 0, 512);
+
+        $stmt = $this->db->prepare(
+            'INSERT INTO pageview_page_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+             VALUES (:site_id, :bucket_start, :path, 1, :uv, :ip_count, :session_count, :duration_sum, :page_sum, :bounce_count)
+             ON DUPLICATE KEY UPDATE
+                pv = pv + 1,
+                uv = uv + VALUES(uv),
+                ip_count = ip_count + VALUES(ip_count),
+                session_count = session_count + VALUES(session_count),
+                duration_sum = duration_sum + VALUES(duration_sum),
+                page_sum = page_sum + VALUES(page_sum),
+                bounce_count = bounce_count + VALUES(bounce_count)'
+        );
+
+        $stmt->execute([
+            ':site_id' => $siteId,
+            ':bucket_start' => $bucketKey,
+            ':path' => $path,
+            ':uv' => $isUnique ? 1 : 0,
+            ':ip_count' => $ipIncrement,
+            ':session_count' => $sessionIncrement,
+            ':duration_sum' => $durationIncrement,
+            ':page_sum' => $pageIncrement,
+            ':bounce_count' => $bounceIncrement,
+        ]);
+    }
+
+    private function upsertEntryRollup(
+        int $siteId,
+        string $bucketKey,
+        string $path,
+        int $uvIncrement,
+        int $ipIncrement,
+        int $sessionIncrement,
+        int $durationIncrement,
+        int $pageIncrement,
+        int $bounceIncrement,
+        bool $isUnique
+    ): void {
+        $path = mb_substr($path ?: '/', 0, 512);
+
+        $stmt = $this->db->prepare(
+            'INSERT INTO pageview_entry_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+             VALUES (:site_id, :bucket_start, :path, 1, :uv, :ip_count, :session_count, :duration_sum, :page_sum, :bounce_count)
+             ON DUPLICATE KEY UPDATE
+                pv = pv + 1,
+                uv = uv + VALUES(uv),
+                ip_count = ip_count + VALUES(ip_count),
+                session_count = session_count + VALUES(session_count),
+                duration_sum = duration_sum + VALUES(duration_sum),
+                page_sum = page_sum + VALUES(page_sum),
+                bounce_count = bounce_count + VALUES(bounce_count)'
+        );
+
+        $stmt->execute([
+            ':site_id' => $siteId,
+            ':bucket_start' => $bucketKey,
+            ':path' => $path,
+            ':uv' => $isUnique ? 1 : 0,
+            ':ip_count' => $ipIncrement,
+            ':session_count' => $sessionIncrement,
+            ':duration_sum' => $durationIncrement,
+            ':page_sum' => $pageIncrement,
+            ':bounce_count' => $bounceIncrement,
+        ]);
+    }
+
     private function aggregateDimensionRollups(int $siteId, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
     {
         if (!$this->rollupsCoverRange($siteId, $start, $end)) {
@@ -828,6 +930,58 @@ class Tracker
         $rows = $statement->fetchAll();
 
         return $this->recalcRollupIps([$siteId], $dimension, $start, $end, $rows);
+    }
+
+    private function aggregatePageRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
+    {
+        if (!$this->rollupsCoverRange($siteId, $start, $end)) {
+            return [];
+        }
+
+        $statement = $this->db->prepare(
+            'SELECT path as dimension_value, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ips, SUM(session_count) as sessions, SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count
+             FROM pageview_page_rollups
+             WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end
+             GROUP BY path
+             ORDER BY views DESC
+             LIMIT :limit'
+        );
+
+        $statement->bindValue(':site_id', $siteId, PDO::PARAM_INT);
+        $statement->bindValue(':start', $start->format('Y-m-d H:i:s'), PDO::PARAM_STR);
+        $statement->bindValue(':end', $end->format('Y-m-d H:i:s'), PDO::PARAM_STR);
+        $statement->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $statement->execute();
+
+        $rows = $statement->fetchAll();
+
+        return $this->recalcRollupIps([$siteId], 'page_path', $start, $end, $rows);
+    }
+
+    private function aggregateEntryRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
+    {
+        if (!$this->rollupsCoverRange($siteId, $start, $end)) {
+            return [];
+        }
+
+        $statement = $this->db->prepare(
+            'SELECT path as dimension_value, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ips, SUM(session_count) as sessions, SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count
+             FROM pageview_entry_rollups
+             WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end
+             GROUP BY path
+             ORDER BY views DESC
+             LIMIT :limit'
+        );
+
+        $statement->bindValue(':site_id', $siteId, PDO::PARAM_INT);
+        $statement->bindValue(':start', $start->format('Y-m-d H:i:s'), PDO::PARAM_STR);
+        $statement->bindValue(':end', $end->format('Y-m-d H:i:s'), PDO::PARAM_STR);
+        $statement->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $statement->execute();
+
+        $rows = $statement->fetchAll();
+
+        return $this->recalcEntryRollupIps($siteId, $start, $end, $rows);
     }
 
     private function aggregateDimensionRollupsForSites(array $siteIds, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
@@ -878,6 +1032,10 @@ class Tracker
         $values = array_values(array_unique(array_filter(array_map(fn ($row) => $row['dimension_value'] ?? '', $rows))));
         if (empty($values) || empty($siteIds)) {
             return $rows;
+        }
+
+        if ($dimension === 'entry_path') {
+            return $this->recalcEntryRollupIps($siteIds[0], $start, $end, $rows);
         }
 
         [$labelExpr, $whereExtra] = match ($dimension) {
@@ -945,6 +1103,55 @@ class Tracker
         foreach ($stmt->fetchAll() as $row) {
             $count = (int) ($row['ips'] ?? 0);
             $distinctMap[$row['label']] = $count;
+        }
+
+        return array_map(function ($row) use ($distinctMap) {
+            $label = $row['dimension_value'] ?? '';
+            if (array_key_exists($label, $distinctMap)) {
+                $row['ips'] = $distinctMap[$label];
+                $row['uniques'] = $distinctMap[$label];
+            }
+
+            return $row;
+        }, $rows);
+    }
+
+    private function recalcEntryRollupIps(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, array $rows): array
+    {
+        $values = array_values(array_unique(array_filter(array_map(fn ($row) => $row['dimension_value'] ?? '', $rows))));
+        if (empty($values)) {
+            return $rows;
+        }
+
+        $bindings = [
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ];
+
+        $valuePlaceholders = [];
+        foreach ($values as $idx => $value) {
+            $placeholder = ':v' . $idx;
+            $valuePlaceholders[] = $placeholder;
+            $bindings[$placeholder] = $value;
+        }
+
+        $ipExpr = $this->ipHashExpr('p');
+        $sql = sprintf(
+            "SELECT label, COUNT(DISTINCT ip_val) as ips, COUNT(DISTINCT ip_val) as uniques FROM (\n                SELECT COALESCE(p.path,'/') as label, %s as ip_val\n                FROM (\n                    SELECT MIN(id) as first_id\n                    FROM pageviews\n                    WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL\n                      AND occurred_at >= :start AND occurred_at < :end\n                    GROUP BY session_id\n                ) s\n                JOIN pageviews p ON p.id = s.first_id\n                WHERE COALESCE(p.path,'/') IN (%s)\n            ) derived\n            GROUP BY label",
+            $ipExpr,
+            implode(',', $valuePlaceholders)
+        );
+
+        $stmt = $this->db->prepare($sql);
+        foreach ($bindings as $key => $value) {
+            $stmt->bindValue($key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+        }
+        $stmt->execute();
+
+        $distinctMap = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $distinctMap[$row['label']] = (int) ($row['ips'] ?? 0);
         }
 
         return array_map(function ($row) use ($distinctMap) {
@@ -1536,20 +1743,26 @@ class Tracker
             $summary = $summaryStmt->fetch() ?: [];
         }
 
-        $rowsSql = $this->replaceIpHash(
-            "SELECT p.path, COUNT(*) as sessions, COUNT(DISTINCT p.ip_hash) as ips,
-                SUM(p.is_unique) as uniques, SUM(p.page_count) as views,
-                AVG(p.page_count) as avg_pages, AVG(p.duration_seconds) as avg_duration,
-                AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            {$base}
-            GROUP BY p.path
-            ORDER BY ips DESC
-            LIMIT 200",
-            'p'
-        );
-        $rowsStmt = $this->db->prepare($rowsSql);
-        $rowsStmt->execute($this->filterParams($rowsStmt->queryString, array_merge([':site_id' => $siteId], $params)));
-        $rows = $rowsStmt->fetchAll();
+        $rollupRows = $this->getEntryRollupRows($siteId, $range, 200);
+
+        if (!empty($rollupRows)) {
+            $rows = $rollupRows;
+        } else {
+            $rowsSql = $this->replaceIpHash(
+                "SELECT p.path, COUNT(*) as sessions, COUNT(DISTINCT p.ip_hash) as ips,
+                    SUM(p.is_unique) as uniques, SUM(p.page_count) as views,
+                    AVG(p.page_count) as avg_pages, AVG(p.duration_seconds) as avg_duration,
+                    AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
+                {$base}
+                GROUP BY p.path
+                ORDER BY ips DESC
+                LIMIT 200",
+                'p'
+            );
+            $rowsStmt = $this->db->prepare($rowsSql);
+            $rowsStmt->execute($this->filterParams($rowsStmt->queryString, array_merge([':site_id' => $siteId], $params)));
+            $rows = $rowsStmt->fetchAll();
+        }
 
         return [
             'summary' => [
@@ -1566,6 +1779,34 @@ class Tracker
         ];
     }
 
+    private function getEntryRollupRows(int $siteId, string $range, int $limit = 200): array
+    {
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $rows = $this->aggregateEntryRollups($siteId, $start, $end, $limit);
+
+        if (empty($rows)) {
+            return [];
+        }
+
+        return array_map(function ($row) {
+            $sessions = (int) ($row['sessions'] ?? 0);
+            $avgPages = $sessions > 0 ? (float) ($row['page_sum'] ?? 0) / $sessions : 0;
+            $avgDuration = $sessions > 0 ? (float) ($row['duration_sum'] ?? 0) / $sessions : 0;
+            $bounceRate = $sessions > 0 ? (float) ($row['bounce_count'] ?? 0) / $sessions : 0;
+
+            return [
+                'path' => $row['dimension_value'] ?? '/',
+                'sessions' => $sessions,
+                'ips' => (int) ($row['ips'] ?? 0),
+                'uniques' => (int) ($row['uniques'] ?? 0),
+                'views' => (int) ($row['views'] ?? 0),
+                'avg_pages' => $avgPages,
+                'avg_duration' => $avgDuration,
+                'bounce_rate' => $bounceRate,
+            ];
+        }, $rows);
+    }
+
     private function getPageSummary(int $siteId, string $range): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
@@ -1574,6 +1815,8 @@ class Tracker
         [$rollupStart, $rollupEnd] = $this->rollupRangeBounds($range);
         $summaryTotals = $this->aggregateTotalsWithRollups($siteId, $rollupStart, $rollupEnd);
         $summary = $this->rollupSummaryStats($summaryTotals);
+
+        $rollupRows = $this->getPageRollupRows($siteId, $range, 200);
 
         $rowsStmt = $this->db->prepare(
             "SELECT COALESCE(path,'/') as path, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
@@ -1587,6 +1830,8 @@ class Tracker
         );
         $rowsStmt->execute(array_merge([':site_id' => $siteId], $params));
 
+        $rows = $rollupRows ?: $rowsStmt->fetchAll();
+
         return [
             'summary' => [
                 'ips' => (int) ($summary['ips'] ?? 0),
@@ -1598,8 +1843,35 @@ class Tracker
                 'avg_duration' => (float) ($summary['avg_duration'] ?? 0),
                 'bounce_rate' => (float) ($summary['bounce_rate'] ?? 0),
             ],
-            'rows' => $rowsStmt->fetchAll(),
+            'rows' => $rows,
         ];
+    }
+
+    private function getPageRollupRows(int $siteId, string $range, int $limit = 200): array
+    {
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $rows = $this->aggregatePageRollups($siteId, $start, $end, $limit);
+
+        if (empty($rows)) {
+            return [];
+        }
+
+        return array_map(function ($row) {
+            $sessions = (int) ($row['sessions'] ?? 0);
+            $avgPages = $sessions > 0 ? (float) ($row['page_sum'] ?? 0) / $sessions : 0;
+            $avgDuration = $sessions > 0 ? (float) ($row['duration_sum'] ?? 0) / $sessions : 0;
+            $bounceRate = $sessions > 0 ? (float) ($row['bounce_count'] ?? 0) / $sessions : 0;
+
+            return [
+                'path' => $row['dimension_value'] ?? '/',
+                'views' => (int) ($row['views'] ?? 0),
+                'ips' => (int) ($row['ips'] ?? 0),
+                'uniques' => (int) ($row['uniques'] ?? 0),
+                'avg_pages' => $avgPages,
+                'avg_duration' => $avgDuration,
+                'bounce_rate' => $bounceRate,
+            ];
+        }, $rows);
     }
 
     private function getReferrerSummary(int $siteId, string $range, array $filters = []): array
@@ -2550,8 +2822,44 @@ class Tracker
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
         );
 
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS pageview_page_rollups (
+                site_id INT UNSIGNED NOT NULL,
+                bucket_start DATETIME NOT NULL,
+                path VARCHAR(512) NOT NULL,
+                pv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                uv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                ip_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                session_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                duration_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                PRIMARY KEY (site_id, bucket_start, path),
+                INDEX idx_page_time (bucket_start)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS pageview_entry_rollups (
+                site_id INT UNSIGNED NOT NULL,
+                bucket_start DATETIME NOT NULL,
+                path VARCHAR(512) NOT NULL,
+                pv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                uv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                ip_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                session_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                duration_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                PRIMARY KEY (site_id, bucket_start, path),
+                INDEX idx_entry_time (bucket_start)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+
         $this->ensureHashPartitioned('pageview_rollups');
         $this->ensureHashPartitioned('pageview_dimension_rollups');
+        $this->ensureHashPartitioned('pageview_page_rollups');
+        $this->ensureHashPartitioned('pageview_entry_rollups');
     }
 
     private function ensureIpDbExists(): void
@@ -3522,6 +3830,12 @@ class Tracker
 
         $dimRollupStmt = $this->db->prepare('DELETE FROM pageview_dimension_rollups WHERE bucket_start < :cutoff');
         $dimRollupStmt->execute([':cutoff' => $cutoff]);
+
+        $pageRollupStmt = $this->db->prepare('DELETE FROM pageview_page_rollups WHERE bucket_start < :cutoff');
+        $pageRollupStmt->execute([':cutoff' => $cutoff]);
+
+        $entryRollupStmt = $this->db->prepare('DELETE FROM pageview_entry_rollups WHERE bucket_start < :cutoff');
+        $entryRollupStmt->execute([':cutoff' => $cutoff]);
 
         // Pageviews can be very large; delete in batches to limit lock time and reduce replication lag.
         $batchSize = 50000;
