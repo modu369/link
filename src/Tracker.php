@@ -3404,7 +3404,7 @@ class Tracker
             $sql = "WITH ip_first AS (
                     SELECT {$ipExpr} AS ip, MIN(p.occurred_at) AS first_seen
                     FROM pageviews p
-                    WHERE p.site_id = ? AND p.is_bot = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
+                    WHERE p.site_id = ? AND p.is_bot = 0
                     GROUP BY {$ipExpr}
                 ), ip_views AS (
                     SELECT {$ipExpr} AS ip, COUNT(*) AS views
@@ -3423,8 +3423,6 @@ class Tracker
             $statement = $this->db->prepare($sql);
             $statement->execute([
                 $siteId, // ip_first
-                $start,
-                $end,
                 $siteId, // ip_views
                 $start,
                 $end,
