@@ -1553,7 +1553,7 @@ class Tracker
         ];
     }
 
-    private function getTotals(int $siteId, string $range): array
+    public function getTotals(int $siteId, string $range): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
         $rollupTotals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
@@ -1567,7 +1567,7 @@ class Tracker
         ];
     }
 
-    private function getDailyStats(int $siteId, string $range): array
+    public function getDailyStats(int $siteId, string $range): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
         $rollup = $this->getRollupDailyStats($siteId, $start, $end);
@@ -1591,7 +1591,7 @@ class Tracker
         return $statement->fetchAll();
     }
 
-    private function getTopPages(int $siteId, string $range = 'today', int $limit = 50): array
+    public function getTopPages(int $siteId, string $range = 'today', int $limit = 50): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
 
@@ -1627,7 +1627,7 @@ class Tracker
         return $statement->fetchAll();
     }
 
-    private function getTopReferrers(int $siteId, string $range): array
+    public function getTopReferrers(int $siteId, string $range): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $domains = $this->getAllSiteDomains($siteId);
@@ -1700,7 +1700,7 @@ class Tracker
         return false;
     }
 
-    private function getEntryPages(int $siteId, string $range, int $limit = 20): array
+    public function getEntryPages(int $siteId, string $range, int $limit = 20): array
     {
         $rollupRows = $this->getEntryRollupRows($siteId, $range, $limit);
 
@@ -2380,7 +2380,7 @@ class Tracker
         return (float) ($statement->fetch()['rate'] ?? 0.0);
     }
 
-    private function getPredictions(int $siteId): array
+    public function getPredictions(int $siteId): array
     {
         $now = new DateTimeImmutable('now');
         $minuteBucket = (int) floor($now->getTimestamp() / 300); // 5 分钟粒度缓存
@@ -3230,7 +3230,7 @@ class Tracker
         return $filtered;
     }
 
-    private function getDeviceBreakdown(int $siteId, string $range): array
+    public function getDeviceBreakdown(int $siteId, string $range): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
         $desktopViews = 0;
@@ -3283,7 +3283,7 @@ class Tracker
         ];
     }
 
-    private function getBrowserBreakdown(int $siteId, string $range, int $limit = 10): array
+    public function getBrowserBreakdown(int $siteId, string $range, int $limit = 10): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
         if ($this->rollupsCoverRange($siteId, $start, $end)) {
@@ -3333,7 +3333,7 @@ class Tracker
         return $statement->fetchAll();
     }
 
-    private function getRegionStats(int $siteId, string $range, int $limit = 50): array
+    public function getRegionStats(int $siteId, string $range, int $limit = 50): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
         if ($this->rollupsCoverRange($siteId, $start, $end)) {
@@ -3368,7 +3368,7 @@ class Tracker
         return $statement->fetchAll();
     }
 
-    private function getCountryStats(int $siteId, string $range, int $limit = 200): array
+    public function getCountryStats(int $siteId, string $range, int $limit = 200): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
@@ -3416,7 +3416,7 @@ class Tracker
         return $statement->fetchAll();
     }
 
-    private function getNewVsReturning(int $siteId, string $range): array
+    public function getNewVsReturning(int $siteId, string $range): array
     {
         // Use explicit bounds and positional parameters to avoid placeholder mismatches.
         [$rangeStart, $rangeEnd] = $this->rollupRangeBounds($range);
@@ -3537,7 +3537,7 @@ class Tracker
         return null;
     }
 
-    private function getHourlyStats(int $siteId, string $range): array
+    public function getHourlyStats(int $siteId, string $range): array
     {
         [$start, $end] = $this->rollupRangeBounds($range);
         $rollup = $this->getRollupHourlyStats($siteId, $start, $end);
