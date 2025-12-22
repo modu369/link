@@ -279,6 +279,7 @@ class Tracker
             $duration,
             $pageCount,
             $isUnique,
+            $uvToday,
             $sessionId,
             [
                 'path' => $path,
@@ -337,7 +338,7 @@ class Tracker
         return $processed;
     }
 
-    private function updateRollups(int $siteId, DateTimeImmutable $occurredAt, int $duration, int $pageCount, bool $isUnique, ?string $sessionId, array $dimensions = []): void
+    private function updateRollups(int $siteId, DateTimeImmutable $occurredAt, int $duration, int $pageCount, bool $isUnique, bool $uvToday, ?string $sessionId, array $dimensions = []): void
     {
         $bucketStart = $occurredAt->setTime((int) $occurredAt->format('H'), 0, 0);
         $bucketKey = $bucketStart->format('Y-m-d H:i:s');
