@@ -3394,52 +3394,34 @@ class Tracker
         $cacheKey = "new_vs_returning:{$siteId}:{$range}";
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
-            // Use explicit bounds and positional parameters to avoid placeholder mismatches.
-            [$rangeStart, $rangeEnd] = $this->rollupRangeBounds($range);
-            $start = $rangeStart->format('Y-m-d H:i:s');
-            $end = $rangeEnd->format('Y-m-d H:i:s');
+            [$start, $end] = $this->rollupRangeBounds($range);
 
-            $ipExpr = $this->ipHashExpr('p');
+            $rows = $this->aggregateDimensionRollups($siteId, 'audience', $start, $end, 2);
 
-            $sql = "WITH ip_first AS (
-                    SELECT {$ipExpr} AS ip, MIN(p.occurred_at) AS first_seen
-                    FROM pageviews p
-                    WHERE p.site_id = ? AND p.is_bot = 0
-                    GROUP BY {$ipExpr}
-                ), ip_views AS (
-                    SELECT {$ipExpr} AS ip, COUNT(*) AS views
-                    FROM pageviews p
-                    WHERE p.site_id = ? AND p.is_bot = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
-                    GROUP BY {$ipExpr}
-                )
-                SELECT
-                    SUM(CASE WHEN f.first_seen >= ? AND f.first_seen < ? THEN 1 ELSE 0 END) AS new_ips,
-                    SUM(CASE WHEN f.first_seen < ? THEN 1 ELSE 0 END) AS returning_ips,
-                    SUM(CASE WHEN f.first_seen >= ? AND f.first_seen < ? THEN v.views ELSE 0 END) AS new_views,
-                    SUM(CASE WHEN f.first_seen < ? THEN v.views ELSE 0 END) AS returning_views
-                FROM ip_views v
-                JOIN ip_first f ON f.ip = v.ip";
+            $newViews = 0;
+            $returningViews = 0;
+            $newIps = 0;
+            $returningIps = 0;
 
-            $statement = $this->db->prepare($sql);
-            $statement->execute([
-                $siteId, // ip_first
-                $siteId, // ip_views
-                $start,
-                $end,
-                $start, // new_ips
-                $end,
-                $start, // returning_ips
-                $start, // new_views
-                $end,
-                $start, // returning_views
-            ]);
-            $row = $statement->fetch();
+            foreach ($rows as $row) {
+                $value = $row['dimension_value'] ?? '';
+
+                if ($value === 'new') {
+                    $newViews += (int) ($row['views'] ?? 0);
+                    $newIps += (int) ($row['ips'] ?? 0);
+                }
+
+                if ($value === 'returning') {
+                    $returningViews += (int) ($row['views'] ?? 0);
+                    $returningIps += (int) ($row['ips'] ?? 0);
+                }
+            }
 
             return [
-                'new' => (int) ($row['new_views'] ?? 0),
-                'returning' => (int) ($row['returning_views'] ?? 0),
-                'new_ips' => (int) ($row['new_ips'] ?? 0),
-                'returning_ips' => (int) ($row['returning_ips'] ?? 0),
+                'new' => $newViews,
+                'returning' => $returningViews,
+                'new_ips' => $newIps,
+                'returning_ips' => $returningIps,
             ];
         });
     }
