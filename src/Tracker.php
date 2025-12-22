@@ -943,7 +943,7 @@ class Tracker
              FROM pageview_page_rollups
              WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end
              GROUP BY path
-             ORDER BY views DESC
+             ORDER BY ips DESC
              LIMIT :limit'
         );
 
@@ -969,7 +969,7 @@ class Tracker
              FROM pageview_entry_rollups
              WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end
              GROUP BY path
-             ORDER BY views DESC
+             ORDER BY ips DESC
              LIMIT :limit'
         );
 
@@ -1593,6 +1593,23 @@ class Tracker
 
     private function getTopPages(int $siteId, string $range = 'today', int $limit = 50): array
     {
+        [$start, $end] = $this->rollupRangeBounds($range);
+
+        if ($this->rollupsCoverRange($siteId, $start, $end)) {
+            $rollupRows = $this->aggregatePageRollups($siteId, $start, $end, $limit);
+            if (!empty($rollupRows)) {
+                usort($rollupRows, fn($a, $b) => ($b['ips'] ?? 0) <=> ($a['ips'] ?? 0));
+
+                return array_map(function ($row) {
+                    return [
+                        'path' => $row['dimension_value'] ?? '/',
+                        'views' => (int) ($row['views'] ?? 0),
+                        'ips' => (int) ($row['ips'] ?? 0),
+                    ];
+                }, array_slice($rollupRows, 0, $limit));
+            }
+        }
+
         [$rangeSql, $params] = $this->rangeClause($range);
         $sql = $this->replaceIpHash(
             "SELECT path, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
@@ -1685,6 +1702,14 @@ class Tracker
 
     private function getEntryPages(int $siteId, string $range, int $limit = 20): array
     {
+        $rollupRows = $this->getEntryRollupRows($siteId, $range, $limit);
+
+        if (!empty($rollupRows)) {
+            usort($rollupRows, fn($a, $b) => ($b['ips'] ?? 0) <=> ($a['ips'] ?? 0));
+
+            return array_slice($rollupRows, 0, $limit);
+        }
+
         [$rangeSql, $params] = $this->rangeClause($range, true);
         $params[':site_id'] = $siteId;
         $sql = $this->replaceIpHash(
