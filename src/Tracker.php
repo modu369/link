@@ -1444,6 +1444,15 @@ class Tracker
 
     public function getTrendLines(int $siteId, string $range = 'today'): array
     {
+        $cacheKey = "trend_lines:{$siteId}:{$range}";
+
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            return $this->buildTrendLines($siteId, $range);
+        });
+    }
+
+    private function buildTrendLines(int $siteId, string $range = 'today'): array
+    {
         $now = new DateTimeImmutable('now');
         $granularity = 'day';
         $primaryLabel = '当前区间';
@@ -1579,40 +1588,48 @@ class Tracker
 
     public function getTotals(int $siteId, string $range): array
     {
-        [$start, $end] = $this->rollupRangeBounds($range);
-        $rollupTotals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
+        $cacheKey = "totals:{$siteId}:{$range}";
 
-        return [
-            'views' => $rollupTotals['views'],
-            'uniques' => $rollupTotals['uniques'],
-            'ip_count' => $rollupTotals['ip_count'],
-            'averages' => $this->getVisitAverages($siteId, $range, $rollupTotals),
-            'bounce_rate' => $this->getBounceRate($siteId, $range, $rollupTotals),
-        ];
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $rollupTotals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
+
+            return [
+                'views' => $rollupTotals['views'],
+                'uniques' => $rollupTotals['uniques'],
+                'ip_count' => $rollupTotals['ip_count'],
+                'averages' => $this->getVisitAverages($siteId, $range, $rollupTotals),
+                'bounce_rate' => $this->getBounceRate($siteId, $range, $rollupTotals),
+            ];
+        });
     }
 
     public function getDailyStats(int $siteId, string $range): array
     {
-        [$start, $end] = $this->rollupRangeBounds($range);
-        $rollup = $this->getRollupDailyStats($siteId, $start, $end);
-        if (!empty($rollup)) {
-            return $rollup;
-        }
+        $cacheKey = "daily:{$siteId}:{$range}";
 
-        [$rangeSql, $params] = $this->rangeClause($range, true);
-        $sql = $this->replaceIpHash(
-            "SELECT DATE(occurred_at) as day, COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY day
-            ORDER BY day ASC",
-            'pageviews'
-        );
-        $statement = $this->db->prepare($sql);
-        $params[':site_id'] = $siteId;
-        $statement->execute($params);
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $rollup = $this->getRollupDailyStats($siteId, $start, $end);
+            if (!empty($rollup)) {
+                return $rollup;
+            }
 
-        return $statement->fetchAll();
+            [$rangeSql, $params] = $this->rangeClause($range, true);
+            $sql = $this->replaceIpHash(
+                "SELECT DATE(occurred_at) as day, COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+                GROUP BY day
+                ORDER BY day ASC",
+                'pageviews'
+            );
+            $statement = $this->db->prepare($sql);
+            $params[':site_id'] = $siteId;
+            $statement->execute($params);
+
+            return $statement->fetchAll();
+        });
     }
 
     public function getTopPages(int $siteId, string $range = 'today', int $limit = 50): array
@@ -1726,37 +1743,41 @@ class Tracker
 
     public function getEntryPages(int $siteId, string $range, int $limit = 20): array
     {
-        $rollupRows = $this->getEntryRollupRows($siteId, $range, $limit);
+        $cacheKey = "entry_pages:{$siteId}:{$range}:{$limit}";
 
-        if (!empty($rollupRows)) {
-            usort($rollupRows, fn($a, $b) => ($b['ips'] ?? 0) <=> ($a['ips'] ?? 0));
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
+            $rollupRows = $this->getEntryRollupRows($siteId, $range, $limit);
 
-            return array_slice($rollupRows, 0, $limit);
-        }
+            if (!empty($rollupRows)) {
+                usort($rollupRows, fn($a, $b) => ($b['ips'] ?? 0) <=> ($a['ips'] ?? 0));
 
-        [$rangeSql, $params] = $this->rangeClause($range, true);
-        $params[':site_id'] = $siteId;
-        $sql = $this->replaceIpHash(
-            "SELECT p.path, COUNT(*) as views, COUNT(DISTINCT p.ip_hash) as ips, SUM(p.is_unique) as uniques,
-                AVG(p.page_count) as avg_pages, AVG(p.duration_seconds) as avg_duration,
-                AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            FROM (
-                SELECT MIN(id) as first_id, session_id
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) s
-            JOIN pageviews p ON p.id = s.first_id
-            GROUP BY p.path
-            ORDER BY ips DESC
-            LIMIT {$limit}",
-            'p'
-        );
+                return array_slice($rollupRows, 0, $limit);
+            }
 
-        $statement = $this->db->prepare($sql);
-        $statement->execute($params);
+            [$rangeSql, $params] = $this->rangeClause($range, true);
+            $params[':site_id'] = $siteId;
+            $sql = $this->replaceIpHash(
+                "SELECT p.path, COUNT(*) as views, COUNT(DISTINCT p.ip_hash) as ips, SUM(p.is_unique) as uniques,
+                    AVG(p.page_count) as avg_pages, AVG(p.duration_seconds) as avg_duration,
+                    AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
+                FROM (
+                    SELECT MIN(id) as first_id, session_id
+                    FROM pageviews
+                    WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
+                    GROUP BY session_id
+                ) s
+                JOIN pageviews p ON p.id = s.first_id
+                GROUP BY p.path
+                ORDER BY ips DESC
+                LIMIT {$limit}",
+                'p'
+            );
 
-        return $statement->fetchAll();
+            $statement = $this->db->prepare($sql);
+            $statement->execute($params);
+
+            return $statement->fetchAll();
+        });
     }
 
     private function getEntrySummary(int $siteId, string $range): array
@@ -3277,55 +3298,59 @@ class Tracker
 
     public function getDeviceBreakdown(int $siteId, string $range): array
     {
-        [$start, $end] = $this->rollupRangeBounds($range);
-        $desktopViews = 0;
-        $mobileViews = 0;
-        $mobileIps = 0;
-        $totalIps = 0;
+        $cacheKey = "devices:{$siteId}:{$range}";
 
-        if ($this->rollupsCoverRange($siteId, $start, $end)) {
-            $rollup = $this->aggregateDimensionRollups($siteId, 'device', $start, $end, 2);
-            $lookup = [];
-            foreach ($rollup as $row) {
-                $lookup[$row['dimension_value'] ?? ''] = $row;
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $desktopViews = 0;
+            $mobileViews = 0;
+            $mobileIps = 0;
+            $totalIps = 0;
+
+            if ($this->rollupsCoverRange($siteId, $start, $end)) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'device', $start, $end, 2);
+                $lookup = [];
+                foreach ($rollup as $row) {
+                    $lookup[$row['dimension_value'] ?? ''] = $row;
+                }
+
+                $mobileViews = (int) ($lookup['mobile']['views'] ?? 0);
+                $mobileIps = (int) ($lookup['mobile']['ips'] ?? 0);
+                $desktopViews = (int) ($lookup['desktop']['views'] ?? 0);
+
+                $totals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
+                $totalIps = (int) ($totals['ip_count'] ?? 0);
             }
 
-            $mobileViews = (int) ($lookup['mobile']['views'] ?? 0);
-            $mobileIps = (int) ($lookup['mobile']['ips'] ?? 0);
-            $desktopViews = (int) ($lookup['desktop']['views'] ?? 0);
+            if (!$this->rollupsCoverRange($siteId, $start, $end)) {
+                [$rangeSql, $params] = $this->rangeClause($range);
+                $sql = $this->replaceIpHash(
+                    "SELECT SUM(is_mobile = 0) as desktop_views, SUM(is_mobile = 1) as mobile_views,\n                        COUNT(DISTINCT ip_hash) as total_ips,\n                        COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips\n FROM pageviews\n                    WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}",
+                    'pageviews'
+                );
+                $statement = $this->db->prepare($sql);
+                $statement->execute(array_merge([':site_id' => $siteId], $params));
 
-            $totals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
-            $totalIps = (int) ($totals['ip_count'] ?? 0);
-        }
+                $row = $statement->fetch();
+                $desktopViews = (int) ($row['desktop_views'] ?? 0);
+                $mobileViews = (int) ($row['mobile_views'] ?? 0);
+                $mobileIps = (int) ($row['mobile_ips'] ?? 0);
+                $totalIps = (int) ($row['total_ips'] ?? 0);
+            }
 
-        if (!$this->rollupsCoverRange($siteId, $start, $end)) {
-            [$rangeSql, $params] = $this->rangeClause($range);
-            $sql = $this->replaceIpHash(
-                "SELECT SUM(is_mobile = 0) as desktop_views, SUM(is_mobile = 1) as mobile_views,\n                    COUNT(DISTINCT ip_hash) as total_ips,\n                    COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips\n                FROM pageviews\n                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}",
-                'pageviews'
-            );
-            $statement = $this->db->prepare($sql);
-            $statement->execute(array_merge([':site_id' => $siteId], $params));
+            $desktopIps = max(0, $totalIps - $mobileIps);
 
-            $row = $statement->fetch();
-            $desktopViews = (int) ($row['desktop_views'] ?? 0);
-            $mobileViews = (int) ($row['mobile_views'] ?? 0);
-            $mobileIps = (int) ($row['mobile_ips'] ?? 0);
-            $totalIps = (int) ($row['total_ips'] ?? 0);
-        }
-
-        $desktopIps = max(0, $totalIps - $mobileIps);
-
-        return [
-            'desktop' => [
-                'views' => $desktopViews,
-                'ips' => $desktopIps,
-            ],
-            'mobile' => [
-                'views' => $mobileViews,
-                'ips' => $mobileIps,
-            ],
-        ];
+            return [
+                'desktop' => [
+                    'views' => $desktopViews,
+                    'ips' => $desktopIps,
+                ],
+                'mobile' => [
+                    'views' => $mobileViews,
+                    'ips' => $mobileIps,
+                ],
+            ];
+        });
     }
 
     public function getBrowserBreakdown(int $siteId, string $range, int $limit = 10): array
@@ -3463,55 +3488,59 @@ class Tracker
 
     public function getNewVsReturning(int $siteId, string $range): array
     {
-        // Use explicit bounds and positional parameters to avoid placeholder mismatches.
-        [$rangeStart, $rangeEnd] = $this->rollupRangeBounds($range);
-        $start = $rangeStart->format('Y-m-d H:i:s');
-        $end = $rangeEnd->format('Y-m-d H:i:s');
+        $cacheKey = "new_vs_returning:{$siteId}:{$range}";
 
-        $ipExpr = $this->ipHashExpr('p');
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            // Use explicit bounds and positional parameters to avoid placeholder mismatches.
+            [$rangeStart, $rangeEnd] = $this->rollupRangeBounds($range);
+            $start = $rangeStart->format('Y-m-d H:i:s');
+            $end = $rangeEnd->format('Y-m-d H:i:s');
 
-        $sql = "WITH ip_first AS (
-                SELECT {$ipExpr} AS ip, MIN(p.occurred_at) AS first_seen
-                FROM pageviews p
-                WHERE p.site_id = ? AND p.is_bot = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
-                GROUP BY {$ipExpr}
-            ), ip_views AS (
-                SELECT {$ipExpr} AS ip, COUNT(*) AS views
-                FROM pageviews p
-                WHERE p.site_id = ? AND p.is_bot = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
-                GROUP BY {$ipExpr}
-            )
-            SELECT
-                SUM(CASE WHEN f.first_seen >= ? AND f.first_seen < ? THEN 1 ELSE 0 END) AS new_ips,
-                SUM(CASE WHEN f.first_seen < ? THEN 1 ELSE 0 END) AS returning_ips,
-                SUM(CASE WHEN f.first_seen >= ? AND f.first_seen < ? THEN v.views ELSE 0 END) AS new_views,
-                SUM(CASE WHEN f.first_seen < ? THEN v.views ELSE 0 END) AS returning_views
-            FROM ip_views v
-            JOIN ip_first f ON f.ip = v.ip";
+            $ipExpr = $this->ipHashExpr('p');
 
-        $statement = $this->db->prepare($sql);
-        $statement->execute([
-            $siteId, // ip_first
-            $start,
-            $end,
-            $siteId, // ip_views
-            $start,
-            $end,
-            $start, // new_ips
-            $end,
-            $start, // returning_ips
-            $start, // new_views
-            $end,
-            $start, // returning_views
-        ]);
-        $row = $statement->fetch();
+            $sql = "WITH ip_first AS (
+                    SELECT {$ipExpr} AS ip, MIN(p.occurred_at) AS first_seen
+                    FROM pageviews p
+                    WHERE p.site_id = ? AND p.is_bot = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
+                    GROUP BY {$ipExpr}
+                ), ip_views AS (
+                    SELECT {$ipExpr} AS ip, COUNT(*) AS views
+                    FROM pageviews p
+                    WHERE p.site_id = ? AND p.is_bot = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
+                    GROUP BY {$ipExpr}
+                )
+                SELECT
+                    SUM(CASE WHEN f.first_seen >= ? AND f.first_seen < ? THEN 1 ELSE 0 END) AS new_ips,
+                    SUM(CASE WHEN f.first_seen < ? THEN 1 ELSE 0 END) AS returning_ips,
+                    SUM(CASE WHEN f.first_seen >= ? AND f.first_seen < ? THEN v.views ELSE 0 END) AS new_views,
+                    SUM(CASE WHEN f.first_seen < ? THEN v.views ELSE 0 END) AS returning_views
+                FROM ip_views v
+                JOIN ip_first f ON f.ip = v.ip";
 
-        return [
-            'new' => (int) ($row['new_views'] ?? 0),
-            'returning' => (int) ($row['returning_views'] ?? 0),
-            'new_ips' => (int) ($row['new_ips'] ?? 0),
-            'returning_ips' => (int) ($row['returning_ips'] ?? 0),
-        ];
+            $statement = $this->db->prepare($sql);
+            $statement->execute([
+                $siteId, // ip_first
+                $start,
+                $end,
+                $siteId, // ip_views
+                $start,
+                $end,
+                $start, // new_ips
+                $end,
+                $start, // returning_ips
+                $start, // new_views
+                $end,
+                $start, // returning_views
+            ]);
+            $row = $statement->fetch();
+
+            return [
+                'new' => (int) ($row['new_views'] ?? 0),
+                'returning' => (int) ($row['returning_views'] ?? 0),
+                'new_ips' => (int) ($row['new_ips'] ?? 0),
+                'returning_ips' => (int) ($row['returning_ips'] ?? 0),
+            ];
+        });
     }
 
     private function extractKeyword(?string $referrer): ?string
@@ -3584,26 +3613,30 @@ class Tracker
 
     public function getHourlyStats(int $siteId, string $range): array
     {
-        [$start, $end] = $this->rollupRangeBounds($range);
-        $rollup = $this->getRollupHourlyStats($siteId, $start, $end);
-        if (!empty($rollup)) {
-            return $rollup;
-        }
+        $cacheKey = "hourly:{$siteId}:{$range}";
 
-        [$rangeSql, $params] = $this->rangeClause($range, false, true);
-        $statement = $this->db->prepare(
-            "SELECT DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as hour,
-                COUNT(*) as views,
-                SUM(is_unique) as uniques,
-                COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY hour
-            ORDER BY hour ASC"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $rollup = $this->getRollupHourlyStats($siteId, $start, $end);
+            if (!empty($rollup)) {
+                return $rollup;
+            }
 
-        return $statement->fetchAll();
+            [$rangeSql, $params] = $this->rangeClause($range, false, true);
+            $statement = $this->db->prepare(
+                "SELECT DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as hour,
+                    COUNT(*) as views,
+                    SUM(is_unique) as uniques,
+                    COUNT(DISTINCT ip_hash) as ips
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+                GROUP BY hour
+                ORDER BY hour ASC"
+            );
+            $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+            return $statement->fetchAll();
+        });
     }
 
     private function getHourlyStatsForWindow(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
