@@ -638,12 +638,11 @@ class Tracker
 
     private function aggregateTotalsWithRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
-        // Raw remains the source of truth; rollups are only used when they fully match the raw window.
-        $rawTotals = $this->aggregateRawWindow($siteId, $start, $end);
+        // Prefer rollups for speed; only hit raw tables when the coverage window has gaps.
         $rollups = $this->aggregateRollups($siteId, $start, $end);
 
         if (!$rollups['has_data']) {
-            return $rawTotals;
+            return $this->aggregateRawWindow($siteId, $start, $end);
         }
 
         $segments = [];
@@ -660,16 +659,7 @@ class Tracker
             $segments[] = $this->aggregateRawWindow($siteId, $coverageEnd, $end);
         }
 
-        $combined = $this->combineTotals(...$segments);
-
-        // Ensure rollup-backed totals never undercount versus raw results.
-        foreach (['views', 'uniques', 'ip_count', 'session_count', 'duration_sum', 'page_sum', 'bounce_count'] as $key) {
-            $combined[$key] = $rawTotals[$key] ?? 0;
-        }
-
-        $combined['has_data'] = $combined['has_data'] || $rawTotals['has_data'];
-
-        return $combined;
+        return $this->combineTotals(...$segments);
     }
 
     private function updateDimensionRollups(
