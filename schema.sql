@@ -43,6 +43,16 @@ CREATE TABLE IF NOT EXISTS pageviews (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 /*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
 
+CREATE TABLE IF NOT EXISTS site_ip_audience (
+    site_id INT UNSIGNED NOT NULL,
+    ip_hash CHAR(64) NOT NULL,
+    first_seen DATETIME NOT NULL,
+    last_seen_date DATE NOT NULL,
+    PRIMARY KEY (site_id, ip_hash),
+    INDEX idx_last_seen_date (last_seen_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+/*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
+
 CREATE TABLE IF NOT EXISTS pageview_rollups (
     site_id INT UNSIGNED NOT NULL,
     bucket_start DATETIME NOT NULL,

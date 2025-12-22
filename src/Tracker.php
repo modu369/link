@@ -211,7 +211,8 @@ class Tracker
         }
         $ip = $this->sanitizeIp($payload['ip'] ?? null);
         $ipHash = $ip ? hash('sha256', $ip) : null;
-        $uniqueKey = sprintf('unique:%s:%s', $site['id'], date('Y-m-d'));
+        $audienceLabel = 'returning';
+        $uvToday = false;
         $isUnique = false;
 
         $sessionId = $payload['session_id'] ?? ($ipHash ?: bin2hex(random_bytes(8)));
@@ -230,8 +231,8 @@ class Tracker
         $continentCode = $ipMeta['continent_code'] ?? '';
 
         if (!$isBot && $ipHash) {
-            $isUnique = (bool) $this->redis->sAdd($uniqueKey, $ipHash);
-            $this->redis->expire($uniqueKey, 172800);
+            [$uvToday, $audienceLabel] = $this->markIpAudienceState((int) $site['id'], $ipHash);
+            $isUnique = $uvToday;
         }
 
         $statement = $this->db->prepare(
@@ -359,7 +360,7 @@ class Tracker
             }
         }
 
-        $uvIncrement = $isUnique ? 1 : 0;
+        $uvIncrement = $uvToday ? 1 : 0;
         $ipIncrement = $uvIncrement;
 
         $rollup = $this->db->prepare(
@@ -858,7 +859,7 @@ class Tracker
             $entries[] = ['isp', $isp];
         }
 
-        $entries[] = ['audience', $isUnique ? 'new' : 'returning'];
+        $entries[] = ['audience', $audienceLabel];
 
         foreach ($entries as [$dimension, $value]) {
             $this->upsertDimensionRollup(
@@ -1146,6 +1147,26 @@ class Tracker
 
             return $row;
         }, $rows);
+    }
+
+    private function markIpAudienceState(int $siteId, string $ipHash): array
+    {
+        $stmt = $this->db->prepare(
+            'INSERT INTO site_ip_audience (site_id, ip_hash, first_seen, last_seen_date)
+             VALUES (:site_id, :ip_hash, NOW(), CURRENT_DATE())
+             ON DUPLICATE KEY UPDATE last_seen_date = VALUES(last_seen_date)'
+        );
+
+        $stmt->execute([
+            ':site_id' => $siteId,
+            ':ip_hash' => $ipHash,
+        ]);
+
+        $affected = (int) $stmt->rowCount();
+        $uvToday = $affected > 0;
+        $audienceLabel = ($affected === 1) ? 'new' : 'returning';
+
+        return [$uvToday, $audienceLabel];
     }
 
     private function detectBrowser(string $userAgent): string
@@ -2749,6 +2770,19 @@ class Tracker
         }
 
         $this->ensureHashPartitioned('pageviews');
+
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS site_ip_audience (
+                site_id INT UNSIGNED NOT NULL,
+                ip_hash CHAR(64) NOT NULL,
+                first_seen DATETIME NOT NULL,
+                last_seen_date DATE NOT NULL,
+                PRIMARY KEY (site_id, ip_hash),
+                INDEX idx_last_seen_date (last_seen_date)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+
+        $this->ensureHashPartitioned('site_ip_audience');
     }
 
     private function ensureRollupSchema(): void
