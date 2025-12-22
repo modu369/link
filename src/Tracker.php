@@ -3842,7 +3842,9 @@ class Tracker
             return;
         }
 
-        $cutoff = (new \DateTimeImmutable('now'))->modify("-{$days} days")->format('Y-m-d H:i:s');
+        $cutoffPoint = (new \DateTimeImmutable('now'))->modify("-{$days} days");
+        $cutoff = $cutoffPoint->format('Y-m-d H:i:s');
+        $cutoffDate = $cutoffPoint->format('Y-m-d');
 
         // Rollup tables are small enough to delete in a single pass while still using time indexes.
         $rollupStmt = $this->db->prepare('DELETE FROM pageview_rollups WHERE bucket_start < :cutoff');
@@ -3856,6 +3858,9 @@ class Tracker
 
         $entryRollupStmt = $this->db->prepare('DELETE FROM pageview_entry_rollups WHERE bucket_start < :cutoff');
         $entryRollupStmt->execute([':cutoff' => $cutoff]);
+
+        $audienceStmt = $this->db->prepare('DELETE FROM site_ip_audience WHERE last_seen_date < :cutoff_date');
+        $audienceStmt->execute([':cutoff_date' => $cutoffDate]);
 
         // Pageviews can be very large; delete in batches to limit lock time and reduce replication lag.
         $batchSize = 50000;
