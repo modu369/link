@@ -65,3 +65,12 @@
 - **实时与汇总合并**：已有小时级 rollup 会在入库时同步更新，统计页按窗口优先走 rollup，缺口再查原始表，保证在 rollup 完整覆盖时仅需扫聚合表即可。
 - **分区与站点分片**：核心表支持 HASH(site_id) 分区，单站点数据按分区落盘，可在 MySQL 8+ 上保持表规模扩展同时让单站查询命中更小分区；也可按月 RANGE 分区再叠加 HASH 做二级分片。
 - **运维建议**：使用 `php cli/ingest_worker.php --loop --sleep=1 --max=1000` 常驻监听队列，或通过 systemd/cron 定时执行；`config/ingest.max_queue_length` 用于防止异常堆积。
+
+## 后台性能诊断（概览 / 趋势）
+当 `/overview.php` 或 `/trend.php` 在大数据量下变慢时，可运行探测脚本逐段输出耗时，快速定位瓶颈：
+
+```bash
+php cli/profile_dashboards.php --site=1 --range=today --mode=both
+```
+
+`--mode` 支持 `overview`、`trend` 或 `both`，脚本会按段列出查询耗时、结果规模及异常信息，帮助判断是哪些聚合拖慢响应。
