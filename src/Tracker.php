@@ -1034,8 +1034,28 @@ class Tracker
             return $rows;
         }
 
+        $cacheKey = sprintf(
+            'rollup:ips:%s:%s:%s:%s:%s',
+            $dimension,
+            implode('-', array_map('intval', $siteIds)),
+            $start->format('YmdH'),
+            $end->format('YmdH'),
+            md5(json_encode($values))
+        );
+
+        $cached = $this->redis->get($cacheKey);
+        if ($cached !== false) {
+            $decoded = json_decode($cached, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        }
+
         if ($dimension === 'entry_path') {
-            return $this->recalcEntryRollupIps($siteIds[0], $start, $end, $rows);
+            $result = $this->recalcEntryRollupIps($siteIds[0], $start, $end, $rows);
+            $this->redis->setex($cacheKey, 120, json_encode($result));
+
+            return $result;
         }
 
         [$labelExpr, $whereExtra] = match ($dimension) {
@@ -1105,7 +1125,7 @@ class Tracker
             $distinctMap[$row['label']] = $count;
         }
 
-        return array_map(function ($row) use ($distinctMap) {
+        $result = array_map(function ($row) use ($distinctMap) {
             $label = $row['dimension_value'] ?? '';
             if (array_key_exists($label, $distinctMap)) {
                 $row['ips'] = $distinctMap[$label];
@@ -1114,6 +1134,10 @@ class Tracker
 
             return $row;
         }, $rows);
+
+        $this->redis->setex($cacheKey, 120, json_encode($result));
+
+        return $result;
     }
 
     private function recalcEntryRollupIps(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, array $rows): array
@@ -2413,24 +2437,45 @@ class Tracker
 
     private function getHistoricalAverages(int $siteId, int $days): array
     {
-        $statement = $this->db->prepare(
-            'SELECT DATE(occurred_at) as day, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips, SUM(is_unique) as uniques
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 AND occurred_at < CURDATE()
-            GROUP BY day
-            ORDER BY day DESC
-            LIMIT :limit'
-        );
-        $statement->bindValue(':site_id', $siteId, PDO::PARAM_INT);
-        $statement->bindValue(':limit', $days, PDO::PARAM_INT);
-        $statement->execute();
-        $rows = $statement->fetchAll();
+        $todayStart = (new DateTimeImmutable('today'))->setTime(0, 0, 0);
+        $historyStart = $todayStart->modify("-{$days} days");
+
+        if ($this->rollupsCoverRange($siteId, $historyStart, $todayStart)) {
+            $stmt = $this->db->prepare(
+                'SELECT DATE(bucket_start) as day, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ips
+                 FROM pageview_rollups
+                 WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end
+                 GROUP BY day
+                 ORDER BY day DESC'
+            );
+
+            $stmt->execute([
+                ':site_id' => $siteId,
+                ':start' => $historyStart->format('Y-m-d H:i:s'),
+                ':end' => $todayStart->format('Y-m-d H:i:s'),
+            ]);
+
+            $rows = $stmt->fetchAll();
+        } else {
+            $statement = $this->db->prepare(
+                'SELECT DATE(occurred_at) as day, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips, SUM(is_unique) as uniques
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 AND occurred_at < CURDATE()
+                GROUP BY day
+                ORDER BY day DESC
+                LIMIT :limit'
+            );
+            $statement->bindValue(':site_id', $siteId, PDO::PARAM_INT);
+            $statement->bindValue(':limit', $days, PDO::PARAM_INT);
+            $statement->execute();
+            $rows = $statement->fetchAll();
+        }
 
         if (empty($rows)) {
             return ['views' => 0, 'uniques' => 0, 'ips' => 0];
         }
 
-        $denominator = max(count($rows), 1);
+        $denominator = max(min(count($rows), $days), 1);
 
         return [
             'views' => (int) round(array_sum(array_column($rows, 'views')) / $denominator),
