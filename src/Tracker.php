@@ -296,6 +296,7 @@ class Tracker
                 'entry_path' => $entryPath,
                 'canonical_host' => $canonicalHost ?: '未知域名',
                 'is_unique' => $isUnique,
+                'audience_label' => $audienceLabel,
             ]
         );
     }
@@ -338,7 +339,16 @@ class Tracker
         return $processed;
     }
 
-    private function updateRollups(int $siteId, DateTimeImmutable $occurredAt, int $duration, int $pageCount, bool $isUnique, bool $uvToday, ?string $sessionId, array $dimensions = []): void
+    private function updateRollups(
+        int $siteId,
+        DateTimeImmutable $occurredAt,
+        int $duration,
+        int $pageCount,
+        bool $isUnique,
+        bool $uvToday,
+        ?string $sessionId,
+        array $dimensions = []
+    ): void
     {
         $bucketStart = $occurredAt->setTime((int) $occurredAt->format('H'), 0, 0);
         $bucketKey = $bucketStart->format('Y-m-d H:i:s');
@@ -791,6 +801,7 @@ class Tracker
         $isMobile = (bool) ($dimensions['is_mobile'] ?? false);
         $isUnique = (bool) ($dimensions['is_unique'] ?? false);
         $canonicalHost = trim($dimensions['canonical_host'] ?? '') ?: '未知域名';
+        $audienceLabel = $dimensions['audience_label'] ?? 'returning';
 
         if ($keyword) {
             $entries[] = ['keyword', $keyword];
