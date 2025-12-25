@@ -22,4 +22,11 @@ return [
     'polling' => [
         'interval_ms' => getenv('POLL_INTERVAL_MS') ?: 1000,
     ],
+    'price' => [
+        'provider_url' => getenv('PRICE_PROVIDER_URL') ?: 'https://api.coinbase.com/v2/prices/BTC-USD/spot',
+        'timeout_seconds' => 5,
+    ],
+    'worker' => [
+        'interval_ms' => getenv('WORKER_INTERVAL_MS') ?: 500,
+    ],
 ];
