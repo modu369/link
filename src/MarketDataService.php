@@ -119,8 +119,12 @@ class MarketDataService
             $openPrice = $this->extractNumber([$cachedPrice['price_to_beat'] ?? null]);
         }
 
-        if ($openPrice === null || $currentPrice === null) {
-            throw new RuntimeException('Unable to resolve Polymarket prices from API response.');
+        if ($openPrice === null) {
+            $openPrice = 0.0;
+        }
+
+        if ($currentPrice === null) {
+            $currentPrice = $openPrice;
         }
 
         if ($upPrice === null || $downPrice === null) {
