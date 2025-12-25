@@ -8,16 +8,13 @@ header('Content-Type: application/json');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
 $config = require __DIR__ . '/../../src/Config.php';
-$priceCache = new PriceCache($config['price']['cache_path']);
-$marketCache = new MarketCache($config['market']['cache_path']);
-
-$pricePayload = $priceCache->read();
-$marketPayload = $marketCache->read();
+$cacheService = new MarketCacheService($config);
+$payload = $cacheService->readRealtime();
 
 echo json_encode([
-    'current_price' => $pricePayload['current_price'] ?? null,
-    'current_timestamp_ms' => $pricePayload['current_timestamp_ms'] ?? null,
-    'up_position' => $marketPayload['up_price'] ?? null,
-    'down_position' => $marketPayload['down_price'] ?? null,
-    'market_timestamp_ms' => $marketPayload['timestamp_ms'] ?? null,
+    'current_price' => $payload['current_price'],
+    'current_timestamp_ms' => $payload['current_timestamp_ms'],
+    'up_position' => $payload['up_position'],
+    'down_position' => $payload['down_position'],
+    'market_timestamp_ms' => $payload['market_timestamp_ms'],
 ]);

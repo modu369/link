@@ -28,7 +28,7 @@ class PriceCache
         return $payload;
     }
 
-    public function writeCurrent(float $price, int $timestampMs, int $roundStartMs, float $priceToBeat): void
+    public function writeCurrent(float $price, int $timestampMs, int $roundStartMs, float $priceToBeat, float $upCents, float $downCents): void
     {
         $dir = dirname($this->path);
         if (!is_dir($dir)) {
@@ -40,6 +40,8 @@ class PriceCache
             'current_timestamp_ms' => $timestampMs,
             'round_start_ms' => $roundStartMs,
             'price_to_beat' => $priceToBeat,
+            'up_cents' => $upCents,
+            'down_cents' => $downCents,
         ];
 
         file_put_contents($this->path, json_encode($payload));

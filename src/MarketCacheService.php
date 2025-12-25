@@ -22,4 +22,19 @@ class MarketCacheService
     {
         return $this->marketCache->read();
     }
+
+    public function readRealtime(): array
+    {
+        $price = $this->priceCache->read() ?? [];
+        $market = $this->marketCache->read() ?? [];
+
+        return [
+            'current_price' => $price['current_price'] ?? null,
+            'price_to_beat' => $price['price_to_beat'] ?? null,
+            'up_position' => $price['up_cents'] ?? ($market['up_price'] ?? null),
+            'down_position' => $price['down_cents'] ?? ($market['down_price'] ?? null),
+            'current_timestamp_ms' => $price['current_timestamp_ms'] ?? null,
+            'market_timestamp_ms' => $market['timestamp_ms'] ?? null,
+        ];
+    }
 }
