@@ -4003,13 +4003,11 @@ class Tracker
         [$start, $end] = $this->rollupRangeBounds($range);
 
         if ($this->rollupsCoverRangeForSites($share['site_ids'], $start, $end)) {
-            $hosts = $this->aggregateDimensionRollupsForSites($share['site_ids'], 'host', $start, $end, 500);
-            $hostDevices = $this->aggregateDimensionRollupsForSites($share['site_ids'], 'host_device', $start, $end, 1000);
-
-            if (!empty($hosts)) {
+            $rows = $this->getHostDeviceRollupRowsForSites($share['site_ids'], $start, $end);
+            if (!empty($rows)) {
                 return [
                     'share' => $share,
-                    'rows' => $this->formatHostDeviceBreakdown($hosts, $hostDevices),
+                    'rows' => $rows,
                 ];
             }
         }
@@ -4054,6 +4052,18 @@ class Tracker
             'share' => $share,
             'rows' => array_merge([$totals], $rows),
         ];
+    }
+
+    private function getHostDeviceRollupRowsForSites(array $siteIds, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        $hosts = $this->aggregateDimensionRollupsForSites($siteIds, 'host', $start, $end, 500);
+        if (empty($hosts)) {
+            return [];
+        }
+
+        $hostDevices = $this->aggregateDimensionRollupsForSites($siteIds, 'host_device', $start, $end, 1000);
+
+        return $this->formatHostDeviceBreakdown($hosts, $hostDevices);
     }
 
     public function deleteSite(int $siteId): void
