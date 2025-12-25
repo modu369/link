@@ -29,14 +29,19 @@ class MarketDataService
     public function fetchSnapshot(): array
     {
         $eventSlug = $this->resolveEventSlug();
-        $market = $this->client->fetchMarketBySlug($eventSlug);
-        $event = $this->client->fetchEventBySlug($eventSlug);
-        $event = $event !== [] ? $event : $this->extractEventFromMarket($market);
-
-        [$openTime, $closeTime, $roundKey] = $this->resolveRoundTimes($market, $event);
-
         $cachedPrice = $this->cacheService->readPrice();
         $cachedMarket = $this->cacheService->readMarket();
+
+        $market = [];
+        $event = [];
+
+        if (!$cachedPrice) {
+            $market = $this->client->fetchMarketBySlug($eventSlug);
+            $event = $this->client->fetchEventBySlug($eventSlug);
+            $event = $event !== [] ? $event : $this->extractEventFromMarket($market);
+        }
+
+        [$openTime, $closeTime, $roundKey] = $this->resolveRoundTimes($market, $event, $cachedPrice);
 
         $openPrice = $this->extractNumber([
             $event['priceToBeat'] ?? null,
@@ -114,10 +119,6 @@ class MarketDataService
             $openPrice = $this->extractNumber([$cachedPrice['price_to_beat'] ?? null]);
         }
 
-        if ($openPrice === null && $currentPrice !== null) {
-            $openPrice = $currentPrice;
-        }
-
         if ($openPrice === null || $currentPrice === null) {
             throw new RuntimeException('Unable to resolve Polymarket prices from API response.');
         }
@@ -130,7 +131,7 @@ class MarketDataService
         }
 
         return [
-            'event_title' => (string) ($event['title'] ?? $event['name'] ?? $market['question'] ?? $market['title'] ?? 'Bitcoin Up or Down'),
+            'event_title' => 'Bitcoin Up or Down',
             'event_slug' => $eventSlug,
             'round_key' => (string) $roundKey,
             'open_time' => $openTime->format('Y-m-d H:i:s'),
@@ -281,7 +282,7 @@ class MarketDataService
     }
 
 
-    private function resolveRoundTimes(array $market, array $event): array
+    private function resolveRoundTimes(array $market, array $event, ?array $cachedPrice): array
     {
         $start = $event['startTime'] ?? $event['start_time'] ?? $event['openTime'] ?? $event['open_time'] ?? null;
         $end = $event['endTime'] ?? $event['end_time'] ?? $event['closeTime'] ?? $event['close_time'] ?? null;
@@ -292,6 +293,10 @@ class MarketDataService
         if ($start && $end) {
             $openTime = $this->parseTime($start);
             $closeTime = $this->parseTime($end);
+        } elseif (is_array($cachedPrice) && isset($cachedPrice['round_start_ms'])) {
+            $roundStart = (int) $cachedPrice['round_start_ms'];
+            $openTime = (new DateTimeImmutable('@' . (int) ($roundStart / 1000)))->setTimezone($this->marketTimezone);
+            $closeTime = $openTime->modify('+15 minutes');
         } else {
             $now = new DateTimeImmutable('now', $this->marketTimezone);
             $minute = (int) $now->format('i');

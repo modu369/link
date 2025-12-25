@@ -40,21 +40,30 @@ while (true) {
     $liveMessage = $liveClient->receive();
     if ($liveMessage !== null) {
         $payload = json_decode($liveMessage, true);
-        if (is_array($payload) && ($payload['topic'] ?? '') === 'crypto_prices') {
+        if (is_array($payload) && in_array(($payload['topic'] ?? ''), ['crypto_prices', 'crypto_prices_chainlink'], true)) {
             $data = $payload['payload']['data'] ?? [];
+            $timestampMs = 0;
+            $price = null;
             if (is_array($data) && $data !== []) {
                 $latest = end($data);
                 $timestampMs = (int) ($latest['timestamp'] ?? 0);
                 $price = isset($latest['value']) ? (float) $latest['value'] : null;
-                if ($timestampMs > 0 && $price !== null) {
-                    $roundStartMs = $timestampMs - ($timestampMs % 900000);
-                    $cached = $priceCache->read();
-                    $priceToBeat = $price;
-                    if (is_array($cached) && ($cached['round_start_ms'] ?? null) === $roundStartMs) {
-                        $priceToBeat = (float) $cached['price_to_beat'];
-                    }
-                    $priceCache->writeCurrent($price, $timestampMs, $roundStartMs, $priceToBeat);
+            } else {
+                $value = $payload['payload']['full_accuracy_value'] ?? null;
+                if ($value !== null && is_numeric($value)) {
+                    $price = (float) $value / 1e18;
+                    $timestampMs = (int) ($payload['payload']['timestamp'] ?? $payload['timestamp'] ?? (microtime(true) * 1000));
                 }
+            }
+
+            if ($timestampMs > 0 && $price !== null) {
+                $roundStartMs = $timestampMs - ($timestampMs % 900000);
+                $cached = $priceCache->read();
+                $priceToBeat = $price;
+                if (is_array($cached) && ($cached['round_start_ms'] ?? null) === $roundStartMs) {
+                    $priceToBeat = (float) $cached['price_to_beat'];
+                }
+                $priceCache->writeCurrent($price, $timestampMs, $roundStartMs, $priceToBeat);
             }
         }
     }
@@ -67,11 +76,21 @@ while (true) {
             $up = null;
             $down = null;
             foreach ($changes as $change) {
-                if (($change['asset_id'] ?? '') === $config['polymarket']['up_asset_id'] && ($change['side'] ?? '') === 'BUY') {
-                    $up = (float) $change['price'] * 100;
+                $side = $change['side'] ?? '';
+                $assetId = $change['asset_id'] ?? '';
+                $price = isset($change['price']) ? (float) $change['price'] * 100 : null;
+                if ($price === null) {
+                    continue;
                 }
-                if (($change['asset_id'] ?? '') === $config['polymarket']['down_asset_id'] && ($change['side'] ?? '') === 'SELL') {
-                    $down = (float) $change['price'] * 100;
+
+                if ($config['polymarket']['up_asset_id'] !== '' && $assetId === $config['polymarket']['up_asset_id'] && $side === 'BUY') {
+                    $up = $price;
+                } elseif ($config['polymarket']['down_asset_id'] !== '' && $assetId === $config['polymarket']['down_asset_id'] && $side === 'SELL') {
+                    $down = $price;
+                } elseif ($config['polymarket']['up_asset_id'] === '' && $side === 'BUY') {
+                    $up = $price;
+                } elseif ($config['polymarket']['down_asset_id'] === '' && $side === 'SELL') {
+                    $down = $price;
                 }
             }
             if ($up !== null || $down !== null) {

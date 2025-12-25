@@ -67,6 +67,7 @@ async function loadMarket() {
 
         upAssetId = data.up_asset_id || upAssetId;
         downAssetId = data.down_asset_id || downAssetId;
+        const resolvedSlug = data.event_slug || '';
 
         if (Number.isFinite(Number(data.current_price))) {
             latestCurrentPrice = Number(data.current_price);
@@ -85,7 +86,7 @@ async function loadMarket() {
         if (!wsLive && data.ws_live_url) {
             connectLivePrice(data.ws_live_url);
         }
-        if (!wsMarket && data.ws_market_url && (upAssetId || downAssetId)) {
+        if (!wsMarket && data.ws_market_url) {
             connectMarketPrices(data.ws_market_url);
         }
 
@@ -137,10 +138,12 @@ function connectMarketPrices(url) {
     wsMarket = new WebSocket(url);
     wsMarket.onopen = () => {
         const assetIds = [upAssetId, downAssetId].filter(Boolean);
-        wsMarket.send(JSON.stringify({
-            assets_ids: assetIds,
-            type: 'market',
-        }));
+        if (assetIds.length > 0) {
+            wsMarket.send(JSON.stringify({
+                assets_ids: assetIds,
+                type: 'market',
+            }));
+        }
     };
     wsMarket.onmessage = (event) => {
         try {
