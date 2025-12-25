@@ -70,5 +70,5 @@ async function loadMarket() {
 }
 
 loadMarket();
-setInterval(loadMarket, 1000);
+setInterval(loadMarket, 500);
 setInterval(updateCountdown, 1000);

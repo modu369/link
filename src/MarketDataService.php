@@ -1,22 +1,25 @@
 <?php
 
+require_once __DIR__ . '/PriceService.php';
+
 class MarketDataService
 {
     private array $config;
+    private DateTimeZone $marketTimezone;
 
     public function __construct()
     {
         $this->config = require __DIR__ . '/Config.php';
+        $this->marketTimezone = new DateTimeZone('America/New_York');
     }
 
     public function fetchSnapshot(): array
     {
         $eventSlug = $this->config['polymarket']['event_slug'];
-        $event = $this->fetchEvent($eventSlug);
-        $market = $this->extractPrimaryMarket($event);
+        $event = $this->fetchEventSafely($eventSlug);
+        $market = $event ? $this->extractPrimaryMarket($event) : [];
 
-        $openTime = $this->parseTime($event['startTime'] ?? $event['start_time'] ?? $event['openTime'] ?? $event['open_time'] ?? null);
-        $closeTime = $this->parseTime($event['endTime'] ?? $event['end_time'] ?? $event['closeTime'] ?? $event['close_time'] ?? null);
+        [$openTime, $closeTime, $roundKey] = $this->resolveRoundTimes($event);
 
         $openPrice = $this->extractNumber([
             $event['priceToBeat'] ?? null,
@@ -51,12 +54,10 @@ class MarketDataService
         $upPrice = $outcomePrices['up'] ?? null;
         $downPrice = $outcomePrices['down'] ?? null;
 
-        if ($openPrice === null && $currentPrice !== null) {
-            $openPrice = $currentPrice;
-        }
-
-        if ($currentPrice === null && $openPrice !== null) {
-            $currentPrice = $openPrice;
+        if ($openPrice === null || $currentPrice === null) {
+            $spotPrice = $this->fetchSpotPriceFallback();
+            $openPrice = $openPrice ?? $spotPrice;
+            $currentPrice = $currentPrice ?? $spotPrice;
         }
 
         if ($openPrice === null || $currentPrice === null) {
@@ -65,11 +66,10 @@ class MarketDataService
 
         if ($upPrice === null || $downPrice === null) {
             $priceDelta = $currentPrice - $openPrice;
-            $upPrice = max(0, min(100, 50 + ($priceDelta / $openPrice) * 100));
+            $ratio = $openPrice > 0 ? ($priceDelta / $openPrice) * 100 : 0;
+            $upPrice = max(0, min(100, 50 + $ratio));
             $downPrice = 100 - $upPrice;
         }
-
-        $roundKey = $event['id'] ?? $eventSlug . '-' . $openTime->format('YmdHi');
 
         return [
             'event_title' => (string) ($event['title'] ?? $event['name'] ?? 'Bitcoin Up or Down'),
@@ -84,7 +84,7 @@ class MarketDataService
         ];
     }
 
-    private function fetchEvent(string $slug): array
+    private function fetchEventSafely(string $slug): array
     {
         $urls = $this->config['polymarket']['event_urls'];
         foreach ($urls as $urlTemplate) {
@@ -101,7 +101,7 @@ class MarketDataService
             }
         }
 
-        throw new RuntimeException('Unable to fetch Polymarket event data.');
+        return [];
     }
 
     private function fetchJson(string $url): array
@@ -177,14 +177,14 @@ class MarketDataService
     private function parseTime($value): DateTimeImmutable
     {
         if ($value === null || $value === '') {
-            return new DateTimeImmutable();
+            return new DateTimeImmutable('now', $this->marketTimezone);
         }
 
         if (is_numeric($value)) {
-            return (new DateTimeImmutable())->setTimestamp((int) $value);
+            return (new DateTimeImmutable('now', $this->marketTimezone))->setTimestamp((int) $value);
         }
 
-        return new DateTimeImmutable((string) $value);
+        return new DateTimeImmutable((string) $value, $this->marketTimezone);
     }
 
     private function extractOutcomePrices(array $market): array
@@ -248,5 +248,36 @@ class MarketDataService
         }
 
         return null;
+    }
+
+    private function resolveRoundTimes(array $event): array
+    {
+        $start = $event['startTime'] ?? $event['start_time'] ?? $event['openTime'] ?? $event['open_time'] ?? null;
+        $end = $event['endTime'] ?? $event['end_time'] ?? $event['closeTime'] ?? $event['close_time'] ?? null;
+
+        if ($start && $end) {
+            $openTime = $this->parseTime($start);
+            $closeTime = $this->parseTime($end);
+        } else {
+            $now = new DateTimeImmutable('now', $this->marketTimezone);
+            $minute = (int) $now->format('i');
+            $startMinute = $minute - ($minute % 15);
+            $openTime = $now->setTime((int) $now->format('H'), $startMinute, 0);
+            $closeTime = $openTime->modify('+15 minutes');
+        }
+
+        $roundKey = $event['id'] ?? $openTime->format('YmdHi');
+
+        return [$openTime, $closeTime, $roundKey];
+    }
+
+    private function fetchSpotPriceFallback(): ?float
+    {
+        try {
+            $priceService = new PriceService();
+            return $priceService->fetchCurrentPrice();
+        } catch (Throwable $exception) {
+            return null;
+        }
     }
 }
