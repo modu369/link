@@ -11,7 +11,8 @@ return [
         'active_window_minutes' => getenv('RULE_ACTIVE_WINDOW_MINUTES') ?: 5,
     ],
     'polymarket' => [
-        'event_slug' => getenv('POLYMARKET_EVENT_SLUG') ?: 'btc-updown-15m-1766628900',
+        'event_slug' => getenv('POLYMARKET_EVENT_SLUG') ?: 'btc-updown-15m-%d',
+        'event_slug_template' => getenv('POLYMARKET_EVENT_SLUG_TEMPLATE') ?: 'btc-updown-15m-%d',
         'market_urls' => [
             getenv('POLYMARKET_MARKET_URL') ?: 'https://clob.polymarket.com/markets?slug=%s',
             'https://data-api.polymarket.com/markets?slug=%s',
@@ -19,6 +20,7 @@ return [
         'event_urls' => [
             getenv('POLYMARKET_EVENT_URL') ?: 'https://data-api.polymarket.com/events?slug=%s',
         ],
+        'event_page_url' => getenv('POLYMARKET_EVENT_PAGE_URL') ?: 'https://polymarket.com/event/%s',
         'user_agent' => getenv('POLYMARKET_USER_AGENT') ?: 'Mozilla/5.0 (compatible; PolymarketMonitor/1.0)',
         'timeout_seconds' => getenv('POLYMARKET_TIMEOUT_SECONDS') ?: 5,
     ],

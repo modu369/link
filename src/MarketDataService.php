@@ -20,7 +20,7 @@ class MarketDataService
 
     public function fetchSnapshot(): array
     {
-        $eventSlug = $this->config['polymarket']['event_slug'];
+        $eventSlug = $this->resolveEventSlug();
         $market = $this->client->fetchMarketBySlug($eventSlug);
         $event = $this->client->fetchEventBySlug($eventSlug);
         $event = $event !== [] ? $event : $this->extractEventFromMarket($market);
@@ -82,6 +82,19 @@ class MarketDataService
         $outcomePrices = $this->extractOutcomePrices($market);
         $upPrice = $outcomePrices['up'] ?? null;
         $downPrice = $outcomePrices['down'] ?? null;
+
+        if ($openPrice === null || $currentPrice === null || $upPrice === null || $downPrice === null) {
+            $html = $this->client->fetchEventPageHtml($eventSlug);
+            if ($html !== '') {
+                $htmlPrices = $this->parsePricesFromHtml($html);
+                $openPrice = $openPrice ?? $htmlPrices['open_price'];
+                $currentPrice = $currentPrice ?? $htmlPrices['current_price'];
+                if ($upPrice === null || $downPrice === null) {
+                    $upPrice = $htmlPrices['up_price'] ?? $upPrice;
+                    $downPrice = $htmlPrices['down_price'] ?? $downPrice;
+                }
+            }
+        }
 
         if ($openPrice === null && $currentPrice !== null) {
             $openPrice = $currentPrice;
@@ -226,6 +239,55 @@ class MarketDataService
         }
 
         return null;
+    }
+
+    private function resolveEventSlug(): string
+    {
+        $slug = $this->config['polymarket']['event_slug'] ?? '';
+        $template = $this->config['polymarket']['event_slug_template'] ?? '';
+
+        $needsTimestamp = str_contains($slug, '%d') || str_contains($slug, '{timestamp}');
+        $template = $template !== '' ? $template : $slug;
+
+        if ($needsTimestamp || str_contains($template, '%d') || str_contains($template, '{timestamp}')) {
+            $now = new DateTimeImmutable('now', $this->marketTimezone);
+            $timestamp = $now->getTimestamp();
+            $timestamp -= ($timestamp % 900);
+            if (str_contains($template, '{timestamp}')) {
+                return str_replace('{timestamp}', (string) $timestamp, $template);
+            }
+            return sprintf($template, $timestamp);
+        }
+
+        return $slug;
+    }
+
+    private function parsePricesFromHtml(string $html): array
+    {
+        $result = [
+            'open_price' => null,
+            'current_price' => null,
+            'up_price' => null,
+            'down_price' => null,
+        ];
+
+        if (preg_match('/price to beat[^\\$]*\\$([0-9,]+(?:\\.[0-9]{2})?)/i', $html, $match)) {
+            $result['open_price'] = (float) str_replace(',', '', $match[1]);
+        }
+
+        if (preg_match('/current price[^\\$]*\\$([0-9,]+(?:\\.[0-9]{2})?)/i', $html, $match)) {
+            $result['current_price'] = (float) str_replace(',', '', $match[1]);
+        }
+
+        if (preg_match('/\\bUp\\b[^\\d]*([0-9]{1,3})¢/i', $html, $match)) {
+            $result['up_price'] = (float) $match[1];
+        }
+
+        if (preg_match('/\\bDown\\b[^\\d]*([0-9]{1,3})¢/i', $html, $match)) {
+            $result['down_price'] = (float) $match[1];
+        }
+
+        return $result;
     }
 
     private function resolveRoundTimes(array $market, array $event): array

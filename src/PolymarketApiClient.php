@@ -21,6 +21,17 @@ class PolymarketApiClient
         return $this->fetchFirstMatch($urls, $slug, 'event');
     }
 
+    public function fetchEventPageHtml(string $slug): string
+    {
+        $urlTemplate = $this->config['event_page_url'] ?? '';
+        if ($urlTemplate === '') {
+            return '';
+        }
+
+        $url = sprintf($urlTemplate, rawurlencode($slug));
+        return $this->fetchRaw($url);
+    }
+
     private function fetchFirstMatch(array $urls, string $slug, string $type): array
     {
         foreach ($urls as $urlTemplate) {
@@ -49,6 +60,12 @@ class PolymarketApiClient
 
     private function fetchJson(string $url): array
     {
+        $response = $this->fetchRaw($url);
+        return json_decode($response, true, 512, JSON_THROW_ON_ERROR);
+    }
+
+    private function fetchRaw(string $url): string
+    {
         $timeout = (int) ($this->config['timeout_seconds'] ?? 5);
         $userAgent = $this->config['user_agent'] ?? 'Mozilla/5.0 (compatible; PolymarketMonitor/1.0)';
 
@@ -57,7 +74,7 @@ class PolymarketApiClient
                 'timeout' => $timeout,
                 'header' => [
                     'User-Agent: ' . $userAgent,
-                    'Accept: application/json',
+                    'Accept: */*',
                 ],
             ],
         ]);
@@ -67,7 +84,7 @@ class PolymarketApiClient
             throw new RuntimeException('Failed to fetch Polymarket data.');
         }
 
-        return json_decode($response, true, 512, JSON_THROW_ON_ERROR);
+        return $response;
     }
 
     private function normalizePayload(array $payload, string $type): array
