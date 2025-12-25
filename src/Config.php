@@ -12,9 +12,12 @@ return [
     ],
     'polymarket' => [
         'event_slug' => getenv('POLYMARKET_EVENT_SLUG') ?: 'btc-updown-15m-1766628900',
+        'market_urls' => [
+            getenv('POLYMARKET_MARKET_URL') ?: 'https://clob.polymarket.com/markets?slug=%s',
+            'https://data-api.polymarket.com/markets?slug=%s',
+        ],
         'event_urls' => [
-            getenv('POLYMARKET_EVENT_URL') ?: 'https://polymarket.com/api/event/%s',
-            'https://gamma-api.polymarket.com/events?slug=%s',
+            getenv('POLYMARKET_EVENT_URL') ?: 'https://data-api.polymarket.com/events?slug=%s',
         ],
         'user_agent' => getenv('POLYMARKET_USER_AGENT') ?: 'Mozilla/5.0 (compatible; PolymarketMonitor/1.0)',
         'timeout_seconds' => getenv('POLYMARKET_TIMEOUT_SECONDS') ?: 5,
@@ -23,7 +26,10 @@ return [
         'interval_ms' => getenv('POLL_INTERVAL_MS') ?: 1000,
     ],
     'price' => [
-        'provider_url' => getenv('PRICE_PROVIDER_URL') ?: 'https://api.coinbase.com/v2/prices/BTC-USD/spot',
+        'provider_urls' => [
+            getenv('PRICE_PROVIDER_URL') ?: 'https://data-api.polymarket.com/prices?symbol=BTC',
+            'https://api.coinbase.com/v2/prices/BTC-USD/spot',
+        ],
         'timeout_seconds' => 5,
     ],
     'worker' => [

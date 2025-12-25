@@ -16,22 +16,27 @@ class MarketDataService
     public function fetchSnapshot(): array
     {
         $eventSlug = $this->config['polymarket']['event_slug'];
-        $event = $this->fetchEventSafely($eventSlug);
-        $market = $event ? $this->extractPrimaryMarket($event) : [];
+        $market = $this->fetchMarketSafely($eventSlug);
+        $event = $this->extractEventFromMarket($market);
+        if ($event === []) {
+            $event = $this->fetchEventSafely($eventSlug);
+        }
 
-        [$openTime, $closeTime, $roundKey] = $this->resolveRoundTimes($event);
+        [$openTime, $closeTime, $roundKey] = $this->resolveRoundTimes($market, $event);
 
         $openPrice = $this->extractNumber([
             $event['priceToBeat'] ?? null,
             $event['price_to_beat'] ?? null,
             $event['strikePrice'] ?? null,
             $event['strike_price'] ?? null,
+            $event['price'] ?? null,
             $market['priceToBeat'] ?? null,
             $market['price_to_beat'] ?? null,
             $market['openPrice'] ?? null,
             $market['open_price'] ?? null,
             $market['strikePrice'] ?? null,
             $market['strike_price'] ?? null,
+            $market['price'] ?? null,
         ]);
 
         $currentPrice = $this->extractNumber([
@@ -48,6 +53,8 @@ class MarketDataService
             $market['spotPrice'] ?? null,
             $market['spot_price'] ?? null,
             $market['price'] ?? null,
+            $market['lastTradePrice'] ?? null,
+            $market['index_price'] ?? null,
         ]);
 
         $outcomePrices = $this->extractOutcomePrices($market);
@@ -72,7 +79,7 @@ class MarketDataService
         }
 
         return [
-            'event_title' => (string) ($event['title'] ?? $event['name'] ?? 'Bitcoin Up or Down'),
+            'event_title' => (string) ($event['title'] ?? $event['name'] ?? $market['question'] ?? $market['title'] ?? 'Bitcoin Up or Down'),
             'event_slug' => $eventSlug,
             'round_key' => (string) $roundKey,
             'open_time' => $openTime->format('Y-m-d H:i:s'),
@@ -84,9 +91,36 @@ class MarketDataService
         ];
     }
 
+    private function fetchMarketSafely(string $slug): array
+    {
+        $urls = $this->config['polymarket']['market_urls'] ?? [];
+        foreach ($urls as $urlTemplate) {
+            $url = sprintf($urlTemplate, rawurlencode($slug));
+            try {
+                $payload = $this->fetchJson($url);
+            } catch (Throwable $exception) {
+                continue;
+            }
+
+            $markets = $this->normalizeMarkets($payload);
+            foreach ($markets as $market) {
+                $marketSlug = $market['slug'] ?? $market['id'] ?? null;
+                if ($marketSlug !== null && (string) $marketSlug === $slug) {
+                    return (array) $market;
+                }
+            }
+
+            if ($markets !== []) {
+                return (array) $markets[0];
+            }
+        }
+
+        return [];
+    }
+
     private function fetchEventSafely(string $slug): array
     {
-        $urls = $this->config['polymarket']['event_urls'];
+        $urls = $this->config['polymarket']['event_urls'] ?? [];
         foreach ($urls as $urlTemplate) {
             $url = sprintf($urlTemplate, rawurlencode($slug));
             try {
@@ -153,6 +187,60 @@ class MarketDataService
         return $payload;
     }
 
+    private function normalizeMarkets(array $payload): array
+    {
+        if (isset($payload['market'])) {
+            return [(array) $payload['market']];
+        }
+
+        if (isset($payload['markets']) && is_array($payload['markets'])) {
+            return array_map('array_filter', $payload['markets']);
+        }
+
+        if (isset($payload['data']) && is_array($payload['data'])) {
+            if (isset($payload['data']['markets']) && is_array($payload['data']['markets'])) {
+                return array_map('array_filter', $payload['data']['markets']);
+            }
+            if (isset($payload['data'][0])) {
+                return array_map('array_filter', $payload['data']);
+            }
+        }
+
+        if (isset($payload[0])) {
+            return array_map('array_filter', $payload);
+        }
+
+        if (isset($payload['events']) && is_array($payload['events'])) {
+            $markets = [];
+            foreach ($payload['events'] as $event) {
+                if (isset($event['markets']) && is_array($event['markets'])) {
+                    foreach ($event['markets'] as $market) {
+                        $markets[] = (array) $market;
+                    }
+                }
+            }
+            return $markets;
+        }
+
+        return $payload !== [] ? [(array) $payload] : [];
+    }
+
+    private function extractEventFromMarket(array $market): array
+    {
+        if (isset($market['event']) && is_array($market['event'])) {
+            return (array) $market['event'];
+        }
+
+        if (isset($market['event']) && is_string($market['event'])) {
+            $decoded = json_decode($market['event'], true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        }
+
+        return [];
+    }
+
     private function extractPrimaryMarket(array $event): array
     {
         $markets = $event['markets'] ?? $event['market'] ?? [];
@@ -189,8 +277,8 @@ class MarketDataService
 
     private function extractOutcomePrices(array $market): array
     {
-        $outcomes = $market['outcomes'] ?? $market['outcomeNames'] ?? null;
-        $prices = $market['outcomePrices'] ?? $market['prices'] ?? null;
+        $outcomes = $market['outcomes'] ?? $market['outcomeNames'] ?? $market['outcome_names'] ?? null;
+        $prices = $market['outcomePrices'] ?? $market['outcome_prices'] ?? $market['prices'] ?? null;
 
         if (is_string($outcomes)) {
             $outcomes = json_decode($outcomes, true);
@@ -250,10 +338,13 @@ class MarketDataService
         return null;
     }
 
-    private function resolveRoundTimes(array $event): array
+    private function resolveRoundTimes(array $market, array $event): array
     {
         $start = $event['startTime'] ?? $event['start_time'] ?? $event['openTime'] ?? $event['open_time'] ?? null;
         $end = $event['endTime'] ?? $event['end_time'] ?? $event['closeTime'] ?? $event['close_time'] ?? null;
+
+        $start = $start ?? ($market['startTime'] ?? $market['start_time'] ?? $market['openTime'] ?? $market['open_time'] ?? null);
+        $end = $end ?? ($market['endTime'] ?? $market['end_time'] ?? $market['closeTime'] ?? $market['close_time'] ?? null);
 
         if ($start && $end) {
             $openTime = $this->parseTime($start);
@@ -266,7 +357,7 @@ class MarketDataService
             $closeTime = $openTime->modify('+15 minutes');
         }
 
-        $roundKey = $event['id'] ?? $openTime->format('YmdHi');
+        $roundKey = $event['id'] ?? $market['id'] ?? $openTime->format('YmdHi');
 
         return [$openTime, $closeTime, $roundKey];
     }

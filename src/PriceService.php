@@ -5,8 +5,12 @@ class PriceService
     public function fetchCurrentPrice(): float
     {
         $config = require __DIR__ . '/Config.php';
-        $url = $config['price']['provider_url'];
+        $urls = $config['price']['provider_urls'] ?? [];
         $timeout = (int) $config['price']['timeout_seconds'];
+
+        if ($urls === []) {
+            throw new RuntimeException('No price providers configured.');
+        }
 
         $context = stream_context_create([
             'http' => [
@@ -14,23 +18,31 @@ class PriceService
             ],
         ]);
 
-        $response = @file_get_contents($url, false, $context);
-        if ($response === false) {
-            throw new RuntimeException('Unable to fetch BTC price.');
-        }
+        foreach ($urls as $url) {
+            $response = @file_get_contents($url, false, $context);
+            if ($response === false) {
+                continue;
+            }
 
-        $payload = json_decode($response, true, 512, JSON_THROW_ON_ERROR);
+            try {
+                $payload = json_decode($response, true, 512, JSON_THROW_ON_ERROR);
+            } catch (Throwable $exception) {
+                continue;
+            }
 
-        $candidates = [
-            $payload['data']['amount'] ?? null,
-            $payload['data']['price'] ?? null,
-            $payload['price'] ?? null,
-            $payload['result']['price'] ?? null,
-        ];
+            $candidates = [
+                $payload['data']['amount'] ?? null,
+                $payload['data']['price'] ?? null,
+                $payload['price'] ?? null,
+                $payload['result']['price'] ?? null,
+                $payload['prices'][0]['price'] ?? null,
+                $payload['prices'][0]['value'] ?? null,
+            ];
 
-        foreach ($candidates as $candidate) {
-            if ($candidate !== null && $candidate !== '' && is_numeric($candidate)) {
-                return (float) $candidate;
+            foreach ($candidates as $candidate) {
+                if ($candidate !== null && $candidate !== '' && is_numeric($candidate)) {
+                    return (float) $candidate;
+                }
             }
         }
 
