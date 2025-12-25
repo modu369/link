@@ -44,5 +44,11 @@ return [
         'queue_key' => getenv('INGEST_QUEUE_KEY') ?: 'tracker:ingest:pageviews',
         // 队列长度上限，防止异常堆积；0 表示不限制
         'max_queue_length' => (int) (getenv('INGEST_QUEUE_MAX') ?: 100000),
+        // 自动抽样消费队列，避免忘记启动 worker 时数据堆积
+        'auto_drain' => getenv('INGEST_AUTO_DRAIN') === false
+            ? true
+            : (filter_var(getenv('INGEST_AUTO_DRAIN'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? true),
+        'auto_drain_every' => (int) (getenv('INGEST_AUTO_DRAIN_EVERY') ?: 20),
+        'auto_drain_batch' => (int) (getenv('INGEST_AUTO_DRAIN_BATCH') ?: 50),
     ],
 ];

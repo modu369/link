@@ -15,6 +15,9 @@ class Tracker
     private string $ingestMode = 'direct';
     private string $ingestQueueKey = 'tracker:ingest:pageviews';
     private int $ingestMaxQueueLength = 100000;
+    private bool $ingestAutoDrain = true;
+    private int $ingestAutoDrainEvery = 20;
+    private int $ingestAutoDrainBatch = 50;
 
     public function __construct(
         private PDO $db,
@@ -32,6 +35,9 @@ class Tracker
         $this->ingestMode = strtolower($ingest['mode'] ?? $this->ingestMode);
         $this->ingestQueueKey = $ingest['queue_key'] ?? $this->ingestQueueKey;
         $this->ingestMaxQueueLength = max(0, (int) ($ingest['max_queue_length'] ?? $this->ingestMaxQueueLength));
+        $this->ingestAutoDrain = (bool) ($ingest['auto_drain'] ?? $this->ingestAutoDrain);
+        $this->ingestAutoDrainEvery = max(1, (int) ($ingest['auto_drain_every'] ?? $this->ingestAutoDrainEvery));
+        $this->ingestAutoDrainBatch = max(1, (int) ($ingest['auto_drain_batch'] ?? $this->ingestAutoDrainBatch));
         $this->ensureIpDbExists();
         $this->ipResolver = new IpResolver($this->ipdbPath);
 
@@ -181,6 +187,7 @@ class Tracker
     {
         if ($this->ingestMode === 'queue') {
             $this->enqueuePageview($trackingId, $payload);
+            $this->autoDrainQueue();
 
             return;
         }
@@ -316,6 +323,25 @@ class Tracker
         if ($this->ingestMaxQueueLength > 0) {
             $this->redis->lTrim($this->ingestQueueKey, 0, $this->ingestMaxQueueLength - 1);
         }
+    }
+
+    private function autoDrainQueue(): void
+    {
+        if (!$this->ingestAutoDrain || $this->ingestAutoDrainEvery <= 0) {
+            return;
+        }
+
+        $counterKey = $this->ingestQueueKey . ':autodrain';
+        $count = (int) $this->redis->incr($counterKey);
+        if ($count === 1) {
+            $this->redis->expire($counterKey, 60);
+        }
+
+        if ($count % $this->ingestAutoDrainEvery !== 0) {
+            return;
+        }
+
+        $this->drainIngestQueue($this->ingestAutoDrainBatch);
     }
 
     public function drainIngestQueue(int $maxBatch = 500): int
@@ -1341,9 +1367,9 @@ class Tracker
         return $statement->fetchAll();
     }
 
-    private function getRollupHourlyStats(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
+    private function getRollupHourlyStats(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, bool $allowPartial = false): array
     {
-        if (!$this->rollupsCoverRange($siteId, $start, $end)) {
+        if (!$allowPartial && !$this->rollupsCoverRange($siteId, $start, $end)) {
             return [];
         }
 
@@ -3555,7 +3581,7 @@ class Tracker
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
             [$start, $end] = $this->rollupRangeBounds($range);
-            $rollup = $this->getRollupHourlyStats($siteId, $start, $end);
+            $rollup = $this->getRollupHourlyStats($siteId, $start, $end, true);
             if (!empty($rollup)) {
                 return $rollup;
             }
@@ -3579,7 +3605,7 @@ class Tracker
 
     private function getHourlyStatsForWindow(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
-        $rollup = $this->getRollupHourlyStats($siteId, $start, $end);
+        $rollup = $this->getRollupHourlyStats($siteId, $start, $end, true);
         if (!empty($rollup)) {
             return $rollup;
         }
@@ -4002,14 +4028,12 @@ class Tracker
 
         [$start, $end] = $this->rollupRangeBounds($range);
 
-        if ($this->rollupsCoverRangeForSites($share['site_ids'], $start, $end)) {
-            $rows = $this->getHostDeviceRollupRowsForSites($share['site_ids'], $start, $end);
-            if (!empty($rows)) {
-                return [
-                    'share' => $share,
-                    'rows' => $rows,
-                ];
-            }
+        $rows = $this->getHostDeviceRollupRowsForSites($share['site_ids'], $start, $end);
+        if (!empty($rows)) {
+            return [
+                'share' => $share,
+                'rows' => $rows,
+            ];
         }
 
         [$rangeSql, $params] = $this->rangeClause($range);
