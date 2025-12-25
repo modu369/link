@@ -138,12 +138,10 @@ function connectMarketPrices(url) {
     wsMarket = new WebSocket(url);
     wsMarket.onopen = () => {
         const assetIds = [upAssetId, downAssetId].filter(Boolean);
-        if (assetIds.length > 0) {
-            wsMarket.send(JSON.stringify({
-                assets_ids: assetIds,
-                type: 'market',
-            }));
-        }
+        wsMarket.send(JSON.stringify({
+            assets_ids: assetIds,
+            type: 'market',
+        }));
     };
     wsMarket.onmessage = (event) => {
         try {

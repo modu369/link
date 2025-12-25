@@ -29,12 +29,10 @@ $liveClient->send(json_encode([
 
 $marketClient->connect();
 $assetIds = array_filter([$config['polymarket']['up_asset_id'], $config['polymarket']['down_asset_id']]);
-if ($assetIds !== []) {
-    $marketClient->send(json_encode([
-        'assets_ids' => $assetIds,
-        'type' => 'market',
-    ]));
-}
+$marketClient->send(json_encode([
+    'assets_ids' => $assetIds,
+    'type' => 'market',
+]));
 
 while (true) {
     $liveMessage = $liveClient->receive();

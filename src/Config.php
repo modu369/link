@@ -22,7 +22,7 @@ return [
         ],
         'event_page_url' => getenv('POLYMARKET_EVENT_PAGE_URL') ?: 'https://polymarket.com/event/%s',
         'ws_live_url' => getenv('POLYMARKET_WS_LIVE_URL') ?: 'wss://ws-live-data.polymarket.com',
-        'ws_market_url' => getenv('POLYMARKET_WS_MARKET_URL') ?: 'wss://ws-subscriptions-clob.polymarket.com/ws/market',
+        'ws_market_url' => getenv('POLYMARKET_WS_MARKET_URL') ?: 'wss://ws-subscriptions-clob.polymarket.com/ws/',
         'up_asset_id' => getenv('POLYMARKET_UP_ASSET_ID') ?: '',
         'down_asset_id' => getenv('POLYMARKET_DOWN_ASSET_ID') ?: '',
         'user_agent' => getenv('POLYMARKET_USER_AGENT') ?: 'Mozilla/5.0 (compatible; PolymarketMonitor/1.0)',
