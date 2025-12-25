@@ -94,6 +94,9 @@ class PolymarketApiClient
             if (isset($payload['data'][$type . 's']) && is_array($payload['data'][$type . 's'])) {
                 return array_map('array_filter', $payload['data'][$type . 's']);
             }
+            if (isset($payload['data'][$type]) && is_array($payload['data'][$type])) {
+                return [(array) $payload['data'][$type]];
+            }
             if (isset($payload['data'][0])) {
                 return array_map('array_filter', $payload['data']);
             }

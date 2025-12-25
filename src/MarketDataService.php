@@ -30,13 +30,19 @@ class MarketDataService
         $openPrice = $this->extractNumber([
             $event['priceToBeat'] ?? null,
             $event['price_to_beat'] ?? null,
+            $event['priceToBeatUsd'] ?? null,
+            $event['price_to_beat_usd'] ?? null,
             $event['strikePrice'] ?? null,
             $event['strike_price'] ?? null,
             $event['price'] ?? null,
             $event['startPrice'] ?? null,
             $event['start_price'] ?? null,
+            $event['referencePrice'] ?? null,
+            $event['reference_price'] ?? null,
             $market['priceToBeat'] ?? null,
             $market['price_to_beat'] ?? null,
+            $market['priceToBeatUsd'] ?? null,
+            $market['price_to_beat_usd'] ?? null,
             $market['openPrice'] ?? null,
             $market['open_price'] ?? null,
             $market['strikePrice'] ?? null,
@@ -44,6 +50,8 @@ class MarketDataService
             $market['price'] ?? null,
             $market['startPrice'] ?? null,
             $market['start_price'] ?? null,
+            $market['referencePrice'] ?? null,
+            $market['reference_price'] ?? null,
         ]);
 
         $currentPrice = $this->extractNumber([
@@ -59,8 +67,13 @@ class MarketDataService
             $market['spot_price'] ?? null,
             $market['referencePrice'] ?? null,
             $market['reference_price'] ?? null,
+            $market['price'] ?? null,
             $event['currentPrice'] ?? null,
             $event['current_price'] ?? null,
+            $event['spotPrice'] ?? null,
+            $event['spot_price'] ?? null,
+            $event['referencePrice'] ?? null,
+            $event['reference_price'] ?? null,
         ]);
         if ($currentPrice === null) {
             $currentPrice = $this->priceService->fetchCurrentPrice();
@@ -69,6 +82,10 @@ class MarketDataService
         $outcomePrices = $this->extractOutcomePrices($market);
         $upPrice = $outcomePrices['up'] ?? null;
         $downPrice = $outcomePrices['down'] ?? null;
+
+        if ($openPrice === null && $currentPrice !== null) {
+            $openPrice = $currentPrice;
+        }
 
         if ($openPrice === null || $currentPrice === null) {
             throw new RuntimeException('Unable to resolve Polymarket prices from API response.');
