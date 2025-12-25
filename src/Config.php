@@ -2,9 +2,9 @@
 
 return [
     'db' => [
-        'dsn' => getenv('DB_DSN') ?: 'mysql:host=127.0.0.1;dbname=polymarket;charset=utf8mb4',
-        'user' => getenv('DB_USER') ?: 'root',
-        'password' => getenv('DB_PASSWORD') ?: '',
+        'dsn' => getenv('DB_DSN') ?: 'mysql:host=127.0.0.1;dbname=ceshi;charset=utf8mb4',
+        'user' => getenv('DB_USER') ?: 'ceshi',
+        'password' => getenv('DB_PASSWORD') ?: 'pai123456',
     ],
     'round' => [
         'duration_minutes' => getenv('ROUND_DURATION_MINUTES') ?: 60,

@@ -21,10 +21,14 @@ class MarketDataService
         $openPrice = $this->extractNumber([
             $event['priceToBeat'] ?? null,
             $event['price_to_beat'] ?? null,
+            $event['strikePrice'] ?? null,
+            $event['strike_price'] ?? null,
             $market['priceToBeat'] ?? null,
             $market['price_to_beat'] ?? null,
             $market['openPrice'] ?? null,
             $market['open_price'] ?? null,
+            $market['strikePrice'] ?? null,
+            $market['strike_price'] ?? null,
         ]);
 
         $currentPrice = $this->extractNumber([
@@ -36,11 +40,24 @@ class MarketDataService
             $market['index_price'] ?? null,
             $market['lastPrice'] ?? null,
             $market['last_price'] ?? null,
+            $market['lastTradePrice'] ?? null,
+            $market['last_trade_price'] ?? null,
+            $market['spotPrice'] ?? null,
+            $market['spot_price'] ?? null,
+            $market['price'] ?? null,
         ]);
 
         $outcomePrices = $this->extractOutcomePrices($market);
         $upPrice = $outcomePrices['up'] ?? null;
         $downPrice = $outcomePrices['down'] ?? null;
+
+        if ($openPrice === null && $currentPrice !== null) {
+            $openPrice = $currentPrice;
+        }
+
+        if ($currentPrice === null && $openPrice !== null) {
+            $currentPrice = $openPrice;
+        }
 
         if ($openPrice === null || $currentPrice === null) {
             throw new RuntimeException('Unable to resolve Polymarket prices from API response.');
