@@ -31,10 +31,12 @@ CREATE TABLE IF NOT EXISTS rules (
 
 CREATE TABLE IF NOT EXISTS rounds (
     id INT AUTO_INCREMENT PRIMARY KEY,
+    external_key VARCHAR(120) NOT NULL,
     open_time DATETIME NOT NULL,
     close_time DATETIME NOT NULL,
     open_price DECIMAL(14,2) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY rounds_external_key_unique (external_key)
 );
 
 CREATE TABLE IF NOT EXISTS trades (

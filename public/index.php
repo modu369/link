@@ -1,7 +1,7 @@
 <?php
 
 require __DIR__ . '/../src/Database.php';
-require __DIR__ . '/../src/PriceService.php';
+require __DIR__ . '/../src/MarketDataService.php';
 require __DIR__ . '/../src/RoundService.php';
 require __DIR__ . '/../src/AccountService.php';
 require __DIR__ . '/../src/RuleService.php';
@@ -113,8 +113,8 @@ try {
     <main class="content">
         <header class="content-header">
             <div>
-                <h1><?= $page === 'dashboard' ? 'Bitcoin 实时监控' : ($page === 'accounts' ? '账户管理' : ($page === 'rules' ? '规则配置' : '交易记录')) ?></h1>
-                <p class="subtitle">实时同步账户状态与交易规则</p>
+                <h1><?= $page === 'dashboard' ? 'Bitcoin Up or Down' : ($page === 'accounts' ? '账户管理' : ($page === 'rules' ? '规则配置' : '交易记录')) ?></h1>
+                <p class="subtitle">Polymarket 实时数据 + 账户自动交易引擎</p>
             </div>
             <div class="status-pill">系统在线</div>
         </header>
@@ -124,21 +124,30 @@ try {
         <?php endif; ?>
 
         <?php if ($page === 'dashboard' && $round): ?>
+            <section class="hero">
+                <div>
+                    <div class="hero-label">Market</div>
+                    <div class="hero-title" id="eventTitle"><?= e($round['event_title']) ?></div>
+                    <div class="hero-subtitle">本轮时间：<span id="openTime"><?= e($round['open_time']) ?></span> - <span id="closeTime"><?= e($round['close_time']) ?></span></div>
+                </div>
+                <div class="countdown">
+                    <div class="countdown-label">距封盘</div>
+                    <div class="countdown-time" id="countdown">--:--</div>
+                </div>
+            </section>
             <section class="grid">
-                <div class="card">
-                    <h3>本轮时间</h3>
-                    <p>开盘：<?= e($round['open_time']) ?></p>
-                    <p>封盘：<?= e($round['close_time']) ?></p>
+                <div class="card metric">
+                    <h3>PRICE TO BEAT</h3>
+                    <p class="metric-value" id="openPrice"><?= e(number_format($round['open_price'], 2)) ?></p>
                 </div>
-                <div class="card">
-                    <h3>价格信息</h3>
-                    <p>开盘价：<span id="openPrice"><?= e(number_format($round['open_price'], 2)) ?></span></p>
-                    <p>现价：<span id="currentPrice">加载中...</span></p>
+                <div class="card metric">
+                    <h3>CURRENT PRICE</h3>
+                    <p class="metric-value" id="currentPrice">加载中...</p>
                 </div>
-                <div class="card">
-                    <h3>UP / DOWN 位置</h3>
-                    <p>UP：<span id="upPosition">--</span></p>
-                    <p>DOWN：<span id="downPosition">--</span></p>
+                <div class="card metric">
+                    <h3>UP / DOWN 价格</h3>
+                    <p class="metric-value"><span id="upPosition">--</span> <span class="metric-unit">UP</span></p>
+                    <p class="metric-sub"><span id="downPosition">--</span> <span class="metric-unit">DOWN</span></p>
                 </div>
             </section>
             <section class="card full">

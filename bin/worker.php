@@ -1,7 +1,7 @@
 <?php
 
 require __DIR__ . '/../src/Database.php';
-require __DIR__ . '/../src/PriceService.php';
+require __DIR__ . '/../src/MarketDataService.php';
 require __DIR__ . '/../src/RoundService.php';
 require __DIR__ . '/../src/AccountService.php';
 require __DIR__ . '/../src/RuleService.php';
@@ -12,22 +12,20 @@ $accountService = new AccountService();
 $ruleService = new RuleService();
 $tradeService = new TradeService();
 $roundService = new RoundService();
-$priceService = new PriceService();
 $client = new PolymarketClient();
 
 try {
     $round = $roundService->getCurrentRound();
-    $currentPrice = $priceService->fetchCurrentPrice();
+    $currentPrice = (float) $round['current_price'];
 } catch (Throwable $exception) {
     fwrite(STDERR, $exception->getMessage() . PHP_EOL);
     exit(1);
 }
 
 $openPrice = (float) $round['open_price'];
-$priceDelta = $currentPrice - $openPrice;
-$upPosition = max(0, min(100, 50 + ($priceDelta / $openPrice) * 100));
-$downPosition = 100 - $upPosition;
-$volatility = abs($priceDelta);
+$upPosition = (float) $round['up_position'];
+$downPosition = (float) $round['down_position'];
+$volatility = abs($currentPrice - $openPrice);
 
 $now = new DateTimeImmutable();
 $closeTime = new DateTimeImmutable($round['close_time']);
