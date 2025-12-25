@@ -25,9 +25,7 @@ function resolveEventSlug(array $config): string
 
 $eventSlug = resolveEventSlug($config);
 
-$tagSlug = $_GET['tag'] ?? $config['polymarket']['gamma_default_tag'];
-$limit = (int) ($_GET['limit'] ?? $config['polymarket']['gamma_default_limit']);
-$snapshot = $marketService->fetchMarketSnapshot($eventSlug !== '' ? $eventSlug : null, $tagSlug, $limit);
+$snapshot = $marketService->fetchMarketSnapshot($eventSlug !== '' ? $eventSlug : null);
 header('Content-Type: application/json; charset=utf-8');
 
 echo json_encode($snapshot, JSON_UNESCAPED_SLASHES);

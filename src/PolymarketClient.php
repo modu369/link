@@ -2,9 +2,8 @@
 
 class PolymarketClient
 {
-    private HttpClient $gammaHttp;
     private HttpClient $clobHttp;
-    private string $gammaEventsEndpoint;
+    private string $marketsEndpoint;
     private string $orderEndpoint;
     private string $apiKey;
     private string $apiSecret;
@@ -23,35 +22,22 @@ class PolymarketClient
             $headers[] = 'X-API-PASSPHRASE: ' . $config['api_passphrase'];
         }
 
-        $this->gammaHttp = new HttpClient($config['gamma_base_url']);
         $this->clobHttp = new HttpClient($config['clob_base_url'], $headers);
-        $this->gammaEventsEndpoint = $config['gamma_events_endpoint'];
+        $this->marketsEndpoint = $config['markets_endpoint'];
         $this->orderEndpoint = $config['order_endpoint'];
         $this->apiKey = $config['api_key'];
         $this->apiSecret = $config['api_secret'];
         $this->apiPassphrase = $config['api_passphrase'];
     }
 
-    public function fetchEventBySlug(string $slug): array
+    public function fetchMarketBySlug(string $slug): array
     {
-        return $this->gammaHttp->get($this->gammaEventsEndpoint, [
-            'limit' => 1,
-            'active' => 'true',
-            'archived' => 'false',
-            'closed' => 'false',
-            'slug' => $slug,
-        ]);
+        return $this->clobHttp->get($this->marketsEndpoint, ['slug' => $slug]);
     }
 
-    public function fetchLatestEvent(string $tagSlug, int $limit = 1): array
+    public function fetchMarketById(string $marketId): array
     {
-        return $this->gammaHttp->get($this->gammaEventsEndpoint, [
-            'limit' => $limit,
-            'active' => 'true',
-            'archived' => 'false',
-            'closed' => 'false',
-            'tag_slug' => $tagSlug,
-        ]);
+        return $this->clobHttp->get($this->marketsEndpoint . '/' . urlencode($marketId));
     }
 
     public function placeOrder(array $payload): array

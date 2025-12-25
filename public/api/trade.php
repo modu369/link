@@ -8,10 +8,8 @@ $outcome = $payload['outcome'] ?? 'up';
 $size = isset($payload['size']) ? (float) $payload['size'] : $config['polymarket']['order_size'];
 $price = isset($payload['price']) ? (float) $payload['price'] : null;
 $eventSlug = $payload['slug'] ?? $config['polymarket']['event_slug'];
-$tagSlug = $config['polymarket']['gamma_default_tag'];
-$limit = $config['polymarket']['gamma_default_limit'];
 
-$snapshotResponse = $marketService->fetchMarketSnapshot($eventSlug !== '' ? $eventSlug : null, $tagSlug, $limit);
+$snapshotResponse = $marketService->fetchMarketSnapshot($eventSlug !== '' ? $eventSlug : null);
 if (!$snapshotResponse['ok']) {
     http_response_code(502);
     echo json_encode($snapshotResponse);

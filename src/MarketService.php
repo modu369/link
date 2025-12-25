@@ -5,45 +5,56 @@ class MarketService
     private PolymarketClient $client;
     private Db $db;
     private PriceFeed $priceFeed;
+    private string $slugPrefix;
+    private int $intervalSeconds;
     private string $upLabel;
     private string $downLabel;
 
-    public function __construct(PolymarketClient $client, Db $db, PriceFeed $priceFeed, string $upLabel, string $downLabel)
+    public function __construct(
+        PolymarketClient $client,
+        Db $db,
+        PriceFeed $priceFeed,
+        string $slugPrefix,
+        int $intervalSeconds,
+        string $upLabel,
+        string $downLabel
+    )
     {
         $this->client = $client;
         $this->db = $db;
         $this->priceFeed = $priceFeed;
+        $this->slugPrefix = $slugPrefix;
+        $this->intervalSeconds = $intervalSeconds;
         $this->upLabel = $upLabel;
         $this->downLabel = $downLabel;
     }
 
-    public function fetchMarketSnapshot(?string $eventSlug, string $tagSlug, int $limit): array
+    public function fetchMarketSnapshot(?string $eventSlug): array
     {
-        $eventResponse = $eventSlug
-            ? $this->client->fetchEventBySlug($eventSlug)
-            : $this->client->fetchLatestEvent($tagSlug, $limit);
-        if (!$eventResponse['ok']) {
+        $resolvedSlug = $this->resolveEventSlug($eventSlug);
+        $marketResponse = $this->client->fetchMarketBySlug($resolvedSlug);
+        if (!$marketResponse['ok']) {
             return [
                 'ok' => false,
-                'error' => $eventResponse['error'] ?? 'Failed to load event',
-                'details' => $eventResponse,
+                'error' => $marketResponse['error'] ?? 'Failed to load market',
+                'details' => $marketResponse,
             ];
         }
 
-        $eventData = $this->extractEvent($eventResponse['data']);
-        if ($eventData === null) {
+        $marketData = $this->extractMarket($marketResponse['data']);
+        if ($marketData === null) {
             return [
                 'ok' => false,
-                'error' => 'Event not found for slug',
-                'details' => $eventResponse['data'],
+                'error' => 'Market not found for slug',
+                'details' => $marketResponse['data'],
             ];
         }
 
-        $marketData = $eventData['market'];
         $priceResponse = $this->priceFeed->fetchCurrentPrice();
         $currentPrice = $priceResponse['ok'] ? $priceResponse['price'] : null;
-        $openingPrice = $this->resolveOpeningPrice($eventData['id'], $currentPrice);
-        $snapshot = $this->buildSnapshot($eventData, $marketData);
+        $eventWindow = $this->buildEventWindow($resolvedSlug);
+        $openingPrice = $this->resolveOpeningPrice($eventWindow['event_id'], $currentPrice);
+        $snapshot = $this->buildSnapshot($eventWindow, $marketData);
         $snapshot['current_price'] = $currentPrice;
         $snapshot['opening_price'] = $openingPrice;
         $snapshot['price_to_beat'] = $openingPrice;
@@ -52,27 +63,13 @@ class MarketService
         return ['ok' => true, 'data' => $snapshot];
     }
 
-    private function extractEvent(array $payload): ?array
+    private function extractMarket(array $payload): ?array
     {
-        $event = $payload['event'] ?? null;
-        if (!$event && isset($payload['data'][0])) {
-            $event = $payload['data'][0];
-        }
-        if (!$event) {
-            return null;
+        if (isset($payload['data']) && is_array($payload['data']) && isset($payload['data'][0])) {
+            return $payload['data'][0];
         }
 
-        $market = $event['markets'][0] ?? null;
-        return [
-            'id' => (string) ($event['id'] ?? ''),
-            'slug' => (string) ($event['slug'] ?? ''),
-            'market_id' => (string) ($market['id'] ?? ''),
-            'title' => (string) ($event['title'] ?? ''),
-            'open_time' => (string) ($event['eventStartTime'] ?? ($event['startTime'] ?? ($event['startDate'] ?? ''))),
-            'close_time' => (string) ($event['endDate'] ?? ($event['endTime'] ?? '')),
-            'opening_price' => null,
-            'market' => $market ?? [],
-        ];
+        return $payload ?: null;
     }
 
     private function buildSnapshot(array $event, array $market): array
@@ -86,7 +83,7 @@ class MarketService
             'event_id' => $event['id'],
             'event_slug' => $event['slug'],
             'event_title' => $event['title'],
-            'market_id' => (string) ($event['market_id'] ?? ''),
+            'market_id' => (string) ($market['id'] ?? ''),
             'open_time' => $event['open_time'],
             'close_time' => $event['close_time'],
             'opening_price' => $event['opening_price'],
@@ -115,6 +112,43 @@ class MarketService
             if (strcasecmp((string) $name, $label) === 0 && isset($prices[$index])) {
                 return (float) $prices[$index];
             }
+        }
+
+        return null;
+    }
+
+    private function resolveEventSlug(?string $eventSlug): string
+    {
+        if ($eventSlug !== null && $eventSlug !== '') {
+            return $eventSlug;
+        }
+
+        $interval = max(60, $this->intervalSeconds);
+        $timestamp = intdiv(time(), $interval) * $interval;
+
+        return $this->slugPrefix . $timestamp;
+    }
+
+    private function buildEventWindow(string $slug): array
+    {
+        $timestamp = $this->extractTimestampFromSlug($slug);
+        $start = $timestamp ?? (intdiv(time(), $this->intervalSeconds) * $this->intervalSeconds);
+        $end = $start + $this->intervalSeconds;
+
+        return [
+            'id' => $slug,
+            'slug' => $slug,
+            'title' => 'Bitcoin Up or Down - ' . gmdate('M j, g:iA', $start) . ' - ' . gmdate('g:iA', $end) . ' UTC',
+            'open_time' => gmdate('c', $start),
+            'close_time' => gmdate('c', $end),
+            'opening_price' => null,
+        ];
+    }
+
+    private function extractTimestampFromSlug(string $slug): ?int
+    {
+        if (preg_match('/(\\d{10})$/', $slug, $matches)) {
+            return (int) $matches[1];
         }
 
         return null;
