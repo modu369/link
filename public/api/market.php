@@ -12,14 +12,18 @@ try {
     $roundService = new RoundService();
     $round = $roundService->getCurrentRound();
 
+    $config = require __DIR__ . '/../../src/Config.php';
+
     echo json_encode([
         'event_title' => $round['event_title'],
         'open_time' => $round['open_time'],
         'close_time' => $round['close_time'],
         'open_price' => $round['open_price'],
-        'current_price' => $round['current_price'],
-        'up_position' => $round['up_position'],
-        'down_position' => $round['down_position'],
+        'event_slug' => $config['polymarket']['event_slug'],
+        'ws_live_url' => $config['polymarket']['ws_live_url'],
+        'ws_market_url' => $config['polymarket']['ws_market_url'],
+        'up_asset_id' => $config['polymarket']['up_asset_id'],
+        'down_asset_id' => $config['polymarket']['down_asset_id'],
         'server_time' => (new DateTimeImmutable())->format('Y-m-d H:i:s'),
     ]);
 } catch (Throwable $exception) {

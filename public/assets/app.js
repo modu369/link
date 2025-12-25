@@ -6,9 +6,17 @@ const openTimeEl = document.getElementById('openTime');
 const closeTimeEl = document.getElementById('closeTime');
 const eventTitleEl = document.getElementById('eventTitle');
 const countdownEl = document.getElementById('countdown');
+const openPriceEl = document.getElementById('openPrice');
 
 let latestCloseTime = null;
 let latestServerTime = null;
+let wsLive = null;
+let wsMarket = null;
+let upAssetId = null;
+let downAssetId = null;
+let latestCurrentPrice = null;
+let latestUpPrice = null;
+let latestDownPrice = null;
 
 function formatCountdown(seconds) {
     if (seconds <= 0 || Number.isNaN(seconds)) {
@@ -52,14 +60,19 @@ async function loadMarket() {
         if (closeTimeEl) {
             closeTimeEl.textContent = data.close_time;
         }
+        if (openPriceEl) {
+            openPriceEl.textContent = Number(data.open_price).toFixed(2);
+        }
 
-        priceEl.textContent = Number(data.current_price).toFixed(2);
-        upEl.textContent = `${Number(data.up_position).toFixed(2)}¢`;
-        downEl.textContent = `${Number(data.down_position).toFixed(2)}¢`;
+        upAssetId = data.up_asset_id || upAssetId;
+        downAssetId = data.down_asset_id || downAssetId;
 
-        const delta = data.current_price - data.open_price;
-        const direction = delta >= 0 ? '上涨' : '下跌';
-        signalEl.textContent = `当前价格${direction} ${Math.abs(delta).toFixed(2)}，UP ${data.up_position}¢ / DOWN ${data.down_position}¢`;
+        if (!wsLive && data.ws_live_url) {
+            connectLivePrice(data.ws_live_url);
+        }
+        if (!wsMarket && data.ws_market_url && (upAssetId || downAssetId)) {
+            connectMarketPrices(data.ws_market_url);
+        }
 
         latestCloseTime = data.close_time;
         latestServerTime = data.server_time;
@@ -69,6 +82,98 @@ async function loadMarket() {
     }
 }
 
+function connectLivePrice(url) {
+    wsLive = new WebSocket(url);
+    wsLive.onopen = () => {
+        wsLive.send(JSON.stringify({
+            action: 'subscribe',
+            subscriptions: [{
+                topic: 'crypto_prices_chainlink',
+                type: 'update',
+                filters: JSON.stringify({ symbol: 'btc/usd' }),
+            }],
+        }));
+    };
+    wsLive.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.topic !== 'crypto_prices_chainlink' || data.type !== 'update') {
+                return;
+            }
+            const rawValue = data.payload?.full_accuracy_value;
+            if (!rawValue) {
+                return;
+            }
+            const price = Number(rawValue) / 1e18;
+            latestCurrentPrice = price;
+            priceEl.textContent = price.toFixed(2);
+            updateSignal();
+        } catch (error) {
+            // ignore parse errors
+        }
+    };
+    wsLive.onclose = () => {
+        wsLive = null;
+        setTimeout(() => connectLivePrice(url), 1000);
+    };
+}
+
+function connectMarketPrices(url) {
+    wsMarket = new WebSocket(url);
+    wsMarket.onopen = () => {
+        const assetIds = [upAssetId, downAssetId].filter(Boolean);
+        wsMarket.send(JSON.stringify({
+            assets_ids: assetIds,
+            type: 'market',
+        }));
+    };
+    wsMarket.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.event_type !== 'price_change') {
+                return;
+            }
+            const changes = data.price_changes || [];
+            changes.forEach((change) => {
+                if (change.asset_id === upAssetId && change.price) {
+                    latestUpPrice = Number(change.price) * 100;
+                }
+                if (change.asset_id === downAssetId && change.price) {
+                    latestDownPrice = Number(change.price) * 100;
+                }
+            });
+            if (latestUpPrice !== null) {
+                upEl.textContent = `${latestUpPrice.toFixed(2)}¢`;
+            }
+            if (latestDownPrice !== null) {
+                downEl.textContent = `${latestDownPrice.toFixed(2)}¢`;
+            }
+            updateSignal();
+        } catch (error) {
+            // ignore parse errors
+        }
+    };
+    wsMarket.onclose = () => {
+        wsMarket = null;
+        setTimeout(() => connectMarketPrices(url), 1000);
+    };
+}
+
+function updateSignal() {
+    if (latestCurrentPrice === null || !openPriceEl) {
+        return;
+    }
+    const openPrice = Number(openPriceEl.textContent.replace(/,/g, '')) || null;
+    if (!openPrice) {
+        return;
+    }
+    const delta = latestCurrentPrice - openPrice;
+    const direction = delta >= 0 ? '上涨' : '下跌';
+    const upText = latestUpPrice !== null ? `${latestUpPrice.toFixed(2)}¢` : '--';
+    const downText = latestDownPrice !== null ? `${latestDownPrice.toFixed(2)}¢` : '--';
+    signalEl.textContent = `当前价格${direction} ${Math.abs(delta).toFixed(2)}，UP ${upText} / DOWN ${downText}`;
+}
+
 loadMarket();
-setInterval(loadMarket, 500);
+setInterval(loadMarket, 5000);
 setInterval(updateCountdown, 1000);
