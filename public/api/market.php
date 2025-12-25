@@ -23,10 +23,10 @@ try {
         'up_position' => $round['up_position'],
         'down_position' => $round['down_position'],
         'event_slug' => $round['event_slug'],
-        'ws_live_url' => $config['polymarket']['ws_live_url'],
-        'ws_market_url' => $config['polymarket']['ws_market_url'],
-        'up_asset_id' => $config['polymarket']['up_asset_id'],
-        'down_asset_id' => $config['polymarket']['down_asset_id'],
+        'ws_live_url' => null,
+        'ws_market_url' => null,
+        'up_asset_id' => null,
+        'down_asset_id' => null,
         'server_time' => (new DateTimeImmutable())->format('Y-m-d H:i:s'),
     ]);
 } catch (Throwable $exception) {

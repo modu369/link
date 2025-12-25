@@ -10,13 +10,12 @@ const openPriceEl = document.getElementById('openPrice');
 
 let latestCloseTime = null;
 let latestServerTime = null;
-let wsLive = null;
-let wsMarket = null;
 let upAssetId = null;
 let downAssetId = null;
 let latestCurrentPrice = null;
 let latestUpPrice = null;
 let latestDownPrice = null;
+let realtimeTimer = null;
 
 function formatCountdown(seconds) {
     if (seconds <= 0 || Number.isNaN(seconds)) {
@@ -83,11 +82,8 @@ async function loadMarket() {
         }
         updateSignal();
 
-        if (!wsLive && data.ws_live_url) {
-            connectLivePrice(data.ws_live_url);
-        }
-        if (!wsMarket && data.ws_market_url) {
-            connectMarketPrices(data.ws_market_url);
+        if (!realtimeTimer) {
+            realtimeTimer = setInterval(loadRealtime, 500);
         }
 
         latestCloseTime = data.close_time;
@@ -98,81 +94,26 @@ async function loadMarket() {
     }
 }
 
-function connectLivePrice(url) {
-    wsLive = new WebSocket(url);
-    wsLive.onopen = () => {
-        wsLive.send(JSON.stringify({
-            action: 'subscribe',
-            subscriptions: [{
-                topic: 'crypto_prices_chainlink',
-                type: 'update',
-                filters: JSON.stringify({ symbol: 'btc/usd' }),
-            }],
-        }));
-    };
-    wsLive.onmessage = (event) => {
-        try {
-            const data = JSON.parse(event.data);
-            if (data.topic !== 'crypto_prices_chainlink' || data.type !== 'update') {
-                return;
-            }
-            const rawValue = data.payload?.full_accuracy_value;
-            if (!rawValue) {
-                return;
-            }
-            const price = Number(rawValue) / 1e18;
-            latestCurrentPrice = price;
-            priceEl.textContent = price.toFixed(2);
-            updateSignal();
-        } catch (error) {
-            // ignore parse errors
+async function loadRealtime() {
+    try {
+        const response = await fetch('/api/realtime.php', { cache: 'no-store' });
+        const data = await response.json();
+        if (Number.isFinite(Number(data.current_price))) {
+            latestCurrentPrice = Number(data.current_price);
+            priceEl.textContent = latestCurrentPrice.toFixed(2);
         }
-    };
-    wsLive.onclose = () => {
-        wsLive = null;
-        setTimeout(() => connectLivePrice(url), 1000);
-    };
-}
-
-function connectMarketPrices(url) {
-    wsMarket = new WebSocket(url);
-    wsMarket.onopen = () => {
-        const assetIds = [upAssetId, downAssetId].filter(Boolean);
-        wsMarket.send(JSON.stringify({
-            assets_ids: assetIds,
-            type: 'market',
-        }));
-    };
-    wsMarket.onmessage = (event) => {
-        try {
-            const data = JSON.parse(event.data);
-            if (data.event_type !== 'price_change') {
-                return;
-            }
-            const changes = data.price_changes || [];
-            changes.forEach((change) => {
-                if (change.asset_id === upAssetId && change.price) {
-                    latestUpPrice = Number(change.price) * 100;
-                }
-                if (change.asset_id === downAssetId && change.price) {
-                    latestDownPrice = Number(change.price) * 100;
-                }
-            });
-            if (latestUpPrice !== null) {
-                upEl.textContent = `${latestUpPrice.toFixed(2)}¢`;
-            }
-            if (latestDownPrice !== null) {
-                downEl.textContent = `${latestDownPrice.toFixed(2)}¢`;
-            }
-            updateSignal();
-        } catch (error) {
-            // ignore parse errors
+        if (Number.isFinite(Number(data.up_position))) {
+            latestUpPrice = Number(data.up_position);
+            upEl.textContent = `${latestUpPrice.toFixed(2)}¢`;
         }
-    };
-    wsMarket.onclose = () => {
-        wsMarket = null;
-        setTimeout(() => connectMarketPrices(url), 1000);
-    };
+        if (Number.isFinite(Number(data.down_position))) {
+            latestDownPrice = Number(data.down_position);
+            downEl.textContent = `${latestDownPrice.toFixed(2)}¢`;
+        }
+        updateSignal();
+    } catch (error) {
+        // ignore realtime fetch errors
+    }
 }
 
 function updateSignal() {
