@@ -5,9 +5,9 @@ require __DIR__ . '/../src/Tracker.php';
 
 $config = require __DIR__ . '/../config/config.php';
 
-$options = getopt('', ['days::', 'pageviews-days::', 'help']);
+$options = getopt('', ['days::', 'pageviews-days::', 'batch-size::', 'help']);
 if (isset($options['help'])) {
-    echo "Usage: php cli/cleanup_retention.php [--days=90] [--pageviews-days=30]\n";
+    echo "Usage: php cli/cleanup_retention.php [--days=90] [--pageviews-days=30] [--batch-size=50000]\n";
     echo "If arguments are omitted, configured retention settings are used.\n";
     exit(0);
 }
@@ -26,11 +26,12 @@ $rollupDays = isset($options['days']) ? max(0, (int) $options['days']) : (int) (
 $pageviewsDays = isset($options['pageviews-days'])
     ? max(0, (int) $options['pageviews-days'])
     : (int) ($retention['pageviews_days'] ?? 0);
+$batchSize = isset($options['batch-size']) ? max(1000, (int) $options['batch-size']) : null;
 
 if ($rollupDays <= 0 && $pageviewsDays <= 0) {
     echo "No retention days configured; nothing to clean.\n";
     exit(0);
 }
 
-$tracker->manualCleanup($rollupDays, $pageviewsDays);
+$tracker->manualCleanup($rollupDays, $pageviewsDays, $batchSize);
 echo "Cleanup completed. Rollups: {$rollupDays} days, Pageviews: {$pageviewsDays} days.\n";

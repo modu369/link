@@ -3854,17 +3854,19 @@ class Tracker
         return $payload;
     }
 
-    public function manualCleanup(int $days, ?int $pageviewsDays = null): void
+    public function manualCleanup(int $days, ?int $pageviewsDays = null, ?int $batchSize = null): void
     {
         $pageviewsDays = $pageviewsDays === null ? $days : max(0, $pageviewsDays);
-        $this->cleanupDataOlderThan($days, $pageviewsDays);
+        $this->cleanupDataOlderThan($days, $pageviewsDays, $batchSize);
     }
 
-    private function cleanupDataOlderThan(int $rollupDays, int $pageviewsDays): void
+    private function cleanupDataOlderThan(int $rollupDays, int $pageviewsDays, ?int $batchSize = null): void
     {
         if ($rollupDays <= 0 && $pageviewsDays <= 0) {
             return;
         }
+
+        $batchSize = $batchSize && $batchSize > 0 ? $batchSize : 50000;
 
         if ($rollupDays > 0) {
             $rollupCutoffPoint = (new \DateTimeImmutable('now'))->modify("-{$rollupDays} days");
@@ -3872,20 +3874,35 @@ class Tracker
             $rollupCutoffDate = $rollupCutoffPoint->format('Y-m-d');
 
             // Rollup tables are small enough to delete in a single pass while still using time indexes.
-            $rollupStmt = $this->db->prepare('DELETE FROM pageview_rollups WHERE bucket_start < :cutoff');
-            $rollupStmt->execute([':cutoff' => $rollupCutoff]);
+            $this->deleteBatched(
+                'DELETE FROM pageview_rollups WHERE bucket_start < :cutoff LIMIT :batch',
+                [':cutoff' => $rollupCutoff],
+                $batchSize
+            );
 
-            $dimRollupStmt = $this->db->prepare('DELETE FROM pageview_dimension_rollups WHERE bucket_start < :cutoff');
-            $dimRollupStmt->execute([':cutoff' => $rollupCutoff]);
+            $this->deleteBatched(
+                'DELETE FROM pageview_dimension_rollups WHERE bucket_start < :cutoff LIMIT :batch',
+                [':cutoff' => $rollupCutoff],
+                $batchSize
+            );
 
-            $pageRollupStmt = $this->db->prepare('DELETE FROM pageview_page_rollups WHERE bucket_start < :cutoff');
-            $pageRollupStmt->execute([':cutoff' => $rollupCutoff]);
+            $this->deleteBatched(
+                'DELETE FROM pageview_page_rollups WHERE bucket_start < :cutoff LIMIT :batch',
+                [':cutoff' => $rollupCutoff],
+                $batchSize
+            );
 
-            $entryRollupStmt = $this->db->prepare('DELETE FROM pageview_entry_rollups WHERE bucket_start < :cutoff');
-            $entryRollupStmt->execute([':cutoff' => $rollupCutoff]);
+            $this->deleteBatched(
+                'DELETE FROM pageview_entry_rollups WHERE bucket_start < :cutoff LIMIT :batch',
+                [':cutoff' => $rollupCutoff],
+                $batchSize
+            );
 
-            $audienceStmt = $this->db->prepare('DELETE FROM site_ip_audience WHERE last_seen_date < :cutoff_date');
-            $audienceStmt->execute([':cutoff_date' => $rollupCutoffDate]);
+            $this->deleteBatched(
+                'DELETE FROM site_ip_audience WHERE last_seen_date < :cutoff_date LIMIT :batch',
+                [':cutoff_date' => $rollupCutoffDate],
+                $batchSize
+            );
         }
 
         if ($pageviewsDays > 0) {
@@ -3893,15 +3910,11 @@ class Tracker
             $pageviewsCutoff = $pageviewsCutoffPoint->format('Y-m-d H:i:s');
 
             // Pageviews can be very large; delete in batches to limit lock time and reduce replication lag.
-            $batchSize = 50000;
-            $pageviewStmt = $this->db->prepare('DELETE FROM pageviews WHERE occurred_at < :cutoff LIMIT :batch');
-            $pageviewStmt->bindValue(':cutoff', $pageviewsCutoff);
-            $pageviewStmt->bindValue(':batch', $batchSize, PDO::PARAM_INT);
-
-            do {
-                $pageviewStmt->execute();
-                $deleted = $pageviewStmt->rowCount();
-            } while ($deleted === $batchSize);
+            $this->deleteBatched(
+                'DELETE FROM pageviews WHERE occurred_at < :cutoff LIMIT :batch',
+                [':cutoff' => $pageviewsCutoff],
+                $batchSize
+            );
         }
     }
 
@@ -4103,5 +4116,19 @@ class Tracker
             }
         }
         return $filtered;
+    }
+
+    private function deleteBatched(string $sql, array $params, int $batchSize): void
+    {
+        $statement = $this->db->prepare($sql);
+        foreach ($params as $key => $value) {
+            $statement->bindValue($key, $value);
+        }
+        $statement->bindValue(':batch', $batchSize, PDO::PARAM_INT);
+
+        do {
+            $statement->execute();
+            $deleted = $statement->rowCount();
+        } while ($deleted === $batchSize);
     }
 }
