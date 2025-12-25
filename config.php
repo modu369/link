@@ -2,7 +2,7 @@
 
 return [
     'app' => [
-        'timezone' => getenv('APP_TIMEZONE') ?: 'UTC',
+        'timezone' => getenv('APP_TIMEZONE') ?: 'America/New_York',
         'poll_interval_ms' => (int) (getenv('APP_POLL_INTERVAL_MS') ?: 1000),
     ],
     'db' => [

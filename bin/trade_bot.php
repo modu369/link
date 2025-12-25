@@ -3,7 +3,7 @@
 require_once __DIR__ . '/../src/bootstrap.php';
 
 $eventSlug = $config['polymarket']['event_slug'];
-$snapshotResponse = $marketService->fetchMarketSnapshot($eventSlug !== '' ? $eventSlug : null);
+$snapshotResponse = $marketService->fetchMarketSnapshot($eventSlug !== '' ? $eventSlug : null, false);
 if (!$snapshotResponse['ok']) {
     fwrite(STDERR, "Failed to fetch market snapshot: " . json_encode($snapshotResponse) . "\n");
     exit(1);

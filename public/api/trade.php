@@ -9,7 +9,7 @@ $size = isset($payload['size']) ? (float) $payload['size'] : $config['polymarket
 $price = isset($payload['price']) ? (float) $payload['price'] : null;
 $eventSlug = $payload['slug'] ?? $config['polymarket']['event_slug'];
 
-$snapshotResponse = $marketService->fetchMarketSnapshot($eventSlug !== '' ? $eventSlug : null);
+$snapshotResponse = $marketService->fetchMarketSnapshot($eventSlug !== '' ? $eventSlug : null, false);
 if (!$snapshotResponse['ok']) {
     http_response_code(502);
     echo json_encode($snapshotResponse);

@@ -25,7 +25,8 @@ function resolveEventSlug(array $config): string
 
 $eventSlug = resolveEventSlug($config);
 
-$snapshot = $marketService->fetchMarketSnapshot($eventSlug !== '' ? $eventSlug : null);
+$includeRaw = isset($_GET['raw']) && $_GET['raw'] === '1';
+$snapshot = $marketService->fetchMarketSnapshot($eventSlug !== '' ? $eventSlug : null, $includeRaw);
 header('Content-Type: application/json; charset=utf-8');
 
 echo json_encode($snapshot, JSON_UNESCAPED_SLASHES);

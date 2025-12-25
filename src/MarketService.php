@@ -7,6 +7,7 @@ class MarketService
     private PriceFeed $priceFeed;
     private string $slugPrefix;
     private int $intervalSeconds;
+    private string $timezone;
     private string $upLabel;
     private string $downLabel;
 
@@ -16,6 +17,7 @@ class MarketService
         PriceFeed $priceFeed,
         string $slugPrefix,
         int $intervalSeconds,
+        string $timezone,
         string $upLabel,
         string $downLabel
     )
@@ -25,11 +27,12 @@ class MarketService
         $this->priceFeed = $priceFeed;
         $this->slugPrefix = $slugPrefix;
         $this->intervalSeconds = $intervalSeconds;
+        $this->timezone = $timezone;
         $this->upLabel = $upLabel;
         $this->downLabel = $downLabel;
     }
 
-    public function fetchMarketSnapshot(?string $eventSlug): array
+    public function fetchMarketSnapshot(?string $eventSlug, bool $includeRaw = false): array
     {
         $resolvedSlug = $this->resolveEventSlug($eventSlug);
         $marketResponse = $this->client->fetchMarketBySlug($resolvedSlug);
@@ -59,6 +62,10 @@ class MarketService
         $snapshot['current_price'] = $currentPrice;
         $snapshot['opening_price'] = $openingPrice;
         $snapshot['price_to_beat'] = $openingPrice;
+        if ($includeRaw) {
+            $snapshot['market_raw'] = $marketResponse['data'];
+            $snapshot['price_raw'] = $priceResponse['raw'] ?? null;
+        }
         $this->storeSnapshot($snapshot);
 
         return ['ok' => true, 'data' => $snapshot];
@@ -66,6 +73,10 @@ class MarketService
 
     private function extractMarket(array $payload): ?array
     {
+        if (isset($payload['market']) && is_array($payload['market'])) {
+            return $payload['market'];
+        }
+
         if (isset($payload['data']) && is_array($payload['data']) && isset($payload['data'][0])) {
             return $payload['data'][0];
         }
@@ -135,13 +146,18 @@ class MarketService
         $timestamp = $this->extractTimestampFromSlug($slug);
         $start = $timestamp ?? (intdiv(time(), $this->intervalSeconds) * $this->intervalSeconds);
         $end = $start + $this->intervalSeconds;
+        $timezone = new DateTimeZone($this->timezone);
+        $startLocal = (new DateTimeImmutable('@' . $start))->setTimezone($timezone);
+        $endLocal = (new DateTimeImmutable('@' . $end))->setTimezone($timezone);
+        $dateLabel = $startLocal->format('F j');
+        $timeLabel = $startLocal->format('g:iA') . '-' . $endLocal->format('g:iA') . ' ' . $startLocal->format('T');
 
         return [
             'id' => $slug,
             'slug' => $slug,
-            'title' => 'Bitcoin Up or Down - ' . gmdate('M j, g:iA', $start) . ' - ' . gmdate('g:iA', $end) . ' UTC',
-            'open_time' => gmdate('c', $start),
-            'close_time' => gmdate('c', $end),
+            'title' => 'Bitcoin Up or Down - ' . $dateLabel . ', ' . $timeLabel,
+            'open_time' => $startLocal->format('Y-m-d H:i:s T'),
+            'close_time' => $endLocal->format('Y-m-d H:i:s T'),
             'opening_price' => null,
         ];
     }

@@ -21,6 +21,7 @@ $marketService = new MarketService(
     $priceFeed,
     $config['polymarket']['event_slug_prefix'],
     $config['polymarket']['event_interval_seconds'],
+    $config['app']['timezone'],
     $config['polymarket']['up_label'],
     $config['polymarket']['down_label']
 );
