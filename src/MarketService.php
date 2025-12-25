@@ -53,6 +53,17 @@ class MarketService
             ];
         }
 
+        $marketId = (string) ($marketData['id'] ?? '');
+        if ($marketId !== '' && ($marketData['outcomes'] ?? null) === null && ($marketData['outcomePrices'] ?? null) === null) {
+            $marketById = $this->client->fetchMarketById($marketId);
+            if ($marketById['ok']) {
+                $detailed = $this->extractMarket($marketById['data']);
+                if (is_array($detailed)) {
+                    $marketData = array_merge($marketData, $detailed);
+                }
+            }
+        }
+
         $priceResponse = $this->priceFeed->fetchCurrentPrice();
         $currentPrice = $priceResponse['ok'] ? $priceResponse['price'] : null;
         $eventWindow = $this->buildEventWindow($resolvedSlug);
@@ -65,6 +76,7 @@ class MarketService
         if ($includeRaw) {
             $snapshot['market_raw'] = $marketResponse['data'];
             $snapshot['price_raw'] = $priceResponse['raw'] ?? null;
+            $snapshot['price_error'] = $priceResponse['ok'] ? null : ($priceResponse['error'] ?? 'Price feed unavailable');
         }
         $this->storeSnapshot($snapshot);
 
@@ -81,7 +93,11 @@ class MarketService
             return $payload['data'][0];
         }
 
-        return $payload ?: null;
+        if (!is_array($payload) || $payload === []) {
+            return null;
+        }
+
+        return $payload;
     }
 
     private function buildSnapshot(array $event, array $market): array
@@ -94,7 +110,7 @@ class MarketService
         return [
             'event_id' => $event['id'],
             'event_slug' => $event['slug'],
-            'event_title' => $event['title'],
+            'event_title' => $event['title'] !== '' ? $event['title'] : (string) ($market['question'] ?? ($market['title'] ?? '')),
             'market_id' => (string) ($market['id'] ?? ''),
             'open_time' => $event['open_time'],
             'close_time' => $event['close_time'],

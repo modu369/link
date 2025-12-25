@@ -21,6 +21,7 @@ class PriceFeed
                 'ok' => false,
                 'status' => $response['status'] ?? 0,
                 'error' => $response['error'] ?? 'Failed to fetch price feed',
+                'raw' => $response['raw'] ?? null,
             ];
         }
 

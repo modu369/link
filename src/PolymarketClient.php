@@ -32,7 +32,15 @@ class PolymarketClient
 
     public function fetchMarketBySlug(string $slug): array
     {
-        return $this->clobHttp->get($this->marketsEndpoint, ['slug' => $slug]);
+        $response = $this->clobHttp->get($this->marketsEndpoint, ['slug' => $slug]);
+        if ($response['ok'] && isset($response['data']['data']) && $response['data']['data'] === []) {
+            return $this->clobHttp->get($this->marketsEndpoint, [
+                'query' => $slug,
+                'limit' => 1,
+            ]);
+        }
+
+        return $response;
     }
 
     public function fetchMarketById(string $marketId): array
