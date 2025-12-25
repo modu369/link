@@ -1,12 +1,12 @@
 <?php
 
-require __DIR__ . '/../src/Database.php';
-require __DIR__ . '/../src/MarketDataService.php';
-require __DIR__ . '/../src/PolymarketApiClient.php';
-require __DIR__ . '/../src/RoundService.php';
-require __DIR__ . '/../src/AccountService.php';
-require __DIR__ . '/../src/RuleService.php';
-require __DIR__ . '/../src/TradeService.php';
+require_once __DIR__ . '/../src/Database.php';
+require_once __DIR__ . '/../src/MarketDataService.php';
+require_once __DIR__ . '/../src/PolymarketApiClient.php';
+require_once __DIR__ . '/../src/RoundService.php';
+require_once __DIR__ . '/../src/AccountService.php';
+require_once __DIR__ . '/../src/RuleService.php';
+require_once __DIR__ . '/../src/TradeService.php';
 
 $accountService = new AccountService();
 $ruleService = new RuleService();

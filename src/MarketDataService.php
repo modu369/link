@@ -46,7 +46,25 @@ class MarketDataService
             $market['start_price'] ?? null,
         ]);
 
-        $currentPrice = $this->priceService->fetchCurrentPrice();
+        $currentPrice = $this->extractNumber([
+            $market['currentPrice'] ?? null,
+            $market['current_price'] ?? null,
+            $market['indexPrice'] ?? null,
+            $market['index_price'] ?? null,
+            $market['lastPrice'] ?? null,
+            $market['last_price'] ?? null,
+            $market['lastTradePrice'] ?? null,
+            $market['last_trade_price'] ?? null,
+            $market['spotPrice'] ?? null,
+            $market['spot_price'] ?? null,
+            $market['referencePrice'] ?? null,
+            $market['reference_price'] ?? null,
+            $event['currentPrice'] ?? null,
+            $event['current_price'] ?? null,
+        ]);
+        if ($currentPrice === null) {
+            $currentPrice = $this->priceService->fetchCurrentPrice();
+        }
 
         $outcomePrices = $this->extractOutcomePrices($market);
         $upPrice = $outcomePrices['up'] ?? null;
@@ -130,6 +148,10 @@ class MarketDataService
     {
         $outcomes = $market['outcomes'] ?? $market['outcomeNames'] ?? $market['outcome_names'] ?? null;
         $prices = $market['outcomePrices'] ?? $market['outcome_prices'] ?? $market['prices'] ?? null;
+        if ($outcomes === null && isset($market['yesPrice'], $market['noPrice'])) {
+            $outcomes = ['Yes', 'No'];
+            $prices = [$market['yesPrice'], $market['noPrice']];
+        }
 
         if (is_string($outcomes)) {
             $outcomes = json_decode($outcomes, true);

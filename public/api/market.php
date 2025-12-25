@@ -1,9 +1,9 @@
 <?php
 
-require __DIR__ . '/../../src/Database.php';
-require __DIR__ . '/../../src/MarketDataService.php';
-require __DIR__ . '/../../src/PolymarketApiClient.php';
-require __DIR__ . '/../../src/RoundService.php';
+require_once __DIR__ . '/../../src/Database.php';
+require_once __DIR__ . '/../../src/MarketDataService.php';
+require_once __DIR__ . '/../../src/PolymarketApiClient.php';
+require_once __DIR__ . '/../../src/RoundService.php';
 
 header('Content-Type: application/json');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
