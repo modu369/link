@@ -40,7 +40,7 @@ return [
     ],
     'ingest' => [
         // 采集模式：direct 直接写库；queue 写入 Redis 队列由后台任务异步入库
-        'mode' => getenv('INGEST_MODE') ?: 'direct',
+        'mode' => getenv('INGEST_MODE') ?: 'queue',
         'queue_key' => getenv('INGEST_QUEUE_KEY') ?: 'tracker:ingest:pageviews',
         // 队列长度上限，防止异常堆积；0 表示不限制
         'max_queue_length' => (int) (getenv('INGEST_QUEUE_MAX') ?: 100000),
