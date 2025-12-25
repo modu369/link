@@ -53,7 +53,8 @@ class MarketService
         $priceResponse = $this->priceFeed->fetchCurrentPrice();
         $currentPrice = $priceResponse['ok'] ? $priceResponse['price'] : null;
         $eventWindow = $this->buildEventWindow($resolvedSlug);
-        $openingPrice = $this->resolveOpeningPrice($eventWindow['event_id'], $currentPrice);
+        $eventId = $eventWindow['id'] ?? $resolvedSlug;
+        $openingPrice = $this->resolveOpeningPrice($eventId, $currentPrice);
         $snapshot = $this->buildSnapshot($eventWindow, $marketData);
         $snapshot['current_price'] = $currentPrice;
         $snapshot['opening_price'] = $openingPrice;
@@ -154,8 +155,12 @@ class MarketService
         return null;
     }
 
-    private function resolveOpeningPrice(string $eventId, ?float $currentPrice): ?float
+    private function resolveOpeningPrice(?string $eventId, ?float $currentPrice): ?float
     {
+        if ($eventId === null || $eventId === '') {
+            return $currentPrice;
+        }
+
         $stmt = $this->db->pdo()->prepare(
             'SELECT opening_price FROM market_snapshots WHERE event_id = :event_id AND opening_price IS NOT NULL ORDER BY id ASC LIMIT 1'
         );
