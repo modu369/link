@@ -12,8 +12,12 @@ $marketCachePath = $config['market']['cache_path'] ?? __DIR__ . '/../storage/mar
 $priceCache = new PriceCache($cachePath);
 $marketCache = new MarketCache($marketCachePath);
 
-$liveClient = new WebSocketClient($config['polymarket']['ws_live_url']);
-$marketClient = new WebSocketClient($config['polymarket']['ws_market_url']);
+$wsHeaders = [
+    'Origin: https://polymarket.com',
+    'User-Agent: Mozilla/5.0 (compatible; PolymarketMonitor/1.0)',
+];
+$liveClient = new WebSocketClient($config['polymarket']['ws_live_url'], $wsHeaders);
+$marketClient = new WebSocketClient($config['polymarket']['ws_market_url'], $wsHeaders);
 
 $liveClient->connect();
 $liveClient->send(json_encode([

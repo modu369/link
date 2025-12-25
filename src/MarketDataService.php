@@ -128,10 +128,8 @@ class MarketDataService
         }
 
         if ($upPrice === null || $downPrice === null) {
-            $priceDelta = $currentPrice - $openPrice;
-            $ratio = $openPrice > 0 ? ($priceDelta / $openPrice) * 100 : 0;
-            $upPrice = max(0, min(100, 50 + $ratio));
-            $downPrice = 100 - $upPrice;
+            $upPrice = $upPrice ?? 0.0;
+            $downPrice = $downPrice ?? 0.0;
         }
 
         return [

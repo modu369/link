@@ -6,13 +6,15 @@ class WebSocketClient
     private int $port;
     private string $path;
     private $socket;
+    private array $headers;
 
-    public function __construct(string $url)
+    public function __construct(string $url, array $headers = [])
     {
         $parts = parse_url($url);
         $this->host = $parts['host'] ?? '';
         $this->port = (int) ($parts['port'] ?? 443);
         $this->path = $parts['path'] ?? '/';
+        $this->headers = $headers;
     }
 
     public function connect(): void
@@ -40,7 +42,7 @@ class WebSocketClient
         stream_set_timeout($this->socket, 5);
 
         $key = base64_encode(random_bytes(16));
-        $headers = [
+        $headers = array_merge([
             'GET ' . $this->path . ' HTTP/1.1',
             'Host: ' . $this->host,
             'Upgrade: websocket',
@@ -48,7 +50,7 @@ class WebSocketClient
             'Sec-WebSocket-Key: ' . $key,
             'Sec-WebSocket-Version: 13',
             'User-Agent: PolymarketMonitor/1.0',
-        ];
+        ], $this->headers);
 
         $request = implode("\r\n", $headers) . "\r\n\r\n";
         fwrite($this->socket, $request);
