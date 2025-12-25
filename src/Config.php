@@ -39,6 +39,9 @@ return [
         'timeout_seconds' => 5,
         'cache_path' => getenv('PRICE_CACHE_PATH') ?: __DIR__ . '/../storage/price.json',
     ],
+    'market' => [
+        'cache_path' => getenv('MARKET_CACHE_PATH') ?: __DIR__ . '/../storage/market.json',
+    ],
     'worker' => [
         'interval_ms' => getenv('WORKER_INTERVAL_MS') ?: 500,
     ],

@@ -85,9 +85,17 @@ try {
         }
     }
 
-    if ($page === 'trades') {
-        $trades = $tradeService->listTrades();
+if ($page === 'trades') {
+    $trades = $tradeService->listTrades();
+}
+
+if ($page === 'logs') {
+    $accountId = (int) ($_GET['account_id'] ?? 0);
+    if ($accountId > 0) {
+        $accounts = [$accountService->getAccount($accountId)];
+        $trades = $tradeService->listTradesForAccountToday($accountId);
     }
+}
 } catch (Throwable $exception) {
     $error = $exception->getMessage();
 }
@@ -114,7 +122,7 @@ try {
     <main class="content">
         <header class="content-header">
             <div>
-                <h1><?= $page === 'dashboard' ? 'Bitcoin Up or Down' : ($page === 'accounts' ? '账户管理' : ($page === 'rules' ? '规则配置' : '交易记录')) ?></h1>
+                <h1><?= $page === 'dashboard' ? 'Bitcoin Up or Down' : ($page === 'accounts' ? '账户管理' : ($page === 'rules' ? '规则配置' : ($page === 'logs' ? '账户日志' : '交易记录'))) ?></h1>
                 <p class="subtitle">Polymarket 实时数据 + 账户自动交易引擎</p>
             </div>
             <div class="status-pill">系统在线</div>
@@ -190,6 +198,7 @@ try {
                                 <td><?= e($account['last_login_at'] ?? '-') ?></td>
                                 <td>
                                     <a class="link" href="/?page=rules&account_id=<?= (int) $account['id'] ?>">规则</a>
+                                    <a class="link" href="/?page=logs&account_id=<?= (int) $account['id'] ?>">日志</a>
                                     <form method="post" class="inline-form" onsubmit="return confirm('确认删除该账户?');">
                                         <input type="hidden" name="action" value="delete_account">
                                         <input type="hidden" name="account_id" value="<?= (int) $account['id'] ?>">
@@ -260,6 +269,38 @@ try {
                     </tbody>
                 </table>
             </section>
+        <?php endif; ?>
+
+        <?php if ($page === 'logs' && $accounts && $accounts[0]): ?>
+            <section class="card full">
+                <h3><?= e($accounts[0]['name']) ?> 今日日志</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>时间</th>
+                            <th>方向</th>
+                            <th>动作</th>
+                            <th>价格</th>
+                            <th>股数</th>
+                            <th>原因</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($trades as $trade): ?>
+                            <tr>
+                                <td><?= e($trade['created_at']) ?></td>
+                                <td><?= e($trade['side']) ?></td>
+                                <td><?= e($trade['action']) ?></td>
+                                <td><?= e(number_format($trade['price'], 2)) ?></td>
+                                <td><?= e($trade['shares']) ?></td>
+                                <td><?= e($trade['reason']) ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </section>
+        <?php elseif ($page === 'logs'): ?>
+            <div class="card">请选择账户查看日志。</div>
         <?php endif; ?>
     </main>
 </div>

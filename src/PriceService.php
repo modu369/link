@@ -10,8 +10,8 @@ class PriceService
             require_once __DIR__ . '/PriceCache.php';
             $cache = new PriceCache($cachePath);
             $cached = $cache->read();
-            if (is_array($cached) && isset($cached['price'])) {
-                return (float) $cached['price'];
+            if (is_array($cached) && isset($cached['current_price'])) {
+                return (float) $cached['current_price'];
             }
         }
 

@@ -1,6 +1,6 @@
 <?php
 
-class PriceCache
+class MarketCache
 {
     private string $path;
 
@@ -28,7 +28,7 @@ class PriceCache
         return $payload;
     }
 
-    public function writeCurrent(float $price, int $timestampMs, int $roundStartMs, float $priceToBeat): void
+    public function write(float $upPrice, float $downPrice, int $timestampMs): void
     {
         $dir = dirname($this->path);
         if (!is_dir($dir)) {
@@ -36,10 +36,9 @@ class PriceCache
         }
 
         $payload = [
-            'current_price' => $price,
-            'current_timestamp_ms' => $timestampMs,
-            'round_start_ms' => $roundStartMs,
-            'price_to_beat' => $priceToBeat,
+            'up_price' => $upPrice,
+            'down_price' => $downPrice,
+            'timestamp_ms' => $timestampMs,
         ];
 
         file_put_contents($this->path, json_encode($payload));

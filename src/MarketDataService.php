@@ -3,6 +3,9 @@
 require_once __DIR__ . '/PriceService.php';
 require_once __DIR__ . '/PolymarketApiClient.php';
 require_once __DIR__ . '/EventPageScraper.php';
+require_once __DIR__ . '/MarketCacheService.php';
+require_once __DIR__ . '/PriceCache.php';
+require_once __DIR__ . '/MarketCache.php';
 
 class MarketDataService
 {
@@ -11,6 +14,7 @@ class MarketDataService
     private PolymarketApiClient $client;
     private PriceService $priceService;
     private EventPageScraper $scraper;
+    private MarketCacheService $cacheService;
 
     public function __construct()
     {
@@ -19,6 +23,7 @@ class MarketDataService
         $this->client = new PolymarketApiClient($this->config['polymarket']);
         $this->priceService = new PriceService();
         $this->scraper = new EventPageScraper();
+        $this->cacheService = new MarketCacheService($this->config);
     }
 
     public function fetchSnapshot(): array
@@ -29,6 +34,9 @@ class MarketDataService
         $event = $event !== [] ? $event : $this->extractEventFromMarket($market);
 
         [$openTime, $closeTime, $roundKey] = $this->resolveRoundTimes($market, $event);
+
+        $cachedPrice = $this->cacheService->readPrice();
+        $cachedMarket = $this->cacheService->readMarket();
 
         $openPrice = $this->extractNumber([
             $event['priceToBeat'] ?? null,
@@ -78,13 +86,16 @@ class MarketDataService
             $event['referencePrice'] ?? null,
             $event['reference_price'] ?? null,
         ]);
+        if ($currentPrice === null && is_array($cachedPrice)) {
+            $currentPrice = $this->extractNumber([$cachedPrice['current_price'] ?? null]);
+        }
         if ($currentPrice === null) {
             $currentPrice = $this->priceService->fetchCurrentPrice();
         }
 
         $outcomePrices = $this->extractOutcomePrices($market);
-        $upPrice = $outcomePrices['up'] ?? null;
-        $downPrice = $outcomePrices['down'] ?? null;
+        $upPrice = $outcomePrices['up'] ?? ($cachedMarket['up_price'] ?? null);
+        $downPrice = $outcomePrices['down'] ?? ($cachedMarket['down_price'] ?? null);
 
         if ($openPrice === null || $currentPrice === null || $upPrice === null || $downPrice === null) {
             $html = $this->client->fetchEventPageHtml($eventSlug);
@@ -97,6 +108,10 @@ class MarketDataService
                     $downPrice = $htmlPrices['down_price'] ?? $downPrice;
                 }
             }
+        }
+
+        if ($openPrice === null && is_array($cachedPrice)) {
+            $openPrice = $this->extractNumber([$cachedPrice['price_to_beat'] ?? null]);
         }
 
         if ($openPrice === null && $currentPrice !== null) {

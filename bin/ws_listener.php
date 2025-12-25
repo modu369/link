@@ -2,48 +2,87 @@
 
 require_once __DIR__ . '/../src/Config.php';
 require_once __DIR__ . '/../src/PriceCache.php';
+require_once __DIR__ . '/../src/MarketCache.php';
 require_once __DIR__ . '/../src/WebSocketClient.php';
 
 $config = require __DIR__ . '/../src/Config.php';
 $cachePath = $config['price']['cache_path'] ?? __DIR__ . '/../storage/price.json';
+$marketCachePath = $config['market']['cache_path'] ?? __DIR__ . '/../storage/market.json';
 
-$client = new WebSocketClient('wss://ws-live-data.polymarket.com');
-$cache = new PriceCache($cachePath);
+$priceCache = new PriceCache($cachePath);
+$marketCache = new MarketCache($marketCachePath);
 
-$client->connect();
-$client->send(json_encode([
+$liveClient = new WebSocketClient($config['polymarket']['ws_live_url']);
+$marketClient = new WebSocketClient($config['polymarket']['ws_market_url']);
+
+$liveClient->connect();
+$liveClient->send(json_encode([
     'action' => 'subscribe',
     'subscriptions' => [
         [
-            'topic' => 'crypto_prices_chainlink',
-            'type' => 'update',
+            'topic' => 'crypto_prices',
+            'type' => 'subscribe',
             'filters' => json_encode(['symbol' => 'btc/usd']),
         ],
     ],
 ]));
 
+$marketClient->connect();
+$assetIds = array_filter([$config['polymarket']['up_asset_id'], $config['polymarket']['down_asset_id']]);
+if ($assetIds !== []) {
+    $marketClient->send(json_encode([
+        'assets_ids' => $assetIds,
+        'type' => 'market',
+    ]));
+}
+
 while (true) {
-    $message = $client->receive();
-    if ($message === null) {
-        usleep(200000);
-        continue;
+    $liveMessage = $liveClient->receive();
+    if ($liveMessage !== null) {
+        $payload = json_decode($liveMessage, true);
+        if (is_array($payload) && ($payload['topic'] ?? '') === 'crypto_prices') {
+            $data = $payload['payload']['data'] ?? [];
+            if (is_array($data) && $data !== []) {
+                $latest = end($data);
+                $timestampMs = (int) ($latest['timestamp'] ?? 0);
+                $price = isset($latest['value']) ? (float) $latest['value'] : null;
+                if ($timestampMs > 0 && $price !== null) {
+                    $roundStartMs = $timestampMs - ($timestampMs % 900000);
+                    $cached = $priceCache->read();
+                    $priceToBeat = $price;
+                    if (is_array($cached) && ($cached['round_start_ms'] ?? null) === $roundStartMs) {
+                        $priceToBeat = (float) $cached['price_to_beat'];
+                    }
+                    $priceCache->writeCurrent($price, $timestampMs, $roundStartMs, $priceToBeat);
+                }
+            }
+        }
     }
 
-    $payload = json_decode($message, true);
-    if (!is_array($payload)) {
-        continue;
+    $marketMessage = $marketClient->receive();
+    if ($marketMessage !== null) {
+        $payload = json_decode($marketMessage, true);
+        if (is_array($payload) && ($payload['event_type'] ?? '') === 'price_change') {
+            $changes = $payload['price_changes'] ?? [];
+            $up = null;
+            $down = null;
+            foreach ($changes as $change) {
+                if (($change['asset_id'] ?? '') === $config['polymarket']['up_asset_id'] && ($change['side'] ?? '') === 'BUY') {
+                    $up = (float) $change['price'] * 100;
+                }
+                if (($change['asset_id'] ?? '') === $config['polymarket']['down_asset_id'] && ($change['side'] ?? '') === 'SELL') {
+                    $down = (float) $change['price'] * 100;
+                }
+            }
+            if ($up !== null || $down !== null) {
+                $cached = $marketCache->read() ?? [];
+                $upValue = $up ?? ($cached['up_price'] ?? 0);
+                $downValue = $down ?? ($cached['down_price'] ?? 0);
+                $timestampMs = (int) ($payload['timestamp'] ?? (microtime(true) * 1000));
+                $marketCache->write($upValue, $downValue, $timestampMs);
+            }
+        }
     }
 
-    if (($payload['topic'] ?? '') !== 'crypto_prices_chainlink' || ($payload['type'] ?? '') !== 'update') {
-        continue;
-    }
-
-    $value = $payload['payload']['full_accuracy_value'] ?? null;
-    if ($value === null || !is_numeric($value)) {
-        continue;
-    }
-
-    $price = (float) $value / 1e18;
-    $timestampMs = (int) ($payload['payload']['timestamp'] ?? $payload['timestamp'] ?? (microtime(true) * 1000));
-    $cache->write($price, $timestampMs);
+    usleep(100000);
 }

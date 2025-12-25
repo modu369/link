@@ -27,6 +27,15 @@ class TradeService
         return $statement->fetchAll();
     }
 
+    public function listTradesForAccountToday(int $accountId): array
+    {
+        $pdo = Database::connection();
+        $statement = $pdo->prepare('SELECT trades.*, accounts.name AS account_name FROM trades JOIN accounts ON accounts.id = trades.account_id WHERE trades.account_id = :account_id AND DATE(trades.created_at) = CURDATE() ORDER BY trades.id DESC');
+        $statement->execute([':account_id' => $accountId]);
+
+        return $statement->fetchAll();
+    }
+
     public function hasOpenBuy(int $accountId, int $roundId, string $side): bool
     {
         $pdo = Database::connection();

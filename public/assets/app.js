@@ -68,6 +68,20 @@ async function loadMarket() {
         upAssetId = data.up_asset_id || upAssetId;
         downAssetId = data.down_asset_id || downAssetId;
 
+        if (Number.isFinite(Number(data.current_price))) {
+            latestCurrentPrice = Number(data.current_price);
+            priceEl.textContent = latestCurrentPrice.toFixed(2);
+        }
+        if (Number.isFinite(Number(data.up_position))) {
+            latestUpPrice = Number(data.up_position);
+            upEl.textContent = `${latestUpPrice.toFixed(2)}¢`;
+        }
+        if (Number.isFinite(Number(data.down_position))) {
+            latestDownPrice = Number(data.down_position);
+            downEl.textContent = `${latestDownPrice.toFixed(2)}¢`;
+        }
+        updateSignal();
+
         if (!wsLive && data.ws_live_url) {
             connectLivePrice(data.ws_live_url);
         }
