@@ -19,7 +19,7 @@ try {
         'open_time' => $round['open_time'],
         'close_time' => $round['close_time'],
         'open_price' => $round['open_price'],
-        'event_slug' => $config['polymarket']['event_slug'],
+        'event_slug' => $round['event_slug'],
         'ws_live_url' => $config['polymarket']['ws_live_url'],
         'ws_market_url' => $config['polymarket']['ws_market_url'],
         'up_asset_id' => $config['polymarket']['up_asset_id'],

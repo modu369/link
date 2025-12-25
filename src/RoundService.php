@@ -28,6 +28,7 @@ class RoundService
             'up_position' => $snapshot['up_position'],
             'down_position' => $snapshot['down_position'],
             'event_title' => $snapshot['event_title'],
+            'event_slug' => $snapshot['event_slug'],
         ];
     }
 

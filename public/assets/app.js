@@ -61,7 +61,8 @@ async function loadMarket() {
             closeTimeEl.textContent = data.close_time;
         }
         if (openPriceEl) {
-            openPriceEl.textContent = Number(data.open_price).toFixed(2);
+            const openPriceValue = Number(data.open_price);
+            openPriceEl.textContent = Number.isFinite(openPriceValue) ? openPriceValue.toFixed(2) : '--';
         }
 
         upAssetId = data.up_asset_id || upAssetId;
