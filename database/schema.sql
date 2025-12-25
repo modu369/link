@@ -1,10 +1,13 @@
 CREATE TABLE IF NOT EXISTS market_snapshots (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     event_id VARCHAR(128) NOT NULL,
+    event_slug VARCHAR(255) DEFAULT NULL,
+    event_title VARCHAR(255) DEFAULT NULL,
     market_id VARCHAR(128) NOT NULL,
     open_time VARCHAR(64) DEFAULT NULL,
     close_time VARCHAR(64) DEFAULT NULL,
     opening_price DECIMAL(18,8) DEFAULT NULL,
+    price_to_beat DECIMAL(18,8) DEFAULT NULL,
     current_price DECIMAL(18,8) DEFAULT NULL,
     up_price DECIMAL(18,8) DEFAULT NULL,
     down_price DECIMAL(18,8) DEFAULT NULL,

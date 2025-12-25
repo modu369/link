@@ -24,13 +24,10 @@ function resolveEventSlug(array $config): string
 }
 
 $eventSlug = resolveEventSlug($config);
-if ($eventSlug === '') {
-    http_response_code(400);
-    echo json_encode(['ok' => false, 'error' => 'Missing event slug or URL']);
-    exit;
-}
 
-$snapshot = $marketService->fetchMarketSnapshot($eventSlug);
+$tagSlug = $_GET['tag'] ?? $config['polymarket']['gamma_default_tag'];
+$limit = (int) ($_GET['limit'] ?? $config['polymarket']['gamma_default_limit']);
+$snapshot = $marketService->fetchMarketSnapshot($eventSlug !== '' ? $eventSlug : null, $tagSlug, $limit);
 header('Content-Type: application/json; charset=utf-8');
 
 echo json_encode($snapshot, JSON_UNESCAPED_SLASHES);

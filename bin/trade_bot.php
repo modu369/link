@@ -3,12 +3,9 @@
 require_once __DIR__ . '/../src/bootstrap.php';
 
 $eventSlug = $config['polymarket']['event_slug'];
-if ($eventSlug === '') {
-    fwrite(STDERR, "Missing POLYMARKET_EVENT_SLUG\n");
-    exit(1);
-}
-
-$snapshotResponse = $marketService->fetchMarketSnapshot($eventSlug);
+$tagSlug = $config['polymarket']['gamma_default_tag'];
+$limit = $config['polymarket']['gamma_default_limit'];
+$snapshotResponse = $marketService->fetchMarketSnapshot($eventSlug !== '' ? $eventSlug : null, $tagSlug, $limit);
 if (!$snapshotResponse['ok']) {
     fwrite(STDERR, "Failed to fetch market snapshot: " . json_encode($snapshotResponse) . "\n");
     exit(1);

@@ -82,6 +82,10 @@ $defaultUrl = $defaultEventSlug ? 'https://polymarket.com/event/' . $defaultEven
 
     <div class="grid">
         <div class="card">
+            <div class="label">本轮名称</div>
+            <div class="value" id="event-title">-</div>
+        </div>
+        <div class="card">
             <div class="label">本轮开盘时间</div>
             <div class="value" id="open-time">-</div>
         </div>
@@ -92,6 +96,10 @@ $defaultUrl = $defaultEventSlug ? 'https://polymarket.com/event/' . $defaultEven
         <div class="card">
             <div class="label">开盘价格</div>
             <div class="value" id="opening-price">-</div>
+        </div>
+        <div class="card">
+            <div class="label">Price to beat</div>
+            <div class="value" id="price-to-beat">-</div>
         </div>
         <div class="card">
             <div class="label">现价</div>
@@ -129,9 +137,11 @@ $defaultUrl = $defaultEventSlug ? 'https://polymarket.com/event/' . $defaultEven
     <script>
         const pollInterval = <?php echo (int) $pollInterval; ?>;
         const elements = {
+            eventTitle: document.getElementById('event-title'),
             openTime: document.getElementById('open-time'),
             closeTime: document.getElementById('close-time'),
             openingPrice: document.getElementById('opening-price'),
+            priceToBeat: document.getElementById('price-to-beat'),
             currentPrice: document.getElementById('current-price'),
             upPrice: document.getElementById('up-price'),
             downPrice: document.getElementById('down-price'),
@@ -166,9 +176,11 @@ $defaultUrl = $defaultEventSlug ? 'https://polymarket.com/event/' . $defaultEven
                     return;
                 }
                 const data = payload.data;
+                updateValue(elements.eventTitle, data.event_title);
                 updateValue(elements.openTime, data.open_time);
                 updateValue(elements.closeTime, data.close_time);
                 updateValue(elements.openingPrice, data.opening_price);
+                updateValue(elements.priceToBeat, data.price_to_beat);
                 updateValue(elements.currentPrice, data.current_price);
                 updateValue(elements.upPrice, data.up_price);
                 updateValue(elements.downPrice, data.down_price);
