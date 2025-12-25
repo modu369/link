@@ -5,6 +5,16 @@ class PriceService
     public function fetchCurrentPrice(): float
     {
         $config = require __DIR__ . '/Config.php';
+        $cachePath = $config['price']['cache_path'] ?? null;
+        if ($cachePath) {
+            require_once __DIR__ . '/PriceCache.php';
+            $cache = new PriceCache($cachePath);
+            $cached = $cache->read();
+            if (is_array($cached) && isset($cached['price'])) {
+                return (float) $cached['price'];
+            }
+        }
+
         $urls = $config['price']['provider_urls'] ?? [];
         $timeout = (int) $config['price']['timeout_seconds'];
 

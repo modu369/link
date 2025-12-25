@@ -33,6 +33,7 @@ return [
             'https://api.coinbase.com/v2/prices/BTC-USD/spot',
         ],
         'timeout_seconds' => 5,
+        'cache_path' => getenv('PRICE_CACHE_PATH') ?: __DIR__ . '/../storage/price.json',
     ],
     'worker' => [
         'interval_ms' => getenv('WORKER_INTERVAL_MS') ?: 500,
