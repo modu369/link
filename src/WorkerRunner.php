@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/PolymarketApiClient.php';
+
 class WorkerRunner
 {
     public function runOnce(): void

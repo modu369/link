@@ -23,7 +23,7 @@ return [
         'timeout_seconds' => getenv('POLYMARKET_TIMEOUT_SECONDS') ?: 5,
     ],
     'polling' => [
-        'interval_ms' => getenv('POLL_INTERVAL_MS') ?: 1000,
+        'interval_ms' => getenv('POLL_INTERVAL_MS') ?: 500,
     ],
     'price' => [
         'provider_urls' => [

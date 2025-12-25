@@ -1,26 +1,29 @@
 <?php
 
 require_once __DIR__ . '/PriceService.php';
+require_once __DIR__ . '/PolymarketApiClient.php';
 
 class MarketDataService
 {
     private array $config;
     private DateTimeZone $marketTimezone;
+    private PolymarketApiClient $client;
+    private PriceService $priceService;
 
     public function __construct()
     {
         $this->config = require __DIR__ . '/Config.php';
         $this->marketTimezone = new DateTimeZone('America/New_York');
+        $this->client = new PolymarketApiClient($this->config['polymarket']);
+        $this->priceService = new PriceService();
     }
 
     public function fetchSnapshot(): array
     {
         $eventSlug = $this->config['polymarket']['event_slug'];
-        $market = $this->fetchMarketSafely($eventSlug);
-        $event = $this->extractEventFromMarket($market);
-        if ($event === []) {
-            $event = $this->fetchEventSafely($eventSlug);
-        }
+        $market = $this->client->fetchMarketBySlug($eventSlug);
+        $event = $this->client->fetchEventBySlug($eventSlug);
+        $event = $event !== [] ? $event : $this->extractEventFromMarket($market);
 
         [$openTime, $closeTime, $roundKey] = $this->resolveRoundTimes($market, $event);
 
@@ -30,6 +33,8 @@ class MarketDataService
             $event['strikePrice'] ?? null,
             $event['strike_price'] ?? null,
             $event['price'] ?? null,
+            $event['startPrice'] ?? null,
+            $event['start_price'] ?? null,
             $market['priceToBeat'] ?? null,
             $market['price_to_beat'] ?? null,
             $market['openPrice'] ?? null,
@@ -37,35 +42,15 @@ class MarketDataService
             $market['strikePrice'] ?? null,
             $market['strike_price'] ?? null,
             $market['price'] ?? null,
+            $market['startPrice'] ?? null,
+            $market['start_price'] ?? null,
         ]);
 
-        $currentPrice = $this->extractNumber([
-            $event['currentPrice'] ?? null,
-            $event['current_price'] ?? null,
-            $market['currentPrice'] ?? null,
-            $market['current_price'] ?? null,
-            $market['indexPrice'] ?? null,
-            $market['index_price'] ?? null,
-            $market['lastPrice'] ?? null,
-            $market['last_price'] ?? null,
-            $market['lastTradePrice'] ?? null,
-            $market['last_trade_price'] ?? null,
-            $market['spotPrice'] ?? null,
-            $market['spot_price'] ?? null,
-            $market['price'] ?? null,
-            $market['lastTradePrice'] ?? null,
-            $market['index_price'] ?? null,
-        ]);
+        $currentPrice = $this->priceService->fetchCurrentPrice();
 
         $outcomePrices = $this->extractOutcomePrices($market);
         $upPrice = $outcomePrices['up'] ?? null;
         $downPrice = $outcomePrices['down'] ?? null;
-
-        if ($openPrice === null || $currentPrice === null) {
-            $spotPrice = $this->fetchSpotPriceFallback();
-            $openPrice = $openPrice ?? $spotPrice;
-            $currentPrice = $currentPrice ?? $spotPrice;
-        }
 
         if ($openPrice === null || $currentPrice === null) {
             throw new RuntimeException('Unable to resolve Polymarket prices from API response.');
@@ -89,140 +74,6 @@ class MarketDataService
             'up_position' => round($upPrice, 2),
             'down_position' => round($downPrice, 2),
         ];
-    }
-
-    private function fetchMarketSafely(string $slug): array
-    {
-        $urls = $this->config['polymarket']['market_urls'] ?? [];
-        foreach ($urls as $urlTemplate) {
-            $url = sprintf($urlTemplate, rawurlencode($slug));
-            try {
-                $payload = $this->fetchJson($url);
-            } catch (Throwable $exception) {
-                continue;
-            }
-
-            $markets = $this->normalizeMarkets($payload);
-            foreach ($markets as $market) {
-                $marketSlug = $market['slug'] ?? $market['id'] ?? null;
-                if ($marketSlug !== null && (string) $marketSlug === $slug) {
-                    return (array) $market;
-                }
-            }
-
-            if ($markets !== []) {
-                return (array) $markets[0];
-            }
-        }
-
-        return [];
-    }
-
-    private function fetchEventSafely(string $slug): array
-    {
-        $urls = $this->config['polymarket']['event_urls'] ?? [];
-        foreach ($urls as $urlTemplate) {
-            $url = sprintf($urlTemplate, rawurlencode($slug));
-            try {
-                $payload = $this->fetchJson($url);
-            } catch (Throwable $exception) {
-                continue;
-            }
-
-            $event = $this->normalizeEvent($payload);
-            if ($event !== []) {
-                return $event;
-            }
-        }
-
-        return [];
-    }
-
-    private function fetchJson(string $url): array
-    {
-        $timeout = (int) $this->config['polymarket']['timeout_seconds'];
-        $userAgent = $this->config['polymarket']['user_agent'];
-
-        $context = stream_context_create([
-            'http' => [
-                'timeout' => $timeout,
-                'header' => [
-                    'User-Agent: ' . $userAgent,
-                    'Accept: application/json',
-                ],
-            ],
-        ]);
-
-        $response = @file_get_contents($url, false, $context);
-        if ($response === false) {
-            throw new RuntimeException('Failed to fetch Polymarket data.');
-        }
-
-        return json_decode($response, true, 512, JSON_THROW_ON_ERROR);
-    }
-
-    private function normalizeEvent(array $payload): array
-    {
-        if (isset($payload['event'])) {
-            return (array) $payload['event'];
-        }
-
-        if (isset($payload['events']) && is_array($payload['events'])) {
-            return (array) ($payload['events'][0] ?? []);
-        }
-
-        if (isset($payload['data']) && is_array($payload['data'])) {
-            if (isset($payload['data']['event'])) {
-                return (array) $payload['data']['event'];
-            }
-            if (isset($payload['data'][0])) {
-                return (array) $payload['data'][0];
-            }
-        }
-
-        if (isset($payload[0])) {
-            return (array) $payload[0];
-        }
-
-        return $payload;
-    }
-
-    private function normalizeMarkets(array $payload): array
-    {
-        if (isset($payload['market'])) {
-            return [(array) $payload['market']];
-        }
-
-        if (isset($payload['markets']) && is_array($payload['markets'])) {
-            return array_map('array_filter', $payload['markets']);
-        }
-
-        if (isset($payload['data']) && is_array($payload['data'])) {
-            if (isset($payload['data']['markets']) && is_array($payload['data']['markets'])) {
-                return array_map('array_filter', $payload['data']['markets']);
-            }
-            if (isset($payload['data'][0])) {
-                return array_map('array_filter', $payload['data']);
-            }
-        }
-
-        if (isset($payload[0])) {
-            return array_map('array_filter', $payload);
-        }
-
-        if (isset($payload['events']) && is_array($payload['events'])) {
-            $markets = [];
-            foreach ($payload['events'] as $event) {
-                if (isset($event['markets']) && is_array($event['markets'])) {
-                    foreach ($event['markets'] as $market) {
-                        $markets[] = (array) $market;
-                    }
-                }
-            }
-            return $markets;
-        }
-
-        return $payload !== [] ? [(array) $payload] : [];
     }
 
     private function extractEventFromMarket(array $market): array
@@ -360,15 +211,5 @@ class MarketDataService
         $roundKey = $event['id'] ?? $market['id'] ?? $openTime->format('YmdHi');
 
         return [$openTime, $closeTime, $roundKey];
-    }
-
-    private function fetchSpotPriceFallback(): ?float
-    {
-        try {
-            $priceService = new PriceService();
-            return $priceService->fetchCurrentPrice();
-        } catch (Throwable $exception) {
-            return null;
-        }
     }
 }
