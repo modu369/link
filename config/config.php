@@ -31,8 +31,10 @@ return [
         'login_entry' => getenv('LOGIN_ENTRY') ?: 'admin',
     ],
     'retention' => [
-        // 数据保留天数，超过后自动清理；设置为 0 可关闭
+        // 汇总与维度表保留天数，超过后自动清理；设置为 0 可关闭
         'days' => (int) (getenv('RETENTION_DAYS') ?: 180),
+        // pageviews 表保留天数，允许与汇总表不同
+        'pageviews_days' => (int) (getenv('RETENTION_PAGEVIEWS_DAYS') ?: 60),
         // 每天定时清理的小时（0-23）
         'cleanup_hour' => (int) (getenv('RETENTION_CLEANUP_HOUR') ?: 3),
     ],

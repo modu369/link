@@ -4,9 +4,10 @@ require_once __DIR__ . '/IpResolver.php';
 class Tracker
 {
     private int $retentionDays = 0;
+    private int $pageviewRetentionDays = 0;
     private int $cleanupHour = 3;
     private array $adminDefaults = ['user' => 'admin', 'pass' => 'admin123'];
-    private array $retentionDefaults = ['days' => 0, 'cleanup_hour' => 3];
+    private array $retentionDefaults = ['days' => 0, 'pageviews_days' => 0, 'cleanup_hour' => 3];
     private string $defaultLoginEntry = 'admin';
     private string $ipdbPath = '';
     private IpResolver $ipResolver;
@@ -24,6 +25,7 @@ class Tracker
         $this->retentionDefaults = $this->options['retention'] ?? $this->retentionDefaults;
         $this->defaultLoginEntry = trim($this->options['security']['login_entry'] ?? $this->defaultLoginEntry) ?: $this->defaultLoginEntry;
         $this->retentionDays = max(0, (int) ($this->retentionDefaults['days'] ?? 0));
+        $this->pageviewRetentionDays = max(0, (int) ($this->retentionDefaults['pageviews_days'] ?? 0));
         $this->cleanupHour = min(23, max(0, (int) ($this->retentionDefaults['cleanup_hour'] ?? 3)));
         $this->ipdbPath = $this->options['ipdb']['path'] ?? (__DIR__ . '/../data/qqwry.ipdb');
         $ingest = $this->options['ingest'] ?? [];
@@ -2932,6 +2934,7 @@ class Tracker
         if (!$this->getSetting('retention')) {
             $this->setSetting('retention', [
                 'days' => (int) ($this->retentionDefaults['days'] ?? 0),
+                'pageviews_days' => (int) ($this->retentionDefaults['pageviews_days'] ?? 0),
                 'cleanup_hour' => (int) ($this->retentionDefaults['cleanup_hour'] ?? 3),
             ]);
         }
@@ -2941,6 +2944,7 @@ class Tracker
     {
         $retention = $this->getRetentionSettings($this->retentionDefaults);
         $this->retentionDays = max(0, (int) ($retention['days'] ?? 0));
+        $this->pageviewRetentionDays = max(0, (int) ($retention['pageviews_days'] ?? 0));
         $this->cleanupHour = min(23, max(0, (int) ($retention['cleanup_hour'] ?? 3)));
     }
 
@@ -2956,49 +2960,7 @@ class Tracker
                 $hostDevices = $this->aggregateDimensionRollups($siteId, 'host_device', $start, $end, 400);
 
                 if (!empty($hosts)) {
-                    $deviceMap = [];
-
-                    foreach ($hostDevices as $deviceRow) {
-                        [$hostValue, $device] = array_pad(explode('|', $deviceRow['dimension_value'] ?? '', 2), 2, '');
-                        if ($device !== 'mobile') {
-                            continue;
-                        }
-
-                        $deviceMap[$hostValue]['views'] = ($deviceMap[$hostValue]['views'] ?? 0) + (int) ($deviceRow['views'] ?? 0);
-                        $deviceMap[$hostValue]['ips'] = ($deviceMap[$hostValue]['ips'] ?? 0) + (int) ($deviceRow['ips'] ?? 0);
-                    }
-
-                    $rows = [];
-                    $totals = [
-                        'domain' => '汇总',
-                        'views' => 0,
-                        'ips' => 0,
-                        'mobile_views' => 0,
-                        'mobile_ips' => 0,
-                    ];
-
-                    foreach ($hosts as $row) {
-                        $domain = $row['dimension_value'] ?? '未知域名';
-                        $views = (int) ($row['views'] ?? 0);
-                        $ips = (int) ($row['ips'] ?? 0);
-                        $mobileViews = (int) ($deviceMap[$domain]['views'] ?? 0);
-                        $mobileIps = (int) ($deviceMap[$domain]['ips'] ?? 0);
-
-                        $rows[] = [
-                            'domain' => $domain,
-                            'views' => $views,
-                            'ips' => $ips,
-                            'mobile_views' => $mobileViews,
-                            'mobile_ips' => $mobileIps,
-                        ];
-
-                        $totals['views'] += $views;
-                        $totals['ips'] += $ips;
-                        $totals['mobile_views'] += $mobileViews;
-                        $totals['mobile_ips'] += $mobileIps;
-                    }
-
-                    return array_merge([$totals], $rows);
+                    return $this->formatHostDeviceBreakdown($hosts, $hostDevices);
                 }
             }
 
@@ -3032,6 +2994,53 @@ class Tracker
 
             return array_merge([$totals], $rows);
         });
+    }
+
+    private function formatHostDeviceBreakdown(array $hosts, array $hostDevices): array
+    {
+        $deviceMap = [];
+
+        foreach ($hostDevices as $deviceRow) {
+            [$hostValue, $device] = array_pad(explode('|', $deviceRow['dimension_value'] ?? '', 2), 2, '');
+            if ($device !== 'mobile') {
+                continue;
+            }
+
+            $deviceMap[$hostValue]['views'] = ($deviceMap[$hostValue]['views'] ?? 0) + (int) ($deviceRow['views'] ?? 0);
+            $deviceMap[$hostValue]['ips'] = ($deviceMap[$hostValue]['ips'] ?? 0) + (int) ($deviceRow['ips'] ?? 0);
+        }
+
+        $rows = [];
+        $totals = [
+            'domain' => '汇总',
+            'views' => 0,
+            'ips' => 0,
+            'mobile_views' => 0,
+            'mobile_ips' => 0,
+        ];
+
+        foreach ($hosts as $row) {
+            $domain = $row['dimension_value'] ?? '未知域名';
+            $views = (int) ($row['views'] ?? 0);
+            $ips = (int) ($row['ips'] ?? 0);
+            $mobileViews = (int) ($deviceMap[$domain]['views'] ?? 0);
+            $mobileIps = (int) ($deviceMap[$domain]['ips'] ?? 0);
+
+            $rows[] = [
+                'domain' => $domain,
+                'views' => $views,
+                'ips' => $ips,
+                'mobile_views' => $mobileViews,
+                'mobile_ips' => $mobileIps,
+            ];
+
+            $totals['views'] += $views;
+            $totals['ips'] += $ips;
+            $totals['mobile_views'] += $mobileViews;
+            $totals['mobile_ips'] += $mobileIps;
+        }
+
+        return array_merge([$totals], $rows);
     }
 
     private function identifySearchEngine(?string $ua, ?string $referrer = null): string
@@ -3766,6 +3775,7 @@ class Tracker
         $stored = $this->getSetting('retention') ?? [];
         $merged = array_merge($fallback, $stored);
         $merged['days'] = max(0, (int) ($merged['days'] ?? 0));
+        $merged['pageviews_days'] = max(0, (int) ($merged['pageviews_days'] ?? 0));
         $merged['cleanup_hour'] = min(23, max(0, (int) ($merged['cleanup_hour'] ?? 3)));
 
         return $merged;
@@ -3831,10 +3841,11 @@ class Tracker
         return $sanitized;
     }
 
-    public function updateRetentionSettings(int $days, int $hour): array
+    public function updateRetentionSettings(int $days, int $hour, int $pageviewsDays = 0): array
     {
         $payload = [
             'days' => max(0, $days),
+            'pageviews_days' => max(0, $pageviewsDays),
             'cleanup_hour' => min(23, max(0, $hour)),
         ];
         $this->setSetting('retention', $payload);
@@ -3843,47 +3854,55 @@ class Tracker
         return $payload;
     }
 
-    public function manualCleanup(int $days): void
+    public function manualCleanup(int $days, ?int $pageviewsDays = null): void
     {
-        $this->cleanupDataOlderThan($days);
+        $pageviewsDays = $pageviewsDays === null ? $days : max(0, $pageviewsDays);
+        $this->cleanupDataOlderThan($days, $pageviewsDays);
     }
 
-    private function cleanupDataOlderThan(int $days): void
+    private function cleanupDataOlderThan(int $rollupDays, int $pageviewsDays): void
     {
-        if ($days <= 0) {
+        if ($rollupDays <= 0 && $pageviewsDays <= 0) {
             return;
         }
 
-        $cutoffPoint = (new \DateTimeImmutable('now'))->modify("-{$days} days");
-        $cutoff = $cutoffPoint->format('Y-m-d H:i:s');
-        $cutoffDate = $cutoffPoint->format('Y-m-d');
+        if ($rollupDays > 0) {
+            $rollupCutoffPoint = (new \DateTimeImmutable('now'))->modify("-{$rollupDays} days");
+            $rollupCutoff = $rollupCutoffPoint->format('Y-m-d H:i:s');
+            $rollupCutoffDate = $rollupCutoffPoint->format('Y-m-d');
 
-        // Rollup tables are small enough to delete in a single pass while still using time indexes.
-        $rollupStmt = $this->db->prepare('DELETE FROM pageview_rollups WHERE bucket_start < :cutoff');
-        $rollupStmt->execute([':cutoff' => $cutoff]);
+            // Rollup tables are small enough to delete in a single pass while still using time indexes.
+            $rollupStmt = $this->db->prepare('DELETE FROM pageview_rollups WHERE bucket_start < :cutoff');
+            $rollupStmt->execute([':cutoff' => $rollupCutoff]);
 
-        $dimRollupStmt = $this->db->prepare('DELETE FROM pageview_dimension_rollups WHERE bucket_start < :cutoff');
-        $dimRollupStmt->execute([':cutoff' => $cutoff]);
+            $dimRollupStmt = $this->db->prepare('DELETE FROM pageview_dimension_rollups WHERE bucket_start < :cutoff');
+            $dimRollupStmt->execute([':cutoff' => $rollupCutoff]);
 
-        $pageRollupStmt = $this->db->prepare('DELETE FROM pageview_page_rollups WHERE bucket_start < :cutoff');
-        $pageRollupStmt->execute([':cutoff' => $cutoff]);
+            $pageRollupStmt = $this->db->prepare('DELETE FROM pageview_page_rollups WHERE bucket_start < :cutoff');
+            $pageRollupStmt->execute([':cutoff' => $rollupCutoff]);
 
-        $entryRollupStmt = $this->db->prepare('DELETE FROM pageview_entry_rollups WHERE bucket_start < :cutoff');
-        $entryRollupStmt->execute([':cutoff' => $cutoff]);
+            $entryRollupStmt = $this->db->prepare('DELETE FROM pageview_entry_rollups WHERE bucket_start < :cutoff');
+            $entryRollupStmt->execute([':cutoff' => $rollupCutoff]);
 
-        $audienceStmt = $this->db->prepare('DELETE FROM site_ip_audience WHERE last_seen_date < :cutoff_date');
-        $audienceStmt->execute([':cutoff_date' => $cutoffDate]);
+            $audienceStmt = $this->db->prepare('DELETE FROM site_ip_audience WHERE last_seen_date < :cutoff_date');
+            $audienceStmt->execute([':cutoff_date' => $rollupCutoffDate]);
+        }
 
-        // Pageviews can be very large; delete in batches to limit lock time and reduce replication lag.
-        $batchSize = 50000;
-        $pageviewStmt = $this->db->prepare('DELETE FROM pageviews WHERE occurred_at < :cutoff LIMIT :batch');
-        $pageviewStmt->bindValue(':cutoff', $cutoff);
-        $pageviewStmt->bindValue(':batch', $batchSize, PDO::PARAM_INT);
+        if ($pageviewsDays > 0) {
+            $pageviewsCutoffPoint = (new \DateTimeImmutable('now'))->modify("-{$pageviewsDays} days");
+            $pageviewsCutoff = $pageviewsCutoffPoint->format('Y-m-d H:i:s');
 
-        do {
-            $pageviewStmt->execute();
-            $deleted = $pageviewStmt->rowCount();
-        } while ($deleted === $batchSize);
+            // Pageviews can be very large; delete in batches to limit lock time and reduce replication lag.
+            $batchSize = 50000;
+            $pageviewStmt = $this->db->prepare('DELETE FROM pageviews WHERE occurred_at < :cutoff LIMIT :batch');
+            $pageviewStmt->bindValue(':cutoff', $pageviewsCutoff);
+            $pageviewStmt->bindValue(':batch', $batchSize, PDO::PARAM_INT);
+
+            do {
+                $pageviewStmt->execute();
+                $deleted = $pageviewStmt->rowCount();
+            } while ($deleted === $batchSize);
+        }
     }
 
     public function createSharePage(string $name, array $siteIds): array
@@ -3975,51 +3994,9 @@ class Tracker
             $hostDevices = $this->aggregateDimensionRollupsForSites($share['site_ids'], 'host_device', $start, $end, 1000);
 
             if (!empty($hosts)) {
-                $deviceMap = [];
-
-                foreach ($hostDevices as $deviceRow) {
-                    [$hostValue, $device] = array_pad(explode('|', $deviceRow['dimension_value'] ?? '', 2), 2, '');
-                    if ($device !== 'mobile') {
-                        continue;
-                    }
-
-                    $deviceMap[$hostValue]['views'] = ($deviceMap[$hostValue]['views'] ?? 0) + (int) ($deviceRow['views'] ?? 0);
-                    $deviceMap[$hostValue]['ips'] = ($deviceMap[$hostValue]['ips'] ?? 0) + (int) ($deviceRow['ips'] ?? 0);
-                }
-
-                $rows = [];
-                $totals = [
-                    'domain' => '汇总',
-                    'views' => 0,
-                    'ips' => 0,
-                    'mobile_views' => 0,
-                    'mobile_ips' => 0,
-                ];
-
-                foreach ($hosts as $row) {
-                    $domain = $row['dimension_value'] ?? '未知域名';
-                    $views = (int) ($row['views'] ?? 0);
-                    $ips = (int) ($row['ips'] ?? 0);
-                    $mobileViews = (int) ($deviceMap[$domain]['views'] ?? 0);
-                    $mobileIps = (int) ($deviceMap[$domain]['ips'] ?? 0);
-
-                    $rows[] = [
-                        'domain' => $domain,
-                        'views' => $views,
-                        'ips' => $ips,
-                        'mobile_views' => $mobileViews,
-                        'mobile_ips' => $mobileIps,
-                    ];
-
-                    $totals['views'] += $views;
-                    $totals['ips'] += $ips;
-                    $totals['mobile_views'] += $mobileViews;
-                    $totals['mobile_ips'] += $mobileIps;
-                }
-
                 return [
                     'share' => $share,
-                    'rows' => array_merge([$totals], $rows),
+                    'rows' => $this->formatHostDeviceBreakdown($hosts, $hostDevices),
                 ];
             }
         }
@@ -4096,7 +4073,7 @@ class Tracker
 
     private function maybeCleanupRetention(): void
     {
-        if ($this->retentionDays <= 0) {
+        if ($this->retentionDays <= 0 && $this->pageviewRetentionDays <= 0) {
             return;
         }
 
@@ -4108,7 +4085,7 @@ class Tracker
 
         if ($this->redis->setnx($key, '1')) {
             $this->redis->expire($key, 86400);
-            $this->cleanupDataOlderThan($this->retentionDays);
+            $this->cleanupDataOlderThan($this->retentionDays, $this->pageviewRetentionDays);
         }
     }
 
