@@ -21,7 +21,20 @@ try {
     $bucketStart = $state['bucket_start'] ?? null;
     $openTime = $bucketStart ? (new DateTimeImmutable('@' . (int) $bucketStart))->format('Y-m-d H:i:s') : (new DateTimeImmutable())->format('Y-m-d H:i:s');
     $closeTime = $bucketStart ? (new DateTimeImmutable('@' . (int) $bucketStart))->modify('+15 minutes')->format('Y-m-d H:i:s') : (new DateTimeImmutable('+15 minutes'))->format('Y-m-d H:i:s');
-    $eventSlug = $state['slug'] ?? $config['polymarket']['event_slug_template'];
+    $eventSlug = $state['slug'] ?? null;
+    if (!$eventSlug) {
+        $template = $config['polymarket']['event_slug_template'] ?? 'btc-updown-15m-%d';
+        $timezone = $config['polymarket']['timezone'] ?? 'Asia/Shanghai';
+        $now = new DateTimeImmutable('now', new DateTimeZone($timezone));
+        $bucketStart = intdiv($now->getTimestamp(), 900) * 900;
+        if (str_contains($template, '{timestamp}')) {
+            $eventSlug = str_replace('{timestamp}', (string) $bucketStart, $template);
+        } elseif (str_contains($template, '%d')) {
+            $eventSlug = sprintf($template, $bucketStart);
+        } else {
+            $eventSlug = $template;
+        }
+    }
 
     echo json_encode([
         'event_title' => 'Bitcoin Up or Down',
