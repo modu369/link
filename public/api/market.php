@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/../../src/Config.php';
 require_once __DIR__ . '/../../src/StateStore.php';
+require_once __DIR__ . '/../../src/MarketCacheService.php';
 
 header('Content-Type: application/json');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
@@ -10,11 +11,13 @@ try {
     $config = require __DIR__ . '/../../src/Config.php';
     $stateStore = new StateStore($config['state']['path']);
     $state = $stateStore->read();
+    $cacheService = new MarketCacheService($config);
+    $cachePayload = $cacheService->readRealtime();
 
-    $priceToBeat = $state['price_to_beat'] ?? 0;
-    $currentPrice = $state['current_price'] ?? $priceToBeat;
-    $upPosition = $state['up_prob'] ?? ($state['up_cents'] ?? 0);
-    $downPosition = $state['down_prob'] ?? ($state['down_cents'] ?? 0);
+    $priceToBeat = $state['price_to_beat'] ?? ($cachePayload['price_to_beat'] ?? 0);
+    $currentPrice = $state['current_price'] ?? ($cachePayload['current_price'] ?? $priceToBeat);
+    $upPosition = $state['up_prob'] ?? ($state['up_cents'] ?? ($cachePayload['up_position'] ?? 0));
+    $downPosition = $state['down_prob'] ?? ($state['down_cents'] ?? ($cachePayload['down_position'] ?? 0));
     $bucketStart = $state['bucket_start'] ?? null;
     $openTime = $bucketStart ? (new DateTimeImmutable('@' . (int) $bucketStart))->format('Y-m-d H:i:s') : (new DateTimeImmutable())->format('Y-m-d H:i:s');
     $closeTime = $bucketStart ? (new DateTimeImmutable('@' . (int) $bucketStart))->modify('+15 minutes')->format('Y-m-d H:i:s') : (new DateTimeImmutable('+15 minutes'))->format('Y-m-d H:i:s');
