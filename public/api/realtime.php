@@ -3,6 +3,7 @@
 require_once __DIR__ . '/../../src/Config.php';
 require_once __DIR__ . '/../../src/PriceCache.php';
 require_once __DIR__ . '/../../src/MarketCache.php';
+require_once __DIR__ . '/../../src/MarketCacheService.php';
 
 header('Content-Type: application/json');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
