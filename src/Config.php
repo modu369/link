@@ -44,6 +44,9 @@ return [
     'market' => [
         'cache_path' => getenv('MARKET_CACHE_PATH') ?: __DIR__ . '/../storage/market.json',
     ],
+    'state' => [
+        'path' => getenv('STATE_PATH') ?: __DIR__ . '/../storage/state.json',
+    ],
     'worker' => [
         'interval_ms' => getenv('WORKER_INTERVAL_MS') ?: 500,
     ],

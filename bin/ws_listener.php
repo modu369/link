@@ -6,6 +6,7 @@ require __DIR__ . '/../vendor/autoload.php';
 require_once __DIR__ . '/../src/Config.php';
 require_once __DIR__ . '/../src/PriceCache.php';
 require_once __DIR__ . '/../src/MarketCache.php';
+require_once __DIR__ . '/../src/StateStore.php';
 
 use Ratchet\Client\Connector;
 use React\EventLoop\Loop;
@@ -22,6 +23,7 @@ const WS_CLOB = 'wss://ws-subscriptions-clob.polymarket.com/ws/market';
 
 $priceCache = new PriceCache($config['price']['cache_path']);
 $marketCache = new MarketCache($config['market']['cache_path']);
+$stateStore = new StateStore($config['state']['path']);
 
 $state = [
     'bucket_start' => null,
@@ -32,6 +34,7 @@ $state = [
     'current_ts' => null,
     'up_prob' => null,
     'down_prob' => null,
+    'slug' => null,
 ];
 
 function floorToQuarterBucket(int $timestampSeconds): int
@@ -92,10 +95,10 @@ $chainlinkSub = json_encode([
     ]],
 ]);
 
-$connector(WS_CHAINLINK)->then(function ($conn) use (&$state, $chainlinkSub, $priceCache) {
+$connector(WS_CHAINLINK)->then(function ($conn) use (&$state, $chainlinkSub, $priceCache, $stateStore) {
     $conn->send($chainlinkSub);
 
-    $conn->on('message', function ($msg) use (&$state, $priceCache) {
+    $conn->on('message', function ($msg) use (&$state, $priceCache, $stateStore) {
         $payload = json_decode((string) $msg, true);
         if (!is_array($payload) || ($payload['topic'] ?? '') !== 'crypto_prices_chainlink') {
             return;
@@ -138,11 +141,23 @@ $connector(WS_CHAINLINK)->then(function ($conn) use (&$state, $chainlinkSub, $pr
             round($upCents, 2),
             round($downCents, 2)
         );
+
+        $stateStore->write([
+            'current_price' => $price,
+            'current_ts' => $timestampMs,
+            'price_to_beat' => $ptb,
+            'bucket_start' => $bucketStart,
+            'up_cents' => round($upCents, 2),
+            'down_cents' => round($downCents, 2),
+            'up_prob' => $state['up_prob'],
+            'down_prob' => $state['down_prob'],
+            'slug' => $state['slug'],
+        ]);
     });
 });
 
 $clobConn = null;
-$startClob = function () use (&$state, &$clobConn, $connector, $marketCache) {
+$startClob = function () use (&$state, &$clobConn, $connector, $marketCache, $stateStore) {
     if (!$state['asset_id']) {
         return;
     }
@@ -152,7 +167,7 @@ $startClob = function () use (&$state, &$clobConn, $connector, $marketCache) {
         $clobConn = null;
     }
 
-    $connector(WS_CLOB)->then(function ($conn) use (&$state, &$clobConn, $marketCache) {
+    $connector(WS_CLOB)->then(function ($conn) use (&$state, &$clobConn, $marketCache, $stateStore) {
         $clobConn = $conn;
 
         $sub = json_encode([
@@ -161,7 +176,7 @@ $startClob = function () use (&$state, &$clobConn, $connector, $marketCache) {
         ], JSON_UNESCAPED_SLASHES);
         $conn->send($sub);
 
-        $conn->on('message', function ($msg) use (&$state, $marketCache) {
+        $conn->on('message', function ($msg) use (&$state, $marketCache, $stateStore) {
             $payload = json_decode((string) $msg, true);
             if (!is_array($payload) || ($payload['event_type'] ?? '') !== 'price_change') {
                 return;
@@ -182,12 +197,18 @@ $startClob = function () use (&$state, &$clobConn, $connector, $marketCache) {
                 $downValue = $state['down_prob'] ?? ($cached['down_price'] ?? 0);
                 $timestampMs = (int) ($payload['timestamp'] ?? (microtime(true) * 1000));
                 $marketCache->write($upValue, $downValue, $timestampMs);
+
+                $currentState = $stateStore->read();
+                $stateStore->write(array_merge($currentState, [
+                    'up_prob' => $upValue,
+                    'down_prob' => $downValue,
+                ]));
             }
         });
     });
 };
 
-$loop->addPeriodicTimer(1, function () use (&$state, $gammaBase, $slugTemplate, $startClob) {
+$loop->addPeriodicTimer(1, function () use (&$state, $gammaBase, $slugTemplate, $startClob, $stateStore) {
     $bucketStart = currentBucket();
     if ($state['bucket_start'] === $bucketStart) {
         return;
@@ -196,10 +217,19 @@ $loop->addPeriodicTimer(1, function () use (&$state, $gammaBase, $slugTemplate, 
     $state['bucket_start'] = $bucketStart;
     $slug = resolveSlug($slugTemplate, $bucketStart);
     $state['asset_id'] = fetchAssetId($gammaBase, $slug);
+    $state['slug'] = $slug;
     $state['price_to_beat'] = null;
     $state['beat_locked'] = false;
     $state['up_prob'] = null;
     $state['down_prob'] = null;
+
+    $stateStore->write([
+        'bucket_start' => $bucketStart,
+        'slug' => $slug,
+        'price_to_beat' => $state['price_to_beat'],
+        'up_prob' => $state['up_prob'],
+        'down_prob' => $state['down_prob'],
+    ]);
 
     $startClob();
 });
