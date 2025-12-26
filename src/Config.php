@@ -13,6 +13,8 @@ return [
     'polymarket' => [
         'event_slug' => getenv('POLYMARKET_EVENT_SLUG') ?: 'btc-updown-15m-%d',
         'event_slug_template' => getenv('POLYMARKET_EVENT_SLUG_TEMPLATE') ?: 'btc-updown-15m-%d',
+        'gamma_base' => getenv('POLYMARKET_GAMMA_BASE') ?: 'https://gamma-api.polymarket.com/markets/slug/',
+        'timezone' => getenv('POLYMARKET_TIMEZONE') ?: 'Asia/Shanghai',
         'market_urls' => [
             getenv('POLYMARKET_MARKET_URL') ?: 'https://clob.polymarket.com/markets?slug=%s',
             'https://data-api.polymarket.com/markets?slug=%s',

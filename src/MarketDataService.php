@@ -99,8 +99,8 @@ class MarketDataService
         }
 
         $outcomePrices = $this->extractOutcomePrices($market);
-        $upPrice = $outcomePrices['up'] ?? ($cachedPrice['up_cents'] ?? null) ?? ($cachedMarket['up_price'] ?? null);
-        $downPrice = $outcomePrices['down'] ?? ($cachedPrice['down_cents'] ?? null) ?? ($cachedMarket['down_price'] ?? null);
+        $upPrice = $outcomePrices['up'] ?? ($cachedMarket['up_price'] ?? null) ?? ($cachedPrice['up_cents'] ?? null);
+        $downPrice = $outcomePrices['down'] ?? ($cachedMarket['down_price'] ?? null) ?? ($cachedPrice['down_cents'] ?? null);
 
         if ($openPrice === null || $currentPrice === null || $upPrice === null || $downPrice === null) {
             $html = $this->client->fetchEventPageHtml($eventSlug);
