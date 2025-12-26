@@ -1,6 +1,8 @@
 <?php
 
 require_once __DIR__ . '/../../src/Config.php';
+require_once __DIR__ . '/../../src/PriceCache.php';
+require_once __DIR__ . '/../../src/MarketCache.php';
 require_once __DIR__ . '/../../src/MarketCacheService.php';
 
 header('Content-Type: application/json');
