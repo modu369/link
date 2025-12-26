@@ -4,87 +4,71 @@ declare(strict_types=1);
 
 require __DIR__ . '/../vendor/autoload.php';
 require_once __DIR__ . '/../src/Config.php';
+require_once __DIR__ . '/../src/StateStore.php';
 require_once __DIR__ . '/../src/PriceCache.php';
 require_once __DIR__ . '/../src/MarketCache.php';
-require_once __DIR__ . '/../src/StateStore.php';
 
 use Ratchet\Client\Connector;
 use React\EventLoop\Loop;
 
-$config = require __DIR__ . '/../src/Config.php';
-$timezone = $config['polymarket']['timezone'] ?? 'Asia/Shanghai';
-$gammaBase = $config['polymarket']['gamma_base'] ?? 'https://gamma-api.polymarket.com/markets/slug/';
-$slugTemplate = $config['polymarket']['event_slug_template'] ?? 'btc-updown-15m-%d';
-
-date_default_timezone_set($timezone);
+date_default_timezone_set('Asia/Shanghai');
 
 const WS_CHAINLINK = 'wss://ws-live-data.polymarket.com/';
 const WS_CLOB = 'wss://ws-subscriptions-clob.polymarket.com/ws/market';
 
-$priceCache = new PriceCache($config['price']['cache_path']);
-$marketCache = new MarketCache($config['market']['cache_path']);
-$stateStore = new StateStore($config['state']['path']);
-
-$state = [
-    'bucket_start' => null,
-    'asset_id' => null,
-    'price_to_beat' => null,
-    'beat_locked' => false,
-    'current_price' => null,
-    'current_ts' => null,
-    'up_prob' => null,
-    'down_prob' => null,
-    'slug' => null,
+const HEADERS = [
+    'Origin' => 'https://polymarket.com',
 ];
 
-function floorToQuarterBucket(int $timestampSeconds): int
+function current15mTs(): int
 {
-    return intdiv($timestampSeconds, 900) * 900;
+    return intdiv(time(), 900) * 900;
 }
 
-function currentBucket(): int
+function logf(string $message): void
 {
-    return floorToQuarterBucket(time());
+    echo '[' . date('H:i:s') . '] ' . $message . PHP_EOL;
 }
 
-function resolveSlug(string $template, int $bucketStart): string
+function fetchAssetId(string $gammaBase, int $ts): ?string
 {
-    if (str_contains($template, '{timestamp}')) {
-        return str_replace('{timestamp}', (string) $bucketStart, $template);
-    }
+    $url = $gammaBase . $ts;
+    logf('[FETCH] ' . $url);
 
-    if (str_contains($template, '%d')) {
-        return sprintf($template, $bucketStart);
-    }
-
-    return $template;
-}
-
-function fetchAssetId(string $gammaBase, string $slug): ?string
-{
-    $url = $gammaBase . $slug;
-    $response = @file_get_contents($url);
-    if ($response === false) {
-        return null;
-    }
-
-    $payload = json_decode($response, true);
-    if (!is_array($payload) || !isset($payload['clobTokenIds'])) {
+    $payload = @json_decode(@file_get_contents($url), true);
+    if (!is_array($payload) || empty($payload['clobTokenIds'])) {
         return null;
     }
 
     $ids = json_decode($payload['clobTokenIds'], true);
-    if (!is_array($ids) || $ids === []) {
+    if (!is_array($ids)) {
         return null;
     }
 
     return $ids[0] ?? null;
 }
 
+$config = require __DIR__ . '/../src/Config.php';
+$stateStore = new StateStore($config['state']['path']);
+$priceCache = new PriceCache($config['price']['cache_path']);
+$marketCache = new MarketCache($config['market']['cache_path']);
+$gammaBase = $config['polymarket']['gamma_base'] ?? 'https://gamma-api.polymarket.com/markets/slug/btc-updown-15m-';
+
+$state = [
+    'market_ts' => null,
+    'asset_id' => null,
+    'current_price' => null,
+    'current_ts' => null,
+    'price_to_beat' => null,
+    'beat_locked' => false,
+    'up_prob' => null,
+    'down_prob' => null,
+];
+
 $loop = Loop::get();
-$connector = new Connector($loop, null, [
-    'Origin' => 'https://polymarket.com',
-]);
+$connector = new Connector($loop);
+
+logf('=== BTC REALTIME FINAL FIXED VERSION START ===');
 
 $chainlinkSub = json_encode([
     'action' => 'subscribe',
@@ -95,47 +79,34 @@ $chainlinkSub = json_encode([
     ]],
 ]);
 
-$connector(WS_CHAINLINK)->then(function ($conn) use (&$state, $chainlinkSub, $priceCache, $stateStore) {
+$connector(WS_CHAINLINK, [], HEADERS)->then(function ($conn) use (&$state, $chainlinkSub, $priceCache, $stateStore) {
+    logf('[CHAINLINK] CONNECTED');
     $conn->send($chainlinkSub);
 
     $conn->on('message', function ($msg) use (&$state, $priceCache, $stateStore) {
         $payload = json_decode((string) $msg, true);
-        if (!is_array($payload) || ($payload['topic'] ?? '') !== 'crypto_prices_chainlink') {
+        if (($payload['topic'] ?? '') !== 'crypto_prices_chainlink') {
             return;
         }
 
-        $data = $payload['payload'] ?? [];
-        $price = isset($data['value']) ? (float) $data['value'] : null;
-        $timestampMs = (int) ($data['timestamp'] ?? 0);
-        if ($price === null || $timestampMs <= 0) {
-            return;
-        }
+        $state['current_price'] = (float) $payload['payload']['value'];
+        $state['current_ts'] = (int) $payload['payload']['timestamp'];
 
-        $timestampSeconds = intdiv($timestampMs, 1000);
-        $bucketStart = floorToQuarterBucket($timestampSeconds);
-
-        $state['current_price'] = $price;
-        $state['current_ts'] = $timestampMs;
-
-        if ($state['bucket_start'] !== $bucketStart) {
-            $state['bucket_start'] = $bucketStart;
-            $state['price_to_beat'] = $price;
+        if (!$state['beat_locked'] && $state['market_ts']) {
+            $state['price_to_beat'] = $state['current_price'];
             $state['beat_locked'] = true;
+            logf('[PRICE_TO_BEAT LOCKED] ' . number_format($state['price_to_beat'], 2));
         }
 
-        if (!$state['beat_locked'] && $state['bucket_start'] !== null) {
-            $state['price_to_beat'] = $price;
-            $state['beat_locked'] = true;
-        }
-
-        $ptb = $state['price_to_beat'] ?? $price;
-        $delta = $price - $ptb;
+        $ptb = $state['price_to_beat'] ?? $state['current_price'];
+        $delta = $state['current_price'] - $ptb;
         $upCents = max($delta, 0.0) * 100.0;
         $downCents = max(-$delta, 0.0) * 100.0;
+        $bucketStart = $state['market_ts'] ?? current15mTs();
 
         $priceCache->writeCurrent(
-            $price,
-            $timestampMs,
+            $state['current_price'],
+            $state['current_ts'],
             $bucketStart * 1000,
             $ptb,
             round($upCents, 2),
@@ -143,15 +114,15 @@ $connector(WS_CHAINLINK)->then(function ($conn) use (&$state, $chainlinkSub, $pr
         );
 
         $stateStore->write([
-            'current_price' => $price,
-            'current_ts' => $timestampMs,
+            'current_price' => $state['current_price'],
+            'current_ts' => $state['current_ts'],
             'price_to_beat' => $ptb,
             'bucket_start' => $bucketStart,
             'up_cents' => round($upCents, 2),
             'down_cents' => round($downCents, 2),
             'up_prob' => $state['up_prob'],
             'down_prob' => $state['down_prob'],
-            'slug' => $state['slug'],
+            'slug' => sprintf('btc-updown-15m-%d', $bucketStart),
         ]);
     });
 });
@@ -167,26 +138,34 @@ $startClob = function () use (&$state, &$clobConn, $connector, $marketCache, $st
         $clobConn = null;
     }
 
-    $connector(WS_CLOB)->then(function ($conn) use (&$state, &$clobConn, $marketCache, $stateStore) {
+    $connector(WS_CLOB, [], HEADERS)->then(function ($conn) use (&$state, &$clobConn, $marketCache, $stateStore) {
         $clobConn = $conn;
+        logf('[CLOB] CONNECTED');
 
         $sub = json_encode([
             'type' => 'market',
             'assets_ids' => [$state['asset_id']],
         ], JSON_UNESCAPED_SLASHES);
+
         $conn->send($sub);
+        logf('[CLOB] SUBSCRIBE SENT');
 
         $conn->on('message', function ($msg) use (&$state, $marketCache, $stateStore) {
-            $payload = json_decode((string) $msg, true);
-            if (!is_array($payload) || ($payload['event_type'] ?? '') !== 'price_change') {
+            $raw = (string) $msg;
+            if ($raw === '[]') {
                 return;
             }
 
-            foreach ($payload['price_changes'] ?? [] as $change) {
-                if (($change['side'] ?? '') === 'BUY') {
+            $payload = json_decode($raw, true);
+            if (($payload['event_type'] ?? '') !== 'price_change') {
+                return;
+            }
+
+            foreach ($payload['price_changes'] as $change) {
+                if ($change['side'] === 'BUY') {
                     $state['up_prob'] = (float) $change['price'] * 100;
                 }
-                if (($change['side'] ?? '') === 'SELL') {
+                if ($change['side'] === 'SELL') {
                     $state['down_prob'] = (float) $change['price'] * 100;
                 }
             }
@@ -208,24 +187,24 @@ $startClob = function () use (&$state, &$clobConn, $connector, $marketCache, $st
     });
 };
 
-$loop->addPeriodicTimer(1, function () use (&$state, $gammaBase, $slugTemplate, $startClob, $stateStore) {
-    $bucketStart = currentBucket();
-    if ($state['bucket_start'] === $bucketStart) {
+$loop->addPeriodicTimer(1, function () use (&$state, $gammaBase, $startClob, $stateStore) {
+    $ts = current15mTs();
+    if ($state['market_ts'] === $ts) {
         return;
     }
 
-    $state['bucket_start'] = $bucketStart;
-    $slug = resolveSlug($slugTemplate, $bucketStart);
-    $state['asset_id'] = fetchAssetId($gammaBase, $slug);
-    $state['slug'] = $slug;
+    logf('[TIME] new 15m bucket ' . date('H:i:s', $ts));
+
+    $state['market_ts'] = $ts;
+    $state['asset_id'] = fetchAssetId($gammaBase, $ts);
     $state['price_to_beat'] = null;
     $state['beat_locked'] = false;
     $state['up_prob'] = null;
     $state['down_prob'] = null;
 
     $stateStore->write([
-        'bucket_start' => $bucketStart,
-        'slug' => $slug,
+        'bucket_start' => $ts,
+        'slug' => sprintf('btc-updown-15m-%d', $ts),
         'price_to_beat' => $state['price_to_beat'],
         'up_prob' => $state['up_prob'],
         'down_prob' => $state['down_prob'],

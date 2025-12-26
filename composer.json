@@ -1,5 +1,7 @@
 {
-  "require": {
-    "ratchet/pawl": "^0.4"
-  }
+    "require": {
+        "ratchet/pawl": "^0.4.3",
+        "react/event-loop": "^1.6",
+        "react/http": "^1.10"
+    }
 }
