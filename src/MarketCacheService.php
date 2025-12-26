@@ -7,6 +7,9 @@ class MarketCacheService
 
     public function __construct(array $config)
     {
+        require_once __DIR__ . '/PriceCache.php';
+        require_once __DIR__ . '/MarketCache.php';
+
         $pricePath = $config['price']['cache_path'] ?? __DIR__ . '/../storage/price.json';
         $marketPath = $config['market']['cache_path'] ?? __DIR__ . '/../storage/market.json';
         $this->priceCache = new PriceCache($pricePath);
