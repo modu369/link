@@ -42,6 +42,8 @@ return [
         // 采集模式：direct 直接写库；queue 写入 Redis 队列由后台任务异步入库
         'mode' => getenv('INGEST_MODE') ?: 'queue',
         'queue_key' => getenv('INGEST_QUEUE_KEY') ?: 'tracker:ingest:pageviews',
+        // 处理中队列，避免消费异常导致数据丢失
+        'processing_key' => getenv('INGEST_PROCESSING_KEY') ?: 'tracker:ingest:pageviews:processing',
         // 队列长度上限，防止异常堆积；0 表示不限制
         'max_queue_length' => (int) (getenv('INGEST_QUEUE_MAX') ?: 100000),
         // 自动抽样消费队列，避免忘记启动 worker 时数据堆积
@@ -50,5 +52,7 @@ return [
             : (filter_var(getenv('INGEST_AUTO_DRAIN'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? true),
         'auto_drain_every' => (int) (getenv('INGEST_AUTO_DRAIN_EVERY') ?: 20),
         'auto_drain_batch' => (int) (getenv('INGEST_AUTO_DRAIN_BATCH') ?: 50),
+        // 处理中的数据超过该秒数将重新入队
+        'stalled_after' => (int) (getenv('INGEST_STALLED_AFTER') ?: 300),
     ],
 ];

@@ -14,10 +14,12 @@ class Tracker
     private bool $hasIpHashColumn = false;
     private string $ingestMode = 'direct';
     private string $ingestQueueKey = 'tracker:ingest:pageviews';
+    private string $ingestProcessingKey = 'tracker:ingest:pageviews:processing';
     private int $ingestMaxQueueLength = 100000;
     private bool $ingestAutoDrain = true;
     private int $ingestAutoDrainEvery = 20;
     private int $ingestAutoDrainBatch = 50;
+    private int $ingestStalledAfter = 300;
 
     public function __construct(
         private PDO $db,
@@ -34,10 +36,12 @@ class Tracker
         $ingest = $this->options['ingest'] ?? [];
         $this->ingestMode = strtolower($ingest['mode'] ?? $this->ingestMode);
         $this->ingestQueueKey = $ingest['queue_key'] ?? $this->ingestQueueKey;
+        $this->ingestProcessingKey = $ingest['processing_key'] ?? $this->ingestProcessingKey;
         $this->ingestMaxQueueLength = max(0, (int) ($ingest['max_queue_length'] ?? $this->ingestMaxQueueLength));
         $this->ingestAutoDrain = (bool) ($ingest['auto_drain'] ?? $this->ingestAutoDrain);
         $this->ingestAutoDrainEvery = max(1, (int) ($ingest['auto_drain_every'] ?? $this->ingestAutoDrainEvery));
         $this->ingestAutoDrainBatch = max(1, (int) ($ingest['auto_drain_batch'] ?? $this->ingestAutoDrainBatch));
+        $this->ingestStalledAfter = max(30, (int) ($ingest['stalled_after'] ?? $this->ingestStalledAfter));
         $this->ensureIpDbExists();
         $this->ipResolver = new IpResolver($this->ipdbPath);
 
@@ -203,12 +207,13 @@ class Tracker
         }
 
         $parsedUrl = $this->parseUrl($payload['path'] ?? null, $site['domain'] ?? null);
-        $path = $parsedUrl['path'];
-        $host = $parsedUrl['host'];
-        $canonicalHost = $parsedUrl['canonical'];
+        $path = $this->limitText($parsedUrl['path'] ?? '/', 2048, '/');
+        $host = $this->limitText($parsedUrl['host'] ?? '', 255);
+        $canonicalHost = $this->limitText($parsedUrl['canonical'] ?? '', 255);
         $allowedDomains = $this->getAllSiteDomains((int) $site['id']);
 
-        $referrerHost = $this->referrerHost($payload['referrer'] ?? '');
+        $referrer = $this->limitText($payload['referrer'] ?? '', 2048);
+        $referrerHost = $this->referrerHost($referrer);
         $observedHost = $canonicalHost ?: $this->canonicalHost($referrerHost);
 
         if (!empty($allowedDomains)) {
@@ -216,7 +221,7 @@ class Tracker
                 return;
             }
             // ensure stored canonical host reflects the validated domain
-            $canonicalHost = $observedHost;
+            $canonicalHost = $this->limitText($observedHost, 255, $canonicalHost);
         }
         $ip = $this->sanitizeIp($payload['ip'] ?? null);
         $ipHash = $ip ? hash('sha256', $ip) : null;
@@ -224,20 +229,20 @@ class Tracker
         $uvToday = false;
         $isUnique = false;
 
-        $sessionId = $payload['session_id'] ?? ($ipHash ?: bin2hex(random_bytes(8)));
+        $sessionId = $this->limitText($payload['session_id'] ?? ($ipHash ?: bin2hex(random_bytes(8))), 64);
         $duration = max(0, (int) ($payload['duration'] ?? 0));
         $pageCount = max(1, (int) ($payload['page_count'] ?? 1));
-        $userAgent = $payload['user_agent'] ?? '';
+        $userAgent = $this->limitText($payload['user_agent'] ?? '', 1024);
         $isBot = $this->isBot($userAgent);
         $isMobile = $this->isMobile($userAgent);
-        $keyword = $this->extractKeyword($payload['referrer'] ?? '');
+        $keyword = $this->limitText($this->extractKeyword($referrer) ?? '', 255);
         $ipMeta = $this->resolveIpMeta($ip);
-        $countryName = $ipMeta['country_name'] ?? '未知';
-        $regionName = $ipMeta['region_name'] ?? '未知';
-        $cityName = $ipMeta['city_name'] ?? '';
-        $ispName = $ipMeta['isp_domain'] ?? '未知运营商';
-        $countryCode = $ipMeta['country_code'] ?? '';
-        $continentCode = $ipMeta['continent_code'] ?? '';
+        $countryName = $this->limitText($ipMeta['country_name'] ?? '未知', 128, '未知');
+        $regionName = $this->limitText($ipMeta['region_name'] ?? '未知', 128, '未知');
+        $cityName = $this->limitText($ipMeta['city_name'] ?? '', 128);
+        $ispName = $this->limitText($ipMeta['isp_domain'] ?? '未知运营商', 128, '未知运营商');
+        $countryCode = $this->limitText($ipMeta['country_code'] ?? '', 8);
+        $continentCode = $this->limitText($ipMeta['continent_code'] ?? '', 8);
 
         if (!$isBot && $ipHash) {
             [$uvToday, $audienceLabel] = $this->markIpAudienceState((int) $site['id'], $ipHash);
@@ -253,14 +258,14 @@ class Tracker
             ':host' => $host,
             ':canonical_host' => $canonicalHost,
             ':path' => $path,
-            ':referrer' => $payload['referrer'] ?? null,
+            ':referrer' => $referrer ?: null,
             ':user_agent' => $userAgent,
             ':ip_address' => $ip,
             ':ip_hash' => $ipHash,
             ':session_id' => $sessionId,
             ':duration_seconds' => $duration,
             ':page_count' => $pageCount,
-            ':keyword' => $keyword,
+            ':keyword' => $keyword ?: null,
             ':is_mobile' => $isMobile ? 1 : 0,
             ':is_bot' => $isBot ? 1 : 0,
             ':is_unique' => $isUnique ? 1 : 0,
@@ -278,8 +283,8 @@ class Tracker
 
         $now = new DateTimeImmutable('now');
         $browser = $this->detectBrowser($userAgent);
-        $engine = $this->detectSearchEngine($payload['referrer'] ?? '', $userAgent);
-        $referrerHost = $this->referrerHost($payload['referrer'] ?? '');
+        $engine = $this->detectSearchEngine($referrer, $userAgent);
+        $referrerHost = $this->referrerHost($referrer);
         $entryPath = $this->captureEntryPath((int) $site['id'], $sessionId, $path);
 
         $this->updateRollups(
@@ -344,12 +349,28 @@ class Tracker
         $this->drainIngestQueue($this->ingestAutoDrainBatch);
     }
 
+    private function limitText(?string $value, int $max, string $fallback = ''): string
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return $fallback;
+        }
+
+        if (function_exists('mb_substr')) {
+            return mb_substr($value, 0, $max, 'UTF-8');
+        }
+
+        return substr($value, 0, $max);
+    }
+
     public function drainIngestQueue(int $maxBatch = 500): int
     {
         $processed = 0;
 
+        $this->recoverStalledIngestQueue();
+
         while ($processed < $maxBatch) {
-            $raw = $this->redis->rPop($this->ingestQueueKey);
+            $raw = $this->redis->rPopLPush($this->ingestQueueKey, $this->ingestProcessingKey);
 
             if ($raw === false || $raw === null) {
                 break;
@@ -357,14 +378,49 @@ class Tracker
 
             $decoded = json_decode($raw, true);
             if (!is_array($decoded) || empty($decoded['tracking_id']) || !isset($decoded['payload']) || !is_array($decoded['payload'])) {
+                $this->redis->lRem($this->ingestProcessingKey, $raw, 1);
                 continue;
             }
 
-            $this->processPageview($decoded['tracking_id'], $decoded['payload']);
-            $processed++;
+            try {
+                $this->processPageview($decoded['tracking_id'], $decoded['payload']);
+                $this->redis->lRem($this->ingestProcessingKey, $raw, 1);
+                $processed++;
+            } catch (Throwable $e) {
+                // Leave the record in processing list for recovery retry.
+            }
         }
 
         return $processed;
+    }
+
+    private function recoverStalledIngestQueue(): void
+    {
+        if ($this->ingestStalledAfter <= 0) {
+            return;
+        }
+
+        $len = (int) $this->redis->lLen($this->ingestProcessingKey);
+        if ($len <= 0) {
+            return;
+        }
+
+        $cutoff = time() - $this->ingestStalledAfter;
+        for ($i = 0; $i < $len; $i++) {
+            $raw = $this->redis->rPop($this->ingestProcessingKey);
+            if ($raw === false || $raw === null) {
+                break;
+            }
+
+            $decoded = json_decode($raw, true);
+            $receivedAt = is_array($decoded) ? (int) ($decoded['received_at'] ?? 0) : 0;
+            if ($receivedAt > 0 && $receivedAt > $cutoff) {
+                $this->redis->lPush($this->ingestProcessingKey, $raw);
+                continue;
+            }
+
+            $this->redis->lPush($this->ingestQueueKey, $raw);
+        }
     }
 
     private function updateRollups(
@@ -819,43 +875,45 @@ class Tracker
     ): void {
         $entries = [];
 
-        $path = $dimensions['path'] ?? '/';
-        $path = $path ?: '/';
-        $keyword = trim($dimensions['keyword'] ?? '') ?: null;
-        $engine = trim($dimensions['engine'] ?? '') ?: null;
-        $referrerHost = trim($dimensions['referrer_host'] ?? '') ?: null;
-        $browser = trim($dimensions['browser'] ?? '') ?: null;
-        $isp = trim($dimensions['isp'] ?? '') ?: null;
+        $path = $this->limitText($dimensions['path'] ?? '/', 512, '/');
+        $keyword = $this->limitText($dimensions['keyword'] ?? '', 255);
+        $engine = $this->limitText($dimensions['engine'] ?? '', 64);
+        $referrerHost = $this->limitText($dimensions['referrer_host'] ?? '', 255);
+        $browser = $this->limitText($dimensions['browser'] ?? '', 64);
+        $isp = $this->limitText($dimensions['isp'] ?? '', 128);
         $isMobile = (bool) ($dimensions['is_mobile'] ?? false);
         $isUnique = (bool) ($dimensions['is_unique'] ?? false);
-        $canonicalHost = trim($dimensions['canonical_host'] ?? '') ?: '未知域名';
-        $audienceLabel = $dimensions['audience_label'] ?? 'returning';
+        $canonicalHost = $this->limitText($dimensions['canonical_host'] ?? '', 255, '未知域名');
+        $audienceLabel = $this->limitText($dimensions['audience_label'] ?? 'returning', 64, 'returning');
 
-        if ($keyword) {
+        if ($keyword !== '') {
             $entries[] = ['keyword', $keyword];
-            if ($engine) {
-                $entries[] = ['keyword_engine', $this->dimensionKey([$keyword, $engine, $path])];
+            if ($engine !== '') {
+                $entries[] = ['keyword_engine', $this->limitText($this->dimensionKey([$keyword, $engine, $path]), 255)];
             }
         }
 
-        if ($engine && $engine !== '其他') {
+        if ($engine !== '' && $engine !== '其他') {
             $entries[] = ['search_engine', $engine];
         }
 
-        if ($referrerHost) {
+        if ($referrerHost !== '') {
             $entries[] = ['referrer_host', $referrerHost];
         }
 
         if ($canonicalHost !== '') {
             $entries[] = ['host', $canonicalHost];
-            $entries[] = ['host_device', $this->dimensionKey([$canonicalHost, $isMobile ? 'mobile' : 'desktop'])];
+            $entries[] = [
+                'host_device',
+                $this->limitText($this->dimensionKey([$canonicalHost, $isMobile ? 'mobile' : 'desktop']), 255)
+            ];
         }
 
         if (!empty($dimensions['entry_path'])) {
             $this->upsertEntryRollup(
                 $siteId,
                 $bucketKey,
-                $dimensions['entry_path'],
+                $this->limitText($dimensions['entry_path'], 512, '/'),
                 $uvIncrement,
                 $ipIncrement,
                 $sessionIncrement,
@@ -881,7 +939,7 @@ class Tracker
 
         $entries[] = ['device', $isMobile ? 'mobile' : 'desktop'];
 
-        if ($browser) {
+        if ($browser !== '') {
             $entries[] = ['browser', $browser];
         }
 
@@ -890,12 +948,12 @@ class Tracker
                 $dimensions['region']['country'] ?? '',
                 $dimensions['region']['region'] ?? ''
             );
-            $entries[] = ['region', $regionLabel];
-            $country = trim($dimensions['region']['country'] ?? '') ?: '未知';
+            $entries[] = ['region', $this->limitText($regionLabel, 255, '未知')];
+            $country = $this->limitText($dimensions['region']['country'] ?? '', 128, '未知');
             $entries[] = ['country', $country];
         }
 
-        if ($isp) {
+        if ($isp !== '') {
             $entries[] = ['isp', $isp];
         }
 
@@ -931,7 +989,7 @@ class Tracker
         int $bounceIncrement,
         bool $isUnique
     ): void {
-        $value = mb_substr($value, 0, 255);
+        $value = $this->limitText($value, 255);
 
         $stmt = $this->db->prepare(
             'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
@@ -972,7 +1030,7 @@ class Tracker
         int $bounceIncrement,
         bool $isUnique
     ): void {
-        $path = mb_substr($path ?: '/', 0, 512);
+        $path = $this->limitText($path ?: '/', 512, '/');
 
         $stmt = $this->db->prepare(
             'INSERT INTO pageview_page_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
@@ -1012,7 +1070,7 @@ class Tracker
         int $bounceIncrement,
         bool $isUnique
     ): void {
-        $path = mb_substr($path ?: '/', 0, 512);
+        $path = $this->limitText($path ?: '/', 512, '/');
 
         $stmt = $this->db->prepare(
             'INSERT INTO pageview_entry_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
@@ -2203,45 +2261,7 @@ class Tracker
                     }, $keywords));
                 }
             }
-
-            [$rangeSql, $params] = $this->rangeClause($range);
-            $engineCase = $this->searchEngineCase();
-            $statement = $this->db->prepare(
-                "SELECT keyword, {$engineCase} as engine, COALESCE(path, '/') as path, COUNT(*) as views
-                FROM pageviews
-                WHERE site_id = :site_id AND keyword IS NOT NULL AND keyword != '' AND is_bot = 0 {$rangeSql}
-                GROUP BY keyword, engine, path
-                ORDER BY views DESC
-                LIMIT 500"
-            );
-            $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-            $rows = $statement->fetchAll();
-            $keywords = [];
-
-            foreach ($rows as $row) {
-                $keyword = $row['keyword'];
-                if (!isset($keywords[$keyword])) {
-                    $keywords[$keyword] = [
-                        'keyword' => $keyword,
-                        'views' => 0,
-                        'engines' => [],
-                        'entry' => $row['path'],
-                    ];
-                }
-
-                $keywords[$keyword]['views'] += (int) $row['views'];
-                $keywords[$keyword]['engines'][] = $row['engine'];
-
-                if ($row['views'] >= $keywords[$keyword]['views']) {
-                    $keywords[$keyword]['entry'] = $row['path'];
-                }
-            }
-
-            return array_values(array_map(function ($item) {
-                $item['engines'] = implode(' / ', array_unique($item['engines']));
-                return $item;
-            }, $keywords));
+            return [];
         });
     }
 
@@ -2306,35 +2326,9 @@ class Tracker
                 'pages' => round(((float) ($rollupTotals['page_sum'] ?? 0)) / $sessions, 2),
             ];
         }
-
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $avgDuration = $this->db->prepare(
-            "SELECT AVG(duration_seconds) as avg_duration
-            FROM (
-                SELECT MAX(duration_seconds) as duration_seconds
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) t"
-        );
-        $avgDuration->execute(array_merge([':site_id' => $siteId], $params));
-        $duration = $avgDuration->fetch()['avg_duration'] ?? 0;
-
-        $avgPages = $this->db->prepare(
-            "SELECT AVG(pages) as avg_pages
-            FROM (
-                SELECT MAX(page_count) as pages
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) t"
-        );
-        $avgPages->execute(array_merge([':site_id' => $siteId], $params));
-        $pages = $avgPages->fetch()['avg_pages'] ?? 0;
-
         return [
-            'duration' => round((float) $duration, 2),
-            'pages' => round((float) $pages, 2),
+            'duration' => 0.0,
+            'pages' => 0.0,
         ];
     }
 
@@ -2346,19 +2340,7 @@ class Tracker
 
             return $bounces / $sessions;
         }
-
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT AVG(bounce) as rate FROM (
-                SELECT CASE WHEN MAX(page_count) = 1 THEN 1 ELSE 0 END as bounce
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) t"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-        return (float) ($statement->fetch()['rate'] ?? 0.0);
+        return 0.0;
     }
 
     public function getPredictions(int $siteId): array
@@ -2989,36 +2971,13 @@ class Tracker
                     return $this->formatHostDeviceBreakdown($hosts, $hostDevices);
                 }
             }
-
-            [$rangeSql, $params] = $this->rangeClause($range);
-            $statement = $this->db->prepare(
-                "SELECT COALESCE(canonical_host, '未知域名') as domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
-                    SUM(is_mobile) as mobile_views, COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-                GROUP BY canonical_host
-                ORDER BY views DESC
-                LIMIT 100"
-            );
-            $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-            $rows = $statement->fetchAll();
-            $totals = [
+            return [[
                 'domain' => '汇总',
                 'views' => 0,
                 'ips' => 0,
                 'mobile_views' => 0,
                 'mobile_ips' => 0,
-            ];
-
-            foreach ($rows as $row) {
-                $totals['views'] += (int) $row['views'];
-                $totals['ips'] += (int) $row['ips'];
-                $totals['mobile_views'] += (int) $row['mobile_views'];
-                $totals['mobile_ips'] += (int) $row['mobile_ips'];
-            }
-
-            return array_merge([$totals], $rows);
+            ]];
         });
     }
 
@@ -3157,24 +3116,7 @@ class Tracker
                     return $mapped;
                 }
             }
-
-            [$rangeSql, $params] = $this->rangeClause($range);
-            $engineCase = $this->searchEngineCase();
-            $statement = $this->db->prepare(
-                "SELECT engine, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-                FROM (
-                    SELECT {$engineCase} as engine, ip_hash
-                    FROM pageviews
-                    WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-                ) t
-                GROUP BY engine
-                HAVING engine != '其他'
-                ORDER BY ips DESC"
-            );
-
-            $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-            return $statement->fetchAll();
+            return [];
         });
     }
 
@@ -3223,44 +3165,7 @@ class Tracker
                     return $filtered;
                 }
             }
-
-            [$rangeSql, $params] = $this->rangeClause($range);
-
-            $statement = $this->db->prepare(
-                "SELECT host, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-                FROM (
-                    SELECT COALESCE(NULLIF(SUBSTRING_INDEX(SUBSTRING_INDEX(referrer, '/', 3), '//', -1), ''), '直接访问') as host, ip_hash
-                    FROM pageviews
-                    WHERE site_id = :site_id AND referrer IS NOT NULL AND referrer != '' AND is_bot = 0 {$rangeSql}
-                ) t
-                WHERE host != '直接访问'
-                GROUP BY host
-                ORDER BY ips DESC
-                LIMIT 200"
-            );
-
-            $statement->execute(array_merge([':site_id' => $siteId], $params));
-            $rows = $statement->fetchAll();
-
-            $filtered = [];
-            foreach ($rows as $row) {
-                $host = strtolower($row['host'] ?? '');
-                $skip = false;
-                foreach ($blocked as $needle) {
-                    if (str_contains($host, $needle)) {
-                        $skip = true;
-                        break;
-                    }
-                }
-                if ($domain && (str_ends_with($host, $domain) || str_ends_with($host, 'www.' . ltrim($domain, '.')))) {
-                    $skip = true;
-                }
-                if (!$skip) {
-                    $filtered[] = $row;
-                }
-            }
-
-            return $filtered;
+            return [];
         });
     }
 
@@ -3288,22 +3193,6 @@ class Tracker
 
                 $totals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
                 $totalIps = (int) ($totals['ip_count'] ?? 0);
-            }
-
-            if (!$this->rollupsCoverRange($siteId, $start, $end)) {
-                [$rangeSql, $params] = $this->rangeClause($range);
-                $sql = $this->replaceIpHash(
-                    "SELECT SUM(is_mobile = 0) as desktop_views, SUM(is_mobile = 1) as mobile_views,\n                        COUNT(DISTINCT ip_hash) as total_ips,\n                        COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips\n FROM pageviews\n                    WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}",
-                    'pageviews'
-                );
-                $statement = $this->db->prepare($sql);
-                $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-                $row = $statement->fetch();
-                $desktopViews = (int) ($row['desktop_views'] ?? 0);
-                $mobileViews = (int) ($row['mobile_views'] ?? 0);
-                $mobileIps = (int) ($row['mobile_ips'] ?? 0);
-                $totalIps = (int) ($row['total_ips'] ?? 0);
             }
 
             $desktopIps = max(0, $totalIps - $mobileIps);
@@ -3338,40 +3227,7 @@ class Tracker
                     ], $rollup);
                 }
             }
-
-            [$rangeSql, $params] = $this->rangeClause($range);
-            $statement = $this->db->prepare(
-                "SELECT browser, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips FROM (
-                    SELECT CASE
-                        WHEN LOWER(user_agent) REGEXP 'micromessenger' THEN 'WeChat'
-                        WHEN LOWER(user_agent) REGEXP 'bytedancewebview|aweme' THEN 'Douyin'
-                        WHEN LOWER(user_agent) REGEXP 'baiduboxapp' THEN 'Baidu'
-                        WHEN LOWER(user_agent) REGEXP 'mqqbrowser|qqbrowser' THEN 'QQ'
-                        WHEN LOWER(user_agent) REGEXP 'ucbrowser' THEN 'UC'
-                        WHEN LOWER(user_agent) REGEXP 'quark' THEN 'Quark'
-                        WHEN LOWER(user_agent) REGEXP 'xiaomi|miuibrowser' THEN 'Mi'
-                        WHEN LOWER(user_agent) REGEXP 'huawei' THEN 'Huawei'
-                        WHEN LOWER(user_agent) REGEXP 'vivobrowser' THEN 'Vivo'
-                        WHEN LOWER(user_agent) REGEXP 'heytapbrowser|oppobrowser' THEN 'OPPO'
-                        WHEN LOWER(user_agent) REGEXP 'edg(a|ios)' THEN 'Edge'
-                        WHEN LOWER(user_agent) REGEXP 'chrome|crios' THEN 'Chrome'
-                        WHEN LOWER(user_agent) REGEXP 'firefox|fxios' THEN 'Firefox'
-                        WHEN LOWER(user_agent) REGEXP 'safari' AND LOWER(user_agent) NOT REGEXP 'chrome|crios|edg' THEN 'Safari'
-                        WHEN LOWER(user_agent) REGEXP '360se|360ee' THEN '360'
-                        WHEN LOWER(user_agent) REGEXP 'msie|trident' THEN 'IE'
-                        ELSE '其他浏览器'
-                    END as browser,
-                    ip_hash
-                    FROM pageviews
-                    WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-                ) t
-                GROUP BY browser
-                ORDER BY views DESC
-                LIMIT {$limit}"
-            );
-            $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-            return $statement->fetchAll();
+            return [];
         });
     }
 
@@ -3392,25 +3248,7 @@ class Tracker
                     ], $rollup);
                 }
             }
-
-            [$rangeSql, $params] = $this->rangeClause($range);
-            $statement = $this->db->prepare(
-                "SELECT
-                    CASE
-                        WHEN COALESCE(country_name,'') LIKE '中国%' THEN COALESCE(NULLIF(region_name,''), '未知')
-                        WHEN COALESCE(country_name,'') = '' THEN '未知'
-                        ELSE COALESCE(country_name, '未知')
-                    END as region,
-                    COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql} AND (COALESCE(country_name,'') LIKE '中国%' OR COALESCE(country_name,'') = '')
-                GROUP BY region
-                ORDER BY ips DESC
-                LIMIT {$limit}"
-            );
-            $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-            return $statement->fetchAll();
+            return [];
         });
     }
 
@@ -3419,21 +3257,20 @@ class Tracker
         $cacheKey = "countries:{$siteId}:{$range}:{$limit}";
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
-            [$rangeSql, $params] = $this->rangeClause($range);
-            $statement = $this->db->prepare(
-                "SELECT
-                    COALESCE(NULLIF(country_name,''), '未知') as country,
-                    COALESCE(NULLIF(country_code,''), '') as country_code,
-                    COUNT(DISTINCT ip_hash) as ips
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-                GROUP BY country, country_code
-                ORDER BY ips DESC
-                LIMIT {$limit}"
-            );
-            $statement->execute(array_merge([':site_id' => $siteId], $params));
+            [$start, $end] = $this->rollupRangeBounds($range);
+            if ($this->rollupsCoverRange($siteId, $start, $end)) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'country', $start, $end, $limit);
 
-            return $statement->fetchAll();
+                if (!empty($rollup)) {
+                    return array_map(fn ($row) => [
+                        'country' => $row['dimension_value'],
+                        'country_code' => '',
+                        'ips' => (int) ($row['ips'] ?? 0),
+                    ], $rollup);
+                }
+            }
+
+            return [];
         });
     }
 
@@ -3454,19 +3291,7 @@ class Tracker
                     ], $rollup);
                 }
             }
-
-            [$rangeSql, $params] = $this->rangeClause($range);
-            $statement = $this->db->prepare(
-                "SELECT COALESCE(NULLIF(isp_domain,''), '未知运营商') as isp, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-                GROUP BY isp
-                ORDER BY ips DESC
-                LIMIT {$limit}"
-            );
-            $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-            return $statement->fetchAll();
+            return [];
         });
     }
 
@@ -3581,53 +3406,13 @@ class Tracker
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
             [$start, $end] = $this->rollupRangeBounds($range);
-            $rollup = $this->getRollupHourlyStats($siteId, $start, $end, true);
-            if (!empty($rollup)) {
-                return $rollup;
-            }
-
-            [$rangeSql, $params] = $this->rangeClause($range, false, true);
-            $statement = $this->db->prepare(
-                "SELECT DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as hour,
-                    COUNT(*) as views,
-                    SUM(is_unique) as uniques,
-                    COUNT(DISTINCT ip_hash) as ips
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-                GROUP BY hour
-                ORDER BY hour ASC"
-            );
-            $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-            return $statement->fetchAll();
+            return $this->getRollupHourlyStats($siteId, $start, $end, true);
         });
     }
 
     private function getHourlyStatsForWindow(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
-        $rollup = $this->getRollupHourlyStats($siteId, $start, $end, true);
-        if (!empty($rollup)) {
-            return $rollup;
-        }
-
-        $statement = $this->db->prepare(
-            "SELECT DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as hour,
-                COUNT(*) as views,
-                SUM(is_unique) as uniques,
-                COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
-            GROUP BY hour
-            ORDER BY hour ASC"
-        );
-
-        $statement->execute([
-            ':site_id' => $siteId,
-            ':start' => $start->format('Y-m-d H:i:s'),
-            ':end' => $end->format('Y-m-d H:i:s'),
-        ]);
-
-        return $statement->fetchAll();
+        return $this->getRollupHourlyStats($siteId, $start, $end, true);
     }
 
     private function normalizeHourlySeries(array $rows, DateTimeImmutable $dayStart): array
@@ -4029,52 +3814,19 @@ class Tracker
         [$start, $end] = $this->rollupRangeBounds($range);
 
         $rows = $this->getHostDeviceRollupRowsForSites($share['site_ids'], $start, $end);
-        if (!empty($rows)) {
-            return [
-                'share' => $share,
-                'rows' => $rows,
-            ];
-        }
-
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $siteParams = [];
-        $placeholders = [];
-        foreach ($share['site_ids'] as $i => $sid) {
-            $key = ':sid' . $i;
-            $placeholders[] = $key;
-            $siteParams[$key] = (int) $sid;
-        }
-
-        $statement = $this->db->prepare(
-            "SELECT COALESCE(canonical_host, '未知域名') as domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
-                SUM(is_mobile) as mobile_views, COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
-            FROM pageviews
-            WHERE site_id IN (" . implode(',', $placeholders) . ") AND is_bot = 0 {$rangeSql}
-            GROUP BY canonical_host
-            ORDER BY views DESC"
-        );
-
-        $statement->execute(array_merge($siteParams, $params));
-        $rows = $statement->fetchAll();
-
-        $totals = [
-            'domain' => '汇总',
-            'views' => 0,
-            'ips' => 0,
-            'mobile_views' => 0,
-            'mobile_ips' => 0,
-        ];
-
-        foreach ($rows as $row) {
-            $totals['views'] += (int) $row['views'];
-            $totals['ips'] += (int) $row['ips'];
-            $totals['mobile_views'] += (int) $row['mobile_views'];
-            $totals['mobile_ips'] += (int) $row['mobile_ips'];
+        if (empty($rows)) {
+            $rows = [[
+                'domain' => '汇总',
+                'views' => 0,
+                'ips' => 0,
+                'mobile_views' => 0,
+                'mobile_ips' => 0,
+            ]];
         }
 
         return [
             'share' => $share,
-            'rows' => array_merge([$totals], $rows),
+            'rows' => $rows,
         ];
     }
 
