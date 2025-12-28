@@ -27,6 +27,7 @@ class Tracker
 
         $this->ensureSiteDomainSchema();
         $this->ensurePageviewSchema();
+        $this->ensureHourlyRollupSchema();
         $this->ensureShareSchema();
         $this->ensureSettingsSchema();
         $this->hydrateRetention();
@@ -216,6 +217,78 @@ class Tracker
             ':isp_domain' => $ispName,
             ':country_code' => $countryCode,
             ':continent_code' => $continentCode,
+        ]);
+    }
+
+    public function rollupHourlyWindow(DateTimeImmutable $windowStart, DateTimeImmutable $windowEnd): void
+    {
+        if ($windowEnd <= $windowStart) {
+            return;
+        }
+
+        $sql = "INSERT INTO hourly_rollups (
+                site_id,
+                bucket_start,
+                views,
+                uniques,
+                ips,
+                sessions,
+                bounce_sessions,
+                total_page_count,
+                total_duration_seconds
+            )
+            SELECT base.site_id,
+                base.bucket_start,
+                base.views,
+                base.uniques,
+                base.ips,
+                COALESCE(session_stats.sessions, 0) as sessions,
+                COALESCE(session_stats.bounce_sessions, 0) as bounce_sessions,
+                COALESCE(session_stats.total_page_count, 0) as total_page_count,
+                COALESCE(session_stats.total_duration_seconds, 0) as total_duration_seconds
+            FROM (
+                SELECT site_id,
+                    DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as bucket_start,
+                    COUNT(*) as views,
+                    COUNT(DISTINCT session_id) as uniques,
+                    COUNT(DISTINCT ip_hash) as ips
+                FROM pageviews
+                WHERE occurred_at >= :start AND occurred_at < :end AND is_bot = 0
+                GROUP BY site_id, bucket_start
+            ) base
+            LEFT JOIN (
+                SELECT site_id,
+                    bucket_start,
+                    COUNT(*) as sessions,
+                    SUM(CASE WHEN max_page_count = 1 THEN 1 ELSE 0 END) as bounce_sessions,
+                    SUM(max_page_count) as total_page_count,
+                    SUM(max_duration) as total_duration_seconds
+                FROM (
+                    SELECT site_id,
+                        DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as bucket_start,
+                        session_id,
+                        MAX(page_count) as max_page_count,
+                        MAX(duration_seconds) as max_duration
+                    FROM pageviews
+                    WHERE occurred_at >= :start AND occurred_at < :end AND is_bot = 0 AND session_id IS NOT NULL
+                    GROUP BY site_id, bucket_start, session_id
+                ) session_rows
+                GROUP BY site_id, bucket_start
+            ) session_stats
+            ON base.site_id = session_stats.site_id AND base.bucket_start = session_stats.bucket_start
+            ON DUPLICATE KEY UPDATE
+                views = views + VALUES(views),
+                uniques = uniques + VALUES(uniques),
+                ips = ips + VALUES(ips),
+                sessions = sessions + VALUES(sessions),
+                bounce_sessions = bounce_sessions + VALUES(bounce_sessions),
+                total_page_count = total_page_count + VALUES(total_page_count),
+                total_duration_seconds = total_duration_seconds + VALUES(total_duration_seconds)";
+
+        $statement = $this->db->prepare($sql);
+        $statement->execute([
+            ':start' => $windowStart->format('Y-m-d H:i:s'),
+            ':end' => $windowEnd->format('Y-m-d H:i:s'),
         ]);
     }
 
@@ -1304,6 +1377,28 @@ class Tracker
         $ensureIndex('idx_site_country', 'site_id, country_name, occurred_at');
         $ensureIndex('idx_site_region', 'site_id, region_name, occurred_at');
         $ensureIndex('idx_site_isp', 'site_id, isp_domain, occurred_at');
+    }
+
+    private function ensureHourlyRollupSchema(): void
+    {
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS hourly_rollups (
+                site_id INT UNSIGNED NOT NULL,
+                bucket_start DATETIME NOT NULL,
+                views BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                uniques BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                ips BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                sessions BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                bounce_sessions BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                total_page_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                total_duration_seconds BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (site_id, bucket_start),
+                INDEX idx_bucket_start (bucket_start),
+                CONSTRAINT fk_hourly_rollups_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
     }
 
     private function ensureIpDbExists(): void
