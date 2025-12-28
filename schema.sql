@@ -42,6 +42,72 @@ CREATE TABLE IF NOT EXISTS pageviews (
     CONSTRAINT fk_pageviews_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS pageview_rollups (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    site_id INT UNSIGNED NOT NULL,
+    occurred_at DATETIME NOT NULL,
+    views INT UNSIGNED NOT NULL DEFAULT 0,
+    uniques INT UNSIGNED NOT NULL DEFAULT 0,
+    ips INT UNSIGNED NOT NULL DEFAULT 0,
+    INDEX idx_rollups_site_time (site_id, occurred_at),
+    CONSTRAINT fk_pageview_rollups_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS pageview_dimension_rollups (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    site_id INT UNSIGNED NOT NULL,
+    occurred_at DATETIME NOT NULL,
+    dimension_type VARCHAR(64) NOT NULL,
+    dimension_value VARCHAR(255) NOT NULL,
+    dimension_secondary VARCHAR(255),
+    dimension_path TEXT,
+    dimension_code VARCHAR(32),
+    views INT UNSIGNED NOT NULL DEFAULT 0,
+    uniques INT UNSIGNED NOT NULL DEFAULT 0,
+    ips INT UNSIGNED NOT NULL DEFAULT 0,
+    sessions INT UNSIGNED NOT NULL DEFAULT 0,
+    total_pages INT UNSIGNED NOT NULL DEFAULT 0,
+    total_duration INT UNSIGNED NOT NULL DEFAULT 0,
+    bounce_sessions INT UNSIGNED NOT NULL DEFAULT 0,
+    INDEX idx_dimension_rollups_site_time (site_id, occurred_at),
+    INDEX idx_dimension_rollups_type (site_id, dimension_type),
+    CONSTRAINT fk_dimension_rollups_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS pageview_page_rollups (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    site_id INT UNSIGNED NOT NULL,
+    occurred_at DATETIME NOT NULL,
+    path TEXT NOT NULL,
+    views INT UNSIGNED NOT NULL DEFAULT 0,
+    uniques INT UNSIGNED NOT NULL DEFAULT 0,
+    ips INT UNSIGNED NOT NULL DEFAULT 0,
+    sessions INT UNSIGNED NOT NULL DEFAULT 0,
+    total_pages INT UNSIGNED NOT NULL DEFAULT 0,
+    total_duration INT UNSIGNED NOT NULL DEFAULT 0,
+    bounce_sessions INT UNSIGNED NOT NULL DEFAULT 0,
+    INDEX idx_page_rollups_site_time (site_id, occurred_at),
+    INDEX idx_page_rollups_site_path (site_id, path(128)),
+    CONSTRAINT fk_page_rollups_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS pageview_entry_rollups (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    site_id INT UNSIGNED NOT NULL,
+    occurred_at DATETIME NOT NULL,
+    path TEXT NOT NULL,
+    views INT UNSIGNED NOT NULL DEFAULT 0,
+    uniques INT UNSIGNED NOT NULL DEFAULT 0,
+    ips INT UNSIGNED NOT NULL DEFAULT 0,
+    sessions INT UNSIGNED NOT NULL DEFAULT 0,
+    total_pages INT UNSIGNED NOT NULL DEFAULT 0,
+    total_duration INT UNSIGNED NOT NULL DEFAULT 0,
+    bounce_sessions INT UNSIGNED NOT NULL DEFAULT 0,
+    INDEX idx_entry_rollups_site_time (site_id, occurred_at),
+    INDEX idx_entry_rollups_site_path (site_id, path(128)),
+    CONSTRAINT fk_entry_rollups_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS site_domains (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     site_id INT UNSIGNED NOT NULL,

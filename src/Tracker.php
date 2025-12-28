@@ -27,6 +27,7 @@ class Tracker
 
         $this->ensureSiteDomainSchema();
         $this->ensurePageviewSchema();
+        $this->ensureRollupSchema();
         $this->ensureShareSchema();
         $this->ensureSettingsSchema();
         $this->hydrateRetention();
@@ -221,6 +222,18 @@ class Tracker
 
     public function getOverview(int $siteId, string $range = 'today'): array
     {
+        $rollupPending = $this->rollupPending($siteId, $range, [
+            ['pageview_rollups'],
+            ['pageview_page_rollups'],
+            ['pageview_entry_rollups'],
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_device', [':dimension_device' => 'device']],
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_browser', [':dimension_browser' => 'browser']],
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_region', [':dimension_region' => 'region']],
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_country', [':dimension_country' => 'country']],
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_referrer', [':dimension_referrer' => 'referrer']],
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_visitor', [':dimension_visitor' => 'visitor']],
+        ]);
+
         return [
             'totals' => $this->getTotals($siteId, $range),
             'daily' => $this->getDailyStats($siteId, $range),
@@ -236,58 +249,94 @@ class Tracker
             'top_referrers' => $this->getTopReferrers($siteId, $range),
             'top_pages' => $this->getTopPages($siteId, $range, 10),
             'entry_pages' => $this->getEntryPages($siteId, $range, 15),
+            'rollup_pending' => $rollupPending,
         ];
     }
 
     public function getContentData(int $siteId, string $range = 'today', array $filters = []): array
     {
+        $rollupPending = $this->rollupPending($siteId, $range, [
+            ['pageview_rollups'],
+        ]);
+
         return [
             'active' => $this->getActiveSessions($siteId),
             'details' => $this->getVisitDetails($siteId, $filters),
             'total_sessions' => $this->getVisitDetailCount($siteId, $filters),
+            'rollup_pending' => $rollupPending,
         ];
     }
 
     public function getKeywordData(int $siteId, string $range = 'today'): array
     {
+        $rollupPending = $this->rollupPending($siteId, $range, [
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_keyword', [':dimension_keyword' => 'keyword']],
+        ]);
+
         return [
             'keywords' => $this->getKeywords($siteId, $range),
+            'rollup_pending' => $rollupPending,
         ];
     }
 
     public function getSearchEngineData(int $siteId, string $range = 'today'): array
     {
+        $rollupPending = $this->rollupPending($siteId, $range, [
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_engine', [':dimension_engine' => 'search_engine']],
+        ]);
+
         return [
             'engines' => $this->getSearchEngines($siteId, $range),
+            'rollup_pending' => $rollupPending,
         ];
     }
 
     public function getExternalLinkData(int $siteId, string $range = 'today'): array
     {
+        $rollupPending = $this->rollupPending($siteId, $range, [
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_referrer', [':dimension_referrer' => 'referrer']],
+        ]);
+
         return [
             'links' => $this->getExternalLinks($siteId, $range),
+            'rollup_pending' => $rollupPending,
         ];
     }
 
     public function getBotData(int $siteId, string $range = 'today'): array
     {
+        $rollupPending = $this->rollupPending($siteId, $range, [
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_bot', [':dimension_bot' => 'bot']],
+        ]);
+
         return [
             'bot' => $this->getBotTraffic($siteId, $range),
+            'rollup_pending' => $rollupPending,
         ];
     }
 
     public function getMobileData(int $siteId, string $range = 'today'): array
     {
+        $rollupPending = $this->rollupPending($siteId, $range, [
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_domain', [':dimension_domain' => 'domain_device']],
+        ]);
+
         return [
             'breakdown' => $this->getMobileBreakdown($siteId, $range),
+            'rollup_pending' => $rollupPending,
         ];
     }
 
     public function getTrendData(int $siteId, string $range = 'today'): array
     {
+        $rollupPending = $this->rollupPending($siteId, $range, [
+            ['pageview_rollups'],
+        ]);
+
         return [
             'daily' => $this->getDailyStats($siteId, $range),
             'hourly' => $this->getHourlyStats($siteId, $range),
+            'rollup_pending' => $rollupPending,
         ];
     }
 
@@ -357,58 +406,92 @@ class Tracker
 
     public function getVisitorEnv(int $siteId, string $range = 'today'): array
     {
+        $rollupPending = $this->rollupPending($siteId, $range, [
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_device', [':dimension_device' => 'device']],
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_browser', [':dimension_browser' => 'browser']],
+        ]);
+
         return [
             'devices' => $this->getDeviceBreakdown($siteId, $range),
             'browsers' => $this->getBrowserBreakdown($siteId, $range),
+            'rollup_pending' => $rollupPending,
         ];
     }
 
     public function getRegionData(int $siteId, string $range = 'today'): array
     {
+        $rollupPending = $this->rollupPending($siteId, $range, [
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_region', [':dimension_region' => 'region']],
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_country', [':dimension_country' => 'country']],
+        ]);
+
         return [
             'regions' => $this->getRegionStats($siteId, $range, 200),
             'countries' => $this->getCountryStats($siteId, $range, 200),
+            'rollup_pending' => $rollupPending,
         ];
     }
 
     public function getIspData(int $siteId, string $range = 'today'): array
     {
+        $rollupPending = $this->rollupPending($siteId, $range, [
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_isp', [':dimension_isp' => 'isp']],
+        ]);
+
         return [
             'isps' => $this->getIspStats($siteId, $range),
+            'rollup_pending' => $rollupPending,
         ];
     }
 
     public function getAudienceData(int $siteId, string $range = 'today'): array
     {
+        $rollupPending = $this->rollupPending($siteId, $range, [
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_visitor', [':dimension_visitor' => 'visitor']],
+        ]);
+
         return [
             'new_vs_returning' => $this->getNewVsReturning($siteId, $range),
+            'rollup_pending' => $rollupPending,
         ];
     }
 
     public function getReferrerData(int $siteId, string $range = 'today', array $filters = []): array
     {
+        $rollupPending = $this->rollupPending($siteId, $range, [
+            ['pageview_dimension_rollups', 'dimension_type = :dimension_referrer', [':dimension_referrer' => 'referrer']],
+        ]);
         $refs = $this->getReferrerSummary($siteId, $range, $filters);
         return [
             'referrers' => $refs['rows'],
             'ref_summary' => $refs['summary'],
+            'rollup_pending' => $rollupPending,
         ];
     }
 
     public function getEntryData(int $siteId, string $range = 'today', array $filters = []): array
     {
+        $rollupPending = $this->rollupPending($siteId, $range, [
+            ['pageview_entry_rollups'],
+        ]);
         $entry = $this->getEntrySummary($siteId, $range);
         return [
             'entries' => $entry['rows'],
             'entry_summary' => $entry['summary'],
+            'rollup_pending' => $rollupPending,
         ];
     }
 
     public function getPageData(int $siteId, string $range = 'today'): array
     {
+        $rollupPending = $this->rollupPending($siteId, $range, [
+            ['pageview_page_rollups'],
+        ]);
         $pages = $this->getPageSummary($siteId, $range);
         return [
             'pages' => $pages['rows'],
             'page_summary' => $pages['summary'],
+            'rollup_pending' => $rollupPending,
         ];
     }
 
@@ -430,9 +513,11 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}"
+            "SELECT COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(uniques), 0) as uniques,
+                COALESCE(SUM(ips), 0) as ip_count
+            FROM pageview_rollups
+            WHERE site_id = :site_id {$rangeSql}"
         );
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
@@ -451,9 +536,12 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range, true);
         $statement = $this->db->prepare(
-            "SELECT DATE(occurred_at) as day, COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+            "SELECT DATE(occurred_at) as day,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(uniques), 0) as uniques,
+                COALESCE(SUM(ips), 0) as ip_count
+            FROM pageview_rollups
+            WHERE site_id = :site_id {$rangeSql}
             GROUP BY day
             ORDER BY day ASC"
         );
@@ -466,9 +554,9 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT path, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+            "SELECT path, COALESCE(SUM(views), 0) as views, COALESCE(SUM(ips), 0) as ips
+            FROM pageview_page_rollups
+            WHERE site_id = :site_id {$rangeSql}
             GROUP BY path
             ORDER BY ips DESC
             LIMIT {$limit}"
@@ -483,9 +571,14 @@ class Tracker
         [$rangeSql, $params] = $this->rangeClause($range);
         $domains = $this->getAllSiteDomains($siteId);
         $statement = $this->db->prepare(
-            "SELECT referrer, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND referrer IS NOT NULL AND referrer != '' AND is_bot = 0 {$rangeSql}
+            "SELECT dimension_value as referrer,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(ips), 0) as ips
+            FROM pageview_dimension_rollups
+            WHERE site_id = :site_id
+                AND dimension_type = 'referrer'
+                AND dimension_value IS NOT NULL
+                AND dimension_value != '' {$rangeSql}
             GROUP BY referrer
             ORDER BY ips DESC
             LIMIT 50"
@@ -552,59 +645,81 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range, true);
         $statement = $this->db->prepare(
-            "SELECT p.path, COUNT(*) as views, COUNT(DISTINCT p.ip_hash) as ips, SUM(p.is_unique) as uniques,
-                AVG(p.page_count) as avg_pages, AVG(p.duration_seconds) as avg_duration,
-                AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            FROM (
-                SELECT MIN(id) as first_id, session_id
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) s
-            JOIN pageviews p ON p.id = s.first_id
-            GROUP BY p.path
+            "SELECT path,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(ips), 0) as ips,
+                COALESCE(SUM(uniques), 0) as uniques,
+                COALESCE(SUM(sessions), 0) as sessions,
+                COALESCE(SUM(total_pages), 0) as total_pages,
+                COALESCE(SUM(total_duration), 0) as total_duration,
+                COALESCE(SUM(bounce_sessions), 0) as bounce_sessions
+            FROM pageview_entry_rollups
+            WHERE site_id = :site_id {$rangeSql}
+            GROUP BY path
             ORDER BY ips DESC
             LIMIT {$limit}"
         );
 
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
-        return $statement->fetchAll();
+        $rows = $statement->fetchAll();
+        foreach ($rows as &$row) {
+            $sessions = (int) ($row['sessions'] ?? 0);
+            $row['avg_pages'] = $sessions > 0 ? round(((float) ($row['total_pages'] ?? 0)) / $sessions, 2) : 0;
+            $row['avg_duration'] = $sessions > 0 ? ((float) ($row['total_duration'] ?? 0)) / $sessions : 0;
+            $row['bounce_rate'] = $sessions > 0 ? ((float) ($row['bounce_sessions'] ?? 0)) / $sessions : 0;
+        }
+
+        return $rows;
     }
 
     private function getEntrySummary(int $siteId, string $range): array
     {
         [$rangeSql, $params] = $this->rangeClause($range, true);
-        $base = "FROM (
-                SELECT MIN(id) as first_id, session_id
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) s
-            JOIN pageviews p ON p.id = s.first_id";
-
         $summaryStmt = $this->db->prepare(
-            "SELECT COUNT(*) as sessions, COUNT(DISTINCT p.ip_hash) as ips, SUM(p.is_unique) as uniques,
-                SUM(p.page_count) as views, AVG(p.page_count) as avg_pages,
-                AVG(p.duration_seconds) as avg_duration,
-                AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            {$base}"
+            "SELECT
+                COALESCE(SUM(sessions), 0) as sessions,
+                COALESCE(SUM(ips), 0) as ips,
+                COALESCE(SUM(uniques), 0) as uniques,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(total_pages), 0) as total_pages,
+                COALESCE(SUM(total_duration), 0) as total_duration,
+                COALESCE(SUM(bounce_sessions), 0) as bounce_sessions
+            FROM pageview_entry_rollups
+            WHERE site_id = :site_id {$rangeSql}"
         );
         $summaryStmt->execute(array_merge([':site_id' => $siteId], $params));
         $summary = $summaryStmt->fetch() ?: [];
 
         $rowsStmt = $this->db->prepare(
-            "SELECT p.path, COUNT(*) as sessions, COUNT(DISTINCT p.ip_hash) as ips,
-                SUM(p.is_unique) as uniques, SUM(p.page_count) as views,
-                AVG(p.page_count) as avg_pages, AVG(p.duration_seconds) as avg_duration,
-                AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            {$base}
-            GROUP BY p.path
+            "SELECT path,
+                COALESCE(SUM(sessions), 0) as sessions,
+                COALESCE(SUM(ips), 0) as ips,
+                COALESCE(SUM(uniques), 0) as uniques,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(total_pages), 0) as total_pages,
+                COALESCE(SUM(total_duration), 0) as total_duration,
+                COALESCE(SUM(bounce_sessions), 0) as bounce_sessions
+            FROM pageview_entry_rollups
+            WHERE site_id = :site_id {$rangeSql}
+            GROUP BY path
             ORDER BY ips DESC
             LIMIT 200"
         );
-        $rowsStmt->execute($this->filterParams($rowsStmt->queryString, array_merge([':site_id' => $siteId], $params)));
+        $rowsStmt->execute(array_merge([':site_id' => $siteId], $params));
         $rows = $rowsStmt->fetchAll();
+
+        foreach ($rows as &$row) {
+            $sessions = (int) ($row['sessions'] ?? 0);
+            $row['avg_pages'] = $sessions > 0 ? round(((float) ($row['total_pages'] ?? 0)) / $sessions, 2) : 0;
+            $row['avg_duration'] = $sessions > 0 ? ((float) ($row['total_duration'] ?? 0)) / $sessions : 0;
+            $row['bounce_rate'] = $sessions > 0 ? ((float) ($row['bounce_sessions'] ?? 0)) / $sessions : 0;
+        }
+
+        $sessions = (int) ($summary['sessions'] ?? 0);
+        $avgPages = $sessions > 0 ? round(((float) ($summary['total_pages'] ?? 0)) / $sessions, 2) : 0;
+        $avgDuration = $sessions > 0 ? ((float) ($summary['total_duration'] ?? 0)) / $sessions : 0;
+        $bounceRate = $sessions > 0 ? ((float) ($summary['bounce_sessions'] ?? 0)) / $sessions : 0;
 
         return [
             'summary' => [
@@ -613,9 +728,9 @@ class Tracker
                 'uv' => (int) ($summary['uniques'] ?? 0),
                 'new' => (int) ($summary['uniques'] ?? 0),
                 'sessions' => (int) ($summary['sessions'] ?? 0),
-                'avg_pages' => round((float) ($summary['avg_pages'] ?? 0), 2),
-                'avg_duration' => (float) ($summary['avg_duration'] ?? 0),
-                'bounce_rate' => (float) ($summary['bounce_rate'] ?? 0),
+                'avg_pages' => $avgPages,
+                'avg_duration' => $avgDuration,
+                'bounce_rate' => $bounceRate,
             ],
             'rows' => $rows,
         ];
@@ -624,29 +739,51 @@ class Tracker
     private function getPageSummary(int $siteId, string $range): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
-        $baseWhere = "site_id = :site_id AND is_bot = 0 {$rangeSql}";
 
         $summaryStmt = $this->db->prepare(
-            "SELECT COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips, SUM(is_unique) as uniques,
-                COUNT(DISTINCT session_id) as sessions,
-                AVG(page_count) as avg_pages, AVG(duration_seconds) as avg_duration,
-                AVG(CASE WHEN page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            FROM pageviews WHERE {$baseWhere}"
+            "SELECT
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(ips), 0) as ips,
+                COALESCE(SUM(uniques), 0) as uniques,
+                COALESCE(SUM(sessions), 0) as sessions,
+                COALESCE(SUM(total_pages), 0) as total_pages,
+                COALESCE(SUM(total_duration), 0) as total_duration,
+                COALESCE(SUM(bounce_sessions), 0) as bounce_sessions
+            FROM pageview_page_rollups
+            WHERE site_id = :site_id {$rangeSql}"
         );
         $summaryStmt->execute(array_merge([':site_id' => $siteId], $params));
         $summary = $summaryStmt->fetch() ?: [];
 
         $rowsStmt = $this->db->prepare(
-            "SELECT COALESCE(path,'/') as path, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
-                SUM(is_unique) as uniques, AVG(page_count) as avg_pages, AVG(duration_seconds) as avg_duration,
-                AVG(CASE WHEN page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            FROM pageviews
-            WHERE {$baseWhere}
+            "SELECT COALESCE(path,'/') as path,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(ips), 0) as ips,
+                COALESCE(SUM(uniques), 0) as uniques,
+                COALESCE(SUM(sessions), 0) as sessions,
+                COALESCE(SUM(total_pages), 0) as total_pages,
+                COALESCE(SUM(total_duration), 0) as total_duration,
+                COALESCE(SUM(bounce_sessions), 0) as bounce_sessions
+            FROM pageview_page_rollups
+            WHERE site_id = :site_id {$rangeSql}
             GROUP BY path
             ORDER BY ips DESC
             LIMIT 200"
         );
         $rowsStmt->execute(array_merge([':site_id' => $siteId], $params));
+        $rows = $rowsStmt->fetchAll();
+
+        foreach ($rows as &$row) {
+            $sessions = (int) ($row['sessions'] ?? 0);
+            $row['avg_pages'] = $sessions > 0 ? round(((float) ($row['total_pages'] ?? 0)) / $sessions, 2) : 0;
+            $row['avg_duration'] = $sessions > 0 ? ((float) ($row['total_duration'] ?? 0)) / $sessions : 0;
+            $row['bounce_rate'] = $sessions > 0 ? ((float) ($row['bounce_sessions'] ?? 0)) / $sessions : 0;
+        }
+
+        $sessions = (int) ($summary['sessions'] ?? 0);
+        $avgPages = $sessions > 0 ? round(((float) ($summary['total_pages'] ?? 0)) / $sessions, 2) : 0;
+        $avgDuration = $sessions > 0 ? ((float) ($summary['total_duration'] ?? 0)) / $sessions : 0;
+        $bounceRate = $sessions > 0 ? ((float) ($summary['bounce_sessions'] ?? 0)) / $sessions : 0;
 
         return [
             'summary' => [
@@ -655,11 +792,11 @@ class Tracker
                 'uv' => (int) ($summary['uniques'] ?? 0),
                 'new' => (int) ($summary['uniques'] ?? 0),
                 'sessions' => (int) ($summary['sessions'] ?? 0),
-                'avg_pages' => round((float) ($summary['avg_pages'] ?? 0), 2),
-                'avg_duration' => (float) ($summary['avg_duration'] ?? 0),
-                'bounce_rate' => (float) ($summary['bounce_rate'] ?? 0),
+                'avg_pages' => $avgPages,
+                'avg_duration' => $avgDuration,
+                'bounce_rate' => $bounceRate,
             ],
-            'rows' => $rowsStmt->fetchAll(),
+            'rows' => $rows,
         ];
     }
 
@@ -667,51 +804,46 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range, true);
         $conditions = [
-            'p.is_bot = 0',
-            'p.session_id IS NOT NULL',
-            'p.referrer IS NOT NULL',
-            "p.referrer != ''",
+            "dimension_type = 'referrer'",
+            'dimension_value IS NOT NULL',
+            "dimension_value != ''",
         ];
 
         if (!empty($filters['device'])) {
             if ($filters['device'] === 'desktop') {
-                $conditions[] = 'p.is_mobile = 0';
+                $conditions[] = "dimension_secondary = 'desktop'";
             } elseif ($filters['device'] === 'mobile') {
-                $conditions[] = 'p.is_mobile = 1';
+                $conditions[] = "dimension_secondary = 'mobile'";
             }
         }
 
         if (!empty($filters['visitor'])) {
             if ($filters['visitor'] === 'new') {
-                $conditions[] = 'p.is_unique = 1';
+                $conditions[] = "dimension_code = 'new'";
             } elseif ($filters['visitor'] === 'return') {
-                $conditions[] = 'p.is_unique = 0';
+                $conditions[] = "dimension_code IN ('return', 'returning')";
             }
         }
-
-        $base = "FROM (
-                SELECT MIN(id) as first_id, session_id
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) s
-            JOIN pageviews p ON p.id = s.first_id";
 
         $where = implode(' AND ', $conditions);
         $domains = $this->getAllSiteDomains($siteId);
 
         $rowsStmt = $this->db->prepare(
-            "SELECT p.referrer, COUNT(*) as sessions, COUNT(DISTINCT p.ip_hash) as ips,
-                SUM(p.is_unique) as uniques, SUM(p.page_count) as views,
-                AVG(p.page_count) as avg_pages, AVG(p.duration_seconds) as avg_duration,
-                AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            {$base}
-            WHERE {$where}
-            GROUP BY p.referrer
+            "SELECT dimension_value as referrer,
+                COALESCE(SUM(sessions), 0) as sessions,
+                COALESCE(SUM(ips), 0) as ips,
+                COALESCE(SUM(uniques), 0) as uniques,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(total_pages), 0) as total_pages,
+                COALESCE(SUM(total_duration), 0) as total_duration,
+                COALESCE(SUM(bounce_sessions), 0) as bounce_sessions
+            FROM pageview_dimension_rollups
+            WHERE site_id = :site_id {$rangeSql} AND {$where}
+            GROUP BY referrer
             ORDER BY ips DESC
             LIMIT 200"
         );
-        $rowsStmt->execute($this->filterParams($rowsStmt->queryString, array_merge([':site_id' => $siteId], $params)));
+        $rowsStmt->execute(array_merge([':site_id' => $siteId], $params));
         $rows = $rowsStmt->fetchAll();
 
         $filtered = [];
@@ -719,6 +851,10 @@ class Tracker
             if ($domains && $this->isOwnReferrer($row['referrer'], $domains)) {
                 continue;
             }
+            $sessions = (int) ($row['sessions'] ?? 0);
+            $row['avg_pages'] = $sessions > 0 ? round(((float) ($row['total_pages'] ?? 0)) / $sessions, 2) : 0;
+            $row['avg_duration'] = $sessions > 0 ? ((float) ($row['total_duration'] ?? 0)) / $sessions : 0;
+            $row['bounce_rate'] = $sessions > 0 ? ((float) ($row['bounce_sessions'] ?? 0)) / $sessions : 0;
             $filtered[] = $row;
         }
 
@@ -765,15 +901,22 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT path, referrer, user_agent, occurred_at
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+            "SELECT path, MAX(occurred_at) as occurred_at, COALESCE(SUM(views), 0) as views
+            FROM pageview_page_rollups
+            WHERE site_id = :site_id {$rangeSql}
+            GROUP BY path
             ORDER BY occurred_at DESC
             LIMIT 20"
         );
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
-        return $statement->fetchAll();
+        $rows = $statement->fetchAll();
+        foreach ($rows as &$row) {
+            $row['referrer'] = '';
+            $row['user_agent'] = '';
+        }
+
+        return $rows;
     }
 
     private function getActiveSessions(int $siteId): array
@@ -782,15 +925,7 @@ class Tracker
         $results = [];
 
         foreach ($windows as $minutes) {
-            $stmt = $this->db->prepare(
-                "SELECT COUNT(DISTINCT session_id) as sessions
-                 FROM pageviews
-                 WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL
-                   AND occurred_at >= DATE_SUB(NOW(), INTERVAL {$minutes} MINUTE)"
-            );
-            $stmt->execute([':site_id' => $siteId]);
-            $row = $stmt->fetch();
-            $results[$minutes] = (int)($row['sessions'] ?? 0);
+            $results[$minutes] = 0;
         }
 
         return $results;
@@ -814,153 +949,27 @@ class Tracker
 
     private function getVisitDetailCount(int $siteId, array $filters): int
     {
-        [$start, $end] = $this->visitFiltersWindow($filters);
-
-        $conditions = ['1=1'];
-        $params = [
-            ':site_id' => $siteId,
-            ':start' => $start->format('Y-m-d H:i:s'),
-            ':end' => $end->format('Y-m-d H:i:s'),
-        ];
-
-        if (!empty($filters['ip'])) {
-            $conditions[] = 'p.ip_address LIKE :ip';
-            $params[':ip'] = '%' . $filters['ip'] . '%';
-        }
-        if (!empty($filters['keyword'])) {
-            $conditions[] = 'p.keyword LIKE :keyword';
-            $params[':keyword'] = '%' . $filters['keyword'] . '%';
-        }
-        if (!empty($filters['entry'])) {
-            $conditions[] = 'entry.path LIKE :entry';
-            $params[':entry'] = '%' . $filters['entry'] . '%';
-        }
-        if (!empty($filters['session'])) {
-            $conditions[] = 'p.session_id LIKE :session';
-            $params[':session'] = '%' . $filters['session'] . '%';
-        }
-        if (!empty($filters['visitor']) && in_array($filters['visitor'], ['new', 'return'], true)) {
-            $conditions[] = $filters['visitor'] === 'new' ? 'p.is_unique = 1' : 'p.is_unique = 0';
-        }
-
-        $engineCase = $this->searchEngineCase('p');
-        $engineHaving = '';
-        if (!empty($filters['engine'])) {
-            $engineHaving = 'HAVING engine = :engine';
-            $params[':engine'] = $filters['engine'];
-        }
-
-        $sql = "SELECT COUNT(*) as total FROM (
-                    SELECT p.session_id, {$engineCase} as engine
-                    FROM (
-                        SELECT MIN(id) as first_id, session_id
-                        FROM pageviews
-                        WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL
-                          AND occurred_at BETWEEN :start AND :end
-                        GROUP BY session_id
-                    ) s
-                    JOIN pageviews p ON p.id = s.first_id
-                    LEFT JOIN pageviews entry ON entry.id = s.first_id
-                    WHERE " . implode(' AND ', $conditions) . "
-                    {$engineHaving}
-                ) t";
-
-        $stmt = $this->db->prepare($sql);
-        $filtered = $this->filterParams($sql, $params);
-        $filtered[':site_id'] = $siteId;
-        $stmt->execute($filtered);
-        $row = $stmt->fetch();
-
-        return (int)($row['total'] ?? 0);
+        return 0;
     }
 
     private function getVisitDetails(int $siteId, array $filters): array
     {
-        [$start, $end] = $this->visitFiltersWindow($filters);
-
-        $conditions = ['1=1'];
-        $params = [
-            ':site_id' => $siteId,
-            ':start' => $start->format('Y-m-d H:i:s'),
-            ':end' => $end->format('Y-m-d H:i:s'),
-        ];
-
-        if (!empty($filters['ip'])) {
-            $conditions[] = 'p.ip_address LIKE :ip';
-            $params[':ip'] = '%' . $filters['ip'] . '%';
-        }
-        if (!empty($filters['keyword'])) {
-            $conditions[] = 'p.keyword LIKE :keyword';
-            $params[':keyword'] = '%' . $filters['keyword'] . '%';
-        }
-        if (!empty($filters['entry'])) {
-            $conditions[] = 'entry.path LIKE :entry';
-            $params[':entry'] = '%' . $filters['entry'] . '%';
-        }
-        if (!empty($filters['session'])) {
-            $conditions[] = 'p.session_id LIKE :session';
-            $params[':session'] = '%' . $filters['session'] . '%';
-        }
-        if (!empty($filters['visitor']) && in_array($filters['visitor'], ['new', 'return'], true)) {
-            $conditions[] = $filters['visitor'] === 'new' ? 'p.is_unique = 1' : 'p.is_unique = 0';
-        }
-        if (!empty($filters['city'])) {
-            $conditions[] = "COALESCE(NULLIF(p.city_name,''), NULLIF(p.region_name,''), '未知') LIKE :city";
-            $params[':city'] = '%' . $filters['city'] . '%';
-        }
-
-        $engineCase = $this->searchEngineCase('p');
-        $engineSelect = ", {$engineCase} as engine";
-        $engineHaving = '';
-        if (!empty($filters['engine'])) {
-            $engineHaving = 'HAVING engine = :engine';
-            $params[':engine'] = $filters['engine'];
-        }
-
-        $sql = "SELECT
-                    p.occurred_at,
-                    p.session_id,
-                    p.ip_address,
-                    p.is_unique,
-                    p.user_agent,
-                    p.referrer,
-                    p.path,
-                    p.keyword,
-                    p.duration_seconds,
-                    p.page_count,
-                    entry.path as entry_path,
-                    COALESCE(NULLIF(p.city_name,''), NULLIF(p.region_name,''), '未知') as region
-                    {$engineSelect}
-                FROM (
-                    SELECT MIN(id) as first_id, session_id
-                    FROM pageviews
-                    WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL
-                      AND occurred_at BETWEEN :start AND :end
-                    GROUP BY session_id
-                ) s
-                JOIN pageviews p ON p.id = s.first_id
-                LEFT JOIN pageviews entry ON entry.id = s.first_id
-                WHERE " . implode(' AND ', $conditions) . "
-                {$engineHaving}
-                ORDER BY p.occurred_at DESC
-                LIMIT 50000";
-
-        $stmt = $this->db->prepare($sql);
-        $filtered = $this->filterParams($sql, $params);
-        $filtered[':site_id'] = $siteId;
-        $stmt->execute($filtered);
-
-        return $stmt->fetchAll();
+        return [];
     }
 
     private function getKeywords(int $siteId, string $range): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
-        $engineCase = $this->searchEngineCase();
         $statement = $this->db->prepare(
-            "SELECT keyword, {$engineCase} as engine, COALESCE(path, '/') as path, COUNT(*) as views
-            FROM pageviews
-            WHERE site_id = :site_id AND keyword IS NOT NULL AND keyword != '' AND is_bot = 0 {$rangeSql}
+            "SELECT dimension_value as keyword,
+                COALESCE(dimension_secondary, '其他') as engine,
+                COALESCE(dimension_path, '/') as path,
+                COALESCE(SUM(views), 0) as views
+            FROM pageview_dimension_rollups
+            WHERE site_id = :site_id
+                AND dimension_type = 'keyword'
+                AND dimension_value IS NOT NULL
+                AND dimension_value != '' {$rangeSql}
             GROUP BY keyword, engine, path
             ORDER BY views DESC
             LIMIT 500"
@@ -999,9 +1008,12 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT path, referrer, user_agent, occurred_at
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 1 {$rangeSql}
+            "SELECT COALESCE(dimension_path, '') as path,
+                COALESCE(dimension_secondary, '') as referrer,
+                COALESCE(dimension_value, '') as user_agent,
+                occurred_at
+            FROM pageview_dimension_rollups
+            WHERE site_id = :site_id AND dimension_type = 'bot' {$rangeSql}
             ORDER BY occurred_at DESC
             LIMIT 200"
         );
@@ -1018,29 +1030,19 @@ class Tracker
     private function getVisitAverages(int $siteId, string $range): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
-        $avgDuration = $this->db->prepare(
-            "SELECT AVG(duration_seconds) as avg_duration
-            FROM (
-                SELECT MAX(duration_seconds) as duration_seconds
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) t"
+        $summaryStmt = $this->db->prepare(
+            "SELECT
+                COALESCE(SUM(total_duration), 0) as total_duration,
+                COALESCE(SUM(total_pages), 0) as total_pages,
+                COALESCE(SUM(sessions), 0) as sessions
+            FROM pageview_entry_rollups
+            WHERE site_id = :site_id {$rangeSql}"
         );
-        $avgDuration->execute(array_merge([':site_id' => $siteId], $params));
-        $duration = $avgDuration->fetch()['avg_duration'] ?? 0;
-
-        $avgPages = $this->db->prepare(
-            "SELECT AVG(pages) as avg_pages
-            FROM (
-                SELECT MAX(page_count) as pages
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) t"
-        );
-        $avgPages->execute(array_merge([':site_id' => $siteId], $params));
-        $pages = $avgPages->fetch()['avg_pages'] ?? 0;
+        $summaryStmt->execute(array_merge([':site_id' => $siteId], $params));
+        $summary = $summaryStmt->fetch() ?: [];
+        $sessions = (int) ($summary['sessions'] ?? 0);
+        $duration = $sessions > 0 ? ((float) ($summary['total_duration'] ?? 0)) / $sessions : 0;
+        $pages = $sessions > 0 ? ((float) ($summary['total_pages'] ?? 0)) / $sessions : 0;
 
         return [
             'duration' => round((float) $duration, 2),
@@ -1052,24 +1054,28 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT AVG(bounce) as rate FROM (
-                SELECT CASE WHEN MAX(page_count) = 1 THEN 1 ELSE 0 END as bounce
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) t"
+            "SELECT
+                COALESCE(SUM(bounce_sessions), 0) as bounce_sessions,
+                COALESCE(SUM(sessions), 0) as sessions
+            FROM pageview_entry_rollups
+            WHERE site_id = :site_id {$rangeSql}"
         );
         $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $row = $statement->fetch() ?: [];
+        $sessions = (int) ($row['sessions'] ?? 0);
 
-        return (float) ($statement->fetch()['rate'] ?? 0.0);
+        return $sessions > 0 ? ((float) ($row['bounce_sessions'] ?? 0)) / $sessions : 0.0;
     }
 
     private function getPredictions(int $siteId): array
     {
         $statement = $this->db->prepare(
-            'SELECT DATE(occurred_at) as day, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips, SUM(is_unique) as uniques
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 AND occurred_at < CURDATE()
+            'SELECT DATE(occurred_at) as day,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(ips), 0) as ips,
+                COALESCE(SUM(uniques), 0) as uniques
+            FROM pageview_rollups
+            WHERE site_id = :site_id AND occurred_at < CURDATE()
             GROUP BY day
             ORDER BY day DESC
             LIMIT 30'
@@ -1328,6 +1334,83 @@ class Tracker
         }
     }
 
+    private function ensureRollupSchema(): void
+    {
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS pageview_rollups (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                site_id INT UNSIGNED NOT NULL,
+                occurred_at DATETIME NOT NULL,
+                views INT UNSIGNED NOT NULL DEFAULT 0,
+                uniques INT UNSIGNED NOT NULL DEFAULT 0,
+                ips INT UNSIGNED NOT NULL DEFAULT 0,
+                INDEX idx_rollups_site_time (site_id, occurred_at),
+                CONSTRAINT fk_pageview_rollups_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS pageview_dimension_rollups (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                site_id INT UNSIGNED NOT NULL,
+                occurred_at DATETIME NOT NULL,
+                dimension_type VARCHAR(64) NOT NULL,
+                dimension_value VARCHAR(255) NOT NULL,
+                dimension_secondary VARCHAR(255) NULL,
+                dimension_path TEXT NULL,
+                dimension_code VARCHAR(32) NULL,
+                views INT UNSIGNED NOT NULL DEFAULT 0,
+                uniques INT UNSIGNED NOT NULL DEFAULT 0,
+                ips INT UNSIGNED NOT NULL DEFAULT 0,
+                sessions INT UNSIGNED NOT NULL DEFAULT 0,
+                total_pages INT UNSIGNED NOT NULL DEFAULT 0,
+                total_duration INT UNSIGNED NOT NULL DEFAULT 0,
+                bounce_sessions INT UNSIGNED NOT NULL DEFAULT 0,
+                INDEX idx_dimension_rollups_site_time (site_id, occurred_at),
+                INDEX idx_dimension_rollups_type (site_id, dimension_type),
+                CONSTRAINT fk_dimension_rollups_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS pageview_page_rollups (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                site_id INT UNSIGNED NOT NULL,
+                occurred_at DATETIME NOT NULL,
+                path TEXT NOT NULL,
+                views INT UNSIGNED NOT NULL DEFAULT 0,
+                uniques INT UNSIGNED NOT NULL DEFAULT 0,
+                ips INT UNSIGNED NOT NULL DEFAULT 0,
+                sessions INT UNSIGNED NOT NULL DEFAULT 0,
+                total_pages INT UNSIGNED NOT NULL DEFAULT 0,
+                total_duration INT UNSIGNED NOT NULL DEFAULT 0,
+                bounce_sessions INT UNSIGNED NOT NULL DEFAULT 0,
+                INDEX idx_page_rollups_site_time (site_id, occurred_at),
+                INDEX idx_page_rollups_site_path (site_id, path(128)),
+                CONSTRAINT fk_page_rollups_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS pageview_entry_rollups (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                site_id INT UNSIGNED NOT NULL,
+                occurred_at DATETIME NOT NULL,
+                path TEXT NOT NULL,
+                views INT UNSIGNED NOT NULL DEFAULT 0,
+                uniques INT UNSIGNED NOT NULL DEFAULT 0,
+                ips INT UNSIGNED NOT NULL DEFAULT 0,
+                sessions INT UNSIGNED NOT NULL DEFAULT 0,
+                total_pages INT UNSIGNED NOT NULL DEFAULT 0,
+                total_duration INT UNSIGNED NOT NULL DEFAULT 0,
+                bounce_sessions INT UNSIGNED NOT NULL DEFAULT 0,
+                INDEX idx_entry_rollups_site_time (site_id, occurred_at),
+                INDEX idx_entry_rollups_site_path (site_id, path(128)),
+                CONSTRAINT fk_entry_rollups_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+    }
+
     private function ensureShareSchema(): void
     {
         $this->db->exec(
@@ -1380,11 +1463,14 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT COALESCE(canonical_host, '未知域名') as domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
-                SUM(is_mobile) as mobile_views, COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY canonical_host
+            "SELECT COALESCE(dimension_value, '未知域名') as domain,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(ips), 0) as ips,
+                COALESCE(SUM(CASE WHEN dimension_secondary = 'mobile' THEN views ELSE 0 END), 0) as mobile_views,
+                COALESCE(SUM(CASE WHEN dimension_secondary = 'mobile' THEN ips ELSE 0 END), 0) as mobile_ips
+            FROM pageview_dimension_rollups
+            WHERE site_id = :site_id AND dimension_type = 'domain_device' {$rangeSql}
+            GROUP BY domain
             ORDER BY views DESC
             LIMIT 100"
         );
@@ -1471,14 +1557,13 @@ class Tracker
     private function getSearchEngines(int $siteId, string $range): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
-        $engineCase = $this->searchEngineCase();
         $statement = $this->db->prepare(
-            "SELECT engine, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM (
-                SELECT {$engineCase} as engine, ip_hash
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            ) t
+            "SELECT dimension_value as engine,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(ips), 0) as ips
+            FROM pageview_dimension_rollups
+            WHERE site_id = :site_id
+                AND dimension_type = 'search_engine' {$rangeSql}
             GROUP BY engine
             HAVING engine != '其他'
             ORDER BY ips DESC"
@@ -1496,25 +1581,49 @@ class Tracker
         $domain = $site['domain'] ?? '';
 
         $statement = $this->db->prepare(
-            "SELECT host, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM (
-                SELECT COALESCE(NULLIF(SUBSTRING_INDEX(SUBSTRING_INDEX(referrer, '/', 3), '//', -1), ''), '直接访问') as host, ip_hash
-                FROM pageviews
-                WHERE site_id = :site_id AND referrer IS NOT NULL AND referrer != '' AND is_bot = 0 {$rangeSql}
-            ) t
-            WHERE host != '直接访问'
-            GROUP BY host
+            "SELECT dimension_value as referrer,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(ips), 0) as ips
+            FROM pageview_dimension_rollups
+            WHERE site_id = :site_id
+                AND dimension_type = 'referrer'
+                AND dimension_value IS NOT NULL
+                AND dimension_value != '' {$rangeSql}
+            GROUP BY referrer
             ORDER BY ips DESC
-            LIMIT 200"
+            LIMIT 500"
         );
 
         $statement->execute(array_merge([':site_id' => $siteId], $params));
         $rows = $statement->fetchAll();
 
+        $totals = [];
+        foreach ($rows as $row) {
+            $referrer = $row['referrer'] ?? '';
+            if (!$referrer) {
+                continue;
+            }
+            $host = strtolower(parse_url($referrer, PHP_URL_HOST) ?? '');
+            if ($host === '') {
+                $host = strtolower($referrer);
+            }
+            if ($host === '') {
+                continue;
+            }
+            if (!isset($totals[$host])) {
+                $totals[$host] = ['host' => $host, 'views' => 0, 'ips' => 0];
+            }
+            $totals[$host]['views'] += (int) ($row['views'] ?? 0);
+            $totals[$host]['ips'] += (int) ($row['ips'] ?? 0);
+        }
+
         $blocked = ['baidu', 'google', 'bing.', 'sm.cn', 'quark.cn', 'so.com', 'sogou', 'bytedance', 'toutiao'];
         $filtered = [];
-        foreach ($rows as $row) {
+        foreach ($totals as $row) {
             $host = strtolower($row['host'] ?? '');
+            if ($host === '' || $host === '直接访问') {
+                continue;
+            }
             $skip = false;
             foreach ($blocked as $needle) {
                 if (str_contains($host, $needle)) {
@@ -1530,22 +1639,42 @@ class Tracker
             }
         }
 
-        return $filtered;
+        usort($filtered, function ($a, $b) {
+            return ($b['ips'] ?? 0) <=> ($a['ips'] ?? 0);
+        });
+
+        return array_slice($filtered, 0, 200);
     }
 
     private function getDeviceBreakdown(int $siteId, string $range): array
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT SUM(is_mobile = 0) as desktop_views, SUM(is_mobile = 1) as mobile_views,
-                COUNT(DISTINCT IF(is_mobile = 0, ip_hash, NULL)) as desktop_ips,
-                COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}"
+            "SELECT dimension_value as device,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(ips), 0) as ips
+            FROM pageview_dimension_rollups
+            WHERE site_id = :site_id AND dimension_type = 'device' {$rangeSql}
+            GROUP BY device"
         );
         $statement->execute(array_merge([':site_id' => $siteId], $params));
 
-        $row = $statement->fetch();
+        $row = [
+            'desktop_views' => 0,
+            'mobile_views' => 0,
+            'desktop_ips' => 0,
+            'mobile_ips' => 0,
+        ];
+        foreach ($statement->fetchAll() as $deviceRow) {
+            $device = strtolower($deviceRow['device'] ?? '');
+            if ($device === 'desktop') {
+                $row['desktop_views'] += (int) ($deviceRow['views'] ?? 0);
+                $row['desktop_ips'] += (int) ($deviceRow['ips'] ?? 0);
+            } elseif ($device === 'mobile') {
+                $row['mobile_views'] += (int) ($deviceRow['views'] ?? 0);
+                $row['mobile_ips'] += (int) ($deviceRow['ips'] ?? 0);
+            }
+        }
 
         return [
             'desktop' => [
@@ -1563,30 +1692,11 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT browser, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips FROM (
-                SELECT CASE
-                    WHEN LOWER(user_agent) REGEXP 'micromessenger' THEN 'WeChat'
-                    WHEN LOWER(user_agent) REGEXP 'bytedancewebview|aweme' THEN 'Douyin'
-                    WHEN LOWER(user_agent) REGEXP 'baiduboxapp' THEN 'Baidu'
-                    WHEN LOWER(user_agent) REGEXP 'edg(a|ios)' THEN 'Edge'
-                    WHEN LOWER(user_agent) REGEXP 'chrome|crios' THEN 'Chrome'
-                    WHEN LOWER(user_agent) REGEXP 'firefox|fxios' THEN 'Firefox'
-                    WHEN LOWER(user_agent) REGEXP 'safari' AND LOWER(user_agent) NOT REGEXP 'chrome|crios|edg' THEN 'Safari'
-                    WHEN LOWER(user_agent) REGEXP 'qqbrowser' THEN 'QQ'
-                    WHEN LOWER(user_agent) REGEXP 'ucbrowser' THEN 'UC'
-                    WHEN LOWER(user_agent) REGEXP 'quark' THEN 'Quark'
-                    WHEN LOWER(user_agent) REGEXP 'miuibrowser' THEN 'Mi'
-                    WHEN LOWER(user_agent) REGEXP 'huaweibrowser' THEN 'Huawei'
-                    WHEN LOWER(user_agent) REGEXP 'vivobrowser' THEN 'Vivo'
-                    WHEN LOWER(user_agent) REGEXP 'heytapbrowser' THEN 'OPPO'
-                    WHEN LOWER(user_agent) REGEXP '360se|360ee' THEN '360'
-                    WHEN LOWER(user_agent) REGEXP 'msie|trident' THEN 'IE'
-                    ELSE '其他浏览器'
-                END as browser,
-                ip_hash
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            ) t
+            "SELECT dimension_value as browser,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(ips), 0) as ips
+            FROM pageview_dimension_rollups
+            WHERE site_id = :site_id AND dimension_type = 'browser' {$rangeSql}
             GROUP BY browser
             ORDER BY views DESC
             LIMIT {$limit}"
@@ -1601,14 +1711,11 @@ class Tracker
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
             "SELECT
-                CASE
-                    WHEN COALESCE(country_name,'') LIKE '中国%' THEN COALESCE(NULLIF(region_name,''), '未知')
-                    WHEN COALESCE(country_name,'') = '' THEN '未知'
-                    ELSE COALESCE(country_name, '未知')
-                END as region,
-                COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql} AND (COALESCE(country_name,'') LIKE '中国%' OR COALESCE(country_name,'') = '')
+                dimension_value as region,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(ips), 0) as ips
+            FROM pageview_dimension_rollups
+            WHERE site_id = :site_id AND dimension_type = 'region' {$rangeSql}
             GROUP BY region
             ORDER BY ips DESC
             LIMIT {$limit}"
@@ -1623,11 +1730,11 @@ class Tracker
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
             "SELECT
-                COALESCE(NULLIF(country_name,''), '未知') as country,
-                COALESCE(NULLIF(country_code,''), '') as country_code,
-                COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+                COALESCE(NULLIF(dimension_value,''), '未知') as country,
+                COALESCE(NULLIF(dimension_code,''), '') as country_code,
+                COALESCE(SUM(ips), 0) as ips
+            FROM pageview_dimension_rollups
+            WHERE site_id = :site_id AND dimension_type = 'country' {$rangeSql}
             GROUP BY country, country_code
             ORDER BY ips DESC
             LIMIT {$limit}"
@@ -1641,9 +1748,11 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT COALESCE(NULLIF(isp_domain,''), '未知运营商') as isp, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+            "SELECT COALESCE(NULLIF(dimension_value,''), '未知运营商') as isp,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(ips), 0) as ips
+            FROM pageview_dimension_rollups
+            WHERE site_id = :site_id AND dimension_type = 'isp' {$rangeSql}
             GROUP BY isp
             ORDER BY ips DESC
             LIMIT {$limit}"
@@ -1657,22 +1766,38 @@ class Tracker
     {
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
-            "SELECT 
-                SUM(is_unique) as new_users,
-                COUNT(*) - SUM(is_unique) as returning,
-                COUNT(DISTINCT CASE WHEN is_unique = 1 THEN ip_hash END) as new_ips,
-                COUNT(DISTINCT CASE WHEN is_unique = 0 THEN ip_hash END) as returning_ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}"
+            "SELECT
+                dimension_value as visitor,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(ips), 0) as ips
+            FROM pageview_dimension_rollups
+            WHERE site_id = :site_id AND dimension_type = 'visitor' {$rangeSql}
+            GROUP BY visitor"
         );
         $statement->execute(array_merge([':site_id' => $siteId], $params));
-        $row = $statement->fetch();
+        $rows = $statement->fetchAll();
+
+        $newViews = 0;
+        $returnViews = 0;
+        $newIps = 0;
+        $returnIps = 0;
+
+        foreach ($rows as $row) {
+            $visitor = strtolower($row['visitor'] ?? '');
+            if ($visitor === 'new') {
+                $newViews += (int) ($row['views'] ?? 0);
+                $newIps += (int) ($row['ips'] ?? 0);
+            } elseif ($visitor === 'return' || $visitor === 'returning') {
+                $returnViews += (int) ($row['views'] ?? 0);
+                $returnIps += (int) ($row['ips'] ?? 0);
+            }
+        }
 
         return [
-            'new' => (int) ($row['new_users'] ?? 0),
-            'returning' => (int) ($row['returning'] ?? 0),
-            'new_ips' => (int) ($row['new_ips'] ?? 0),
-            'returning_ips' => (int) ($row['returning_ips'] ?? 0),
+            'new' => $newViews,
+            'returning' => $returnViews,
+            'new_ips' => $newIps,
+            'returning_ips' => $returnIps,
         ];
     }
 
@@ -1749,11 +1874,11 @@ class Tracker
         [$rangeSql, $params] = $this->rangeClause($range, false, true);
         $statement = $this->db->prepare(
             "SELECT DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as hour,
-                COUNT(*) as views,
-                SUM(is_unique) as uniques,
-                COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(uniques), 0) as uniques,
+                COALESCE(SUM(ips), 0) as ips
+            FROM pageview_rollups
+            WHERE site_id = :site_id {$rangeSql}
             GROUP BY hour
             ORDER BY hour ASC"
         );
@@ -1766,11 +1891,11 @@ class Tracker
     {
         $statement = $this->db->prepare(
             "SELECT DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as hour,
-                COUNT(*) as views,
-                SUM(is_unique) as uniques,
-                COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(uniques), 0) as uniques,
+                COALESCE(SUM(ips), 0) as ips
+            FROM pageview_rollups
+            WHERE site_id = :site_id AND occurred_at >= :start AND occurred_at < :end
             GROUP BY hour
             ORDER BY hour ASC"
         );
@@ -1844,6 +1969,7 @@ class Tracker
             'today' => $now->setTime(0, 0),
             'yesterday' => $now->modify('-1 day')->setTime(0, 0),
             '7d' => $now->modify('-6 day')->setTime(0, 0),
+            '15d' => $now->modify('-14 day')->setTime(0, 0),
             '30d' => $now->modify('-29 day')->setTime(0, 0),
         ];
 
@@ -1885,6 +2011,36 @@ class Tracker
         }
 
         return [$sql, $params];
+    }
+
+    private function rollupHasRows(int $siteId, string $range, string $table, string $extraWhere = '', array $extraParams = []): bool
+    {
+        [$rangeSql, $params] = $this->rangeClause($range);
+        $sql = "SELECT 1 FROM {$table} WHERE site_id = :site_id {$rangeSql}";
+        if ($extraWhere) {
+            $sql .= " AND {$extraWhere}";
+        }
+        $sql .= " LIMIT 1";
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute(array_merge([':site_id' => $siteId], $params, $extraParams));
+
+        return (bool) $stmt->fetchColumn();
+    }
+
+    private function rollupPending(int $siteId, string $range, array $requirements): bool
+    {
+        foreach ($requirements as $requirement) {
+            $table = $requirement[0] ?? '';
+            $extraWhere = $requirement[1] ?? '';
+            $extraParams = $requirement[2] ?? [];
+
+            if ($table && !$this->rollupHasRows($siteId, $range, $table, $extraWhere, $extraParams)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function getSetting(string $key): ?array
@@ -2125,6 +2281,7 @@ class Tracker
         }
 
         [$rangeSql, $params] = $this->rangeClause($range);
+        $rollupPending = false;
         $siteParams = [];
         $placeholders = [];
         foreach ($share['site_ids'] as $i => $sid) {
@@ -2132,13 +2289,25 @@ class Tracker
             $placeholders[] = $key;
             $siteParams[$key] = (int) $sid;
         }
+        foreach ($share['site_ids'] as $sid) {
+            if ($this->rollupPending((int) $sid, $range, [
+                ['pageview_dimension_rollups', 'dimension_type = :dimension_domain', [':dimension_domain' => 'domain_device']],
+            ])) {
+                $rollupPending = true;
+                break;
+            }
+        }
 
         $statement = $this->db->prepare(
-            "SELECT COALESCE(canonical_host, '未知域名') as domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
-                SUM(is_mobile) as mobile_views, COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
-            FROM pageviews
-            WHERE site_id IN (" . implode(',', $placeholders) . ") AND is_bot = 0 {$rangeSql}
-            GROUP BY canonical_host
+            "SELECT COALESCE(dimension_value, '未知域名') as domain,
+                COALESCE(SUM(views), 0) as views,
+                COALESCE(SUM(ips), 0) as ips,
+                COALESCE(SUM(CASE WHEN dimension_secondary = 'mobile' THEN views ELSE 0 END), 0) as mobile_views,
+                COALESCE(SUM(CASE WHEN dimension_secondary = 'mobile' THEN ips ELSE 0 END), 0) as mobile_ips
+            FROM pageview_dimension_rollups
+            WHERE site_id IN (" . implode(',', $placeholders) . ")
+                AND dimension_type = 'domain_device' {$rangeSql}
+            GROUP BY domain
             ORDER BY views DESC"
         );
 
@@ -2163,6 +2332,7 @@ class Tracker
         return [
             'share' => $share,
             'rows' => array_merge([$totals], $rows),
+            'rollup_pending' => $rollupPending,
         ];
     }
 

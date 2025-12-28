@@ -37,6 +37,7 @@ $window = $tracker->rangeWindow($range);
         .filter-btn { padding:6px 10px; border-radius:8px; border:1px solid #e2e8f0; background:#fff; cursor:pointer; font-weight:600; text-decoration:none; color:#0f172a; }
         .filter-btn.active { background:#0f172a; color:#fff; border-color:#0f172a; }
         .pill { display:inline-block; padding:4px 8px; background:#f1f5f9; border-radius:999px; border:1px solid #e2e8f0; font-size:12px; }
+        .rollup-notice { margin:12px 0 0; border:1px dashed #f59e0b; background:#fefce8; color:#854d0e; padding:10px 12px; border-radius:10px; font-weight:600; }
     </style>
 </head>
 <body>
@@ -47,6 +48,9 @@ $window = $tracker->rangeWindow($range);
             <p class="muted">链接无效或数据暂不可用。</p>
         <?php else: ?>
             <p class="muted" style="margin:6px 0 12px;">时间范围：<?= htmlspecialchars($window['start'], ENT_QUOTES, 'UTF-8') ?> - <?= htmlspecialchars($window['end'], ENT_QUOTES, 'UTF-8') ?></p>
+            <?php if (!empty($data['rollup_pending'])): ?>
+                <div class="rollup-notice">当前范围数据仍在汇总中，请稍后刷新。</div>
+            <?php endif; ?>
             <div class="filters">
                 <?php foreach ($allowedRanges as $r): ?>
                     <a class="filter-btn <?= $range === $r ? 'active' : '' ?>" href="/share.php?token=<?= htmlspecialchars($token, ENT_QUOTES, 'UTF-8') ?>&range=<?= $r ?>"><?= ['today'=>'今日','yesterday'=>'昨日','7d'=>'近7天','30d'=>'近30天'][$r] ?></a>

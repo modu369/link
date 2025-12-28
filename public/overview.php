@@ -50,6 +50,7 @@ render_topbar($branding);
         <?php if (!$selectedSite || !$data): ?>
             <div class="card empty">请选择或创建站点后查看数据。</div>
         <?php else: ?>
+            <?php render_rollup_notice(!empty($data['rollup_pending'])); ?>
             <section class="overview-hero">
                 <div class="hero-header">
                     <div class="hero-title">

@@ -67,6 +67,7 @@ function render_head(string $title = '统计后台'): void
             .section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
             .pill { padding: 4px 8px; background: #f1f5f9; border-radius: 999px; color: #0f172a; border: 1px solid var(--border); font-size: 12px; }
             .empty { padding: 24px; text-align: center; color: var(--muted); }
+            .rollup-notice { border: 1px dashed var(--border); background: #fefce8; color: #854d0e; padding: 10px 12px; border-radius: 10px; font-weight: 600; }
         </style>
     </head>
     <body>
@@ -185,6 +186,16 @@ function render_range_filters(array $allowedRanges, string $range, string $page,
             </a>
         <?php endforeach; ?>
     </div>
+    <?php
+}
+
+function render_rollup_notice(bool $pending): void
+{
+    if (!$pending) {
+        return;
+    }
+    ?>
+    <div class="rollup-notice">当前范围数据仍在汇总中，请稍后刷新。</div>
     <?php
 }
 
