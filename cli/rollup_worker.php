@@ -94,7 +94,7 @@ function referrerHostExpr(string $alias): string
     return "COALESCE(NULLIF(SUBSTRING_INDEX(SUBSTRING_INDEX({$alias}.referrer, '/', 3), '//', -1), ''), '直接访问')";
 }
 
-function rollupSiteHour(PDO $db, int $siteId, DateTimeImmutable $bucketStart, DateTimeImmutable $bucketEnd): void
+function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeImmutable $bucketStart, DateTimeImmutable $bucketEnd): array
 {
     $bucketKey = $bucketStart->format('Y-m-d H:i:s');
     $start = $bucketStart->format('Y-m-d H:i:s');
@@ -315,9 +315,22 @@ function rollupSiteHour(PDO $db, int $siteId, DateTimeImmutable $bucketStart, Da
         $entryStmt->execute([':site_id' => $siteId, ':bucket' => $bucketKey, ':start' => $start, ':end' => $end]);
 
         $db->commit();
+
+        return [
+            'site_id' => $siteId,
+            'bucket' => $bucketKey,
+            'pv' => (int) ($totals['views'] ?? 0),
+            'uv' => (int) ($totals['uniques'] ?? 0),
+            'ips' => (int) ($totals['ips'] ?? 0),
+            'sessions' => (int) ($sessions['sessions'] ?? 0),
+        ];
     } catch (Throwable $e) {
         $db->rollBack();
-        throw $e;
+        return [
+            'site_id' => $siteId,
+            'bucket' => $bucketKey,
+            'error' => $e->getMessage(),
+        ];
     }
 }
 
@@ -343,7 +356,29 @@ do {
         while ($current < $endHour) {
             $bucketStart = $current;
             $bucketEnd = $bucketStart->modify('+1 hour');
-            rollupSiteHour($db, $siteId, $bucketStart, $bucketEnd);
+            $summary = rollupSiteHour($db, $ipResolver, $siteId, $bucketStart, $bucketEnd);
+            if (!empty($summary['error'])) {
+                echo sprintf(
+                    "[rollup worker %d/%d] site=%d bucket=%s error=%s\n",
+                    $workerIndex,
+                    $workerCount,
+                    $siteId,
+                    $summary['bucket'] ?? $bucketStart->format('Y-m-d H:i:s'),
+                    $summary['error']
+                );
+            } else {
+                echo sprintf(
+                    "[rollup worker %d/%d] site=%d bucket=%s pv=%d uv=%d ip=%d sessions=%d\n",
+                    $workerIndex,
+                    $workerCount,
+                    $summary['site_id'],
+                    $summary['bucket'],
+                    $summary['pv'],
+                    $summary['uv'],
+                    $summary['ips'],
+                    $summary['sessions']
+                );
+            }
             $current = $bucketEnd;
         }
 
