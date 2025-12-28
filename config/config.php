@@ -36,4 +36,19 @@ return [
         // 每天定时清理的小时（0-23）
         'cleanup_hour' => (int) (getenv('RETENTION_CLEANUP_HOUR') ?: 3),
     ],
+    'queue' => [
+        'enabled' => (bool) (getenv('QUEUE_ENABLED') ?: false),
+        'key' => getenv('QUEUE_KEY') ?: 'queue:pageviews',
+        'batch_size' => (int) (getenv('QUEUE_BATCH_SIZE') ?: 1000),
+        'sharding' => [
+            // site_id 或 time
+            'strategy' => getenv('QUEUE_SHARD_STRATEGY') ?: 'time',
+            // site_id 分片时生效
+            'count' => (int) (getenv('QUEUE_SHARD_COUNT') ?: 8),
+            // time 分片时生效
+            'time_format' => getenv('QUEUE_SHARD_TIME_FORMAT') ?: 'YmdH',
+            // 活跃分片集合 TTL（秒）
+            'shards_set_ttl' => (int) (getenv('QUEUE_SHARDS_TTL') ?: 172800),
+        ],
+    ],
 ];

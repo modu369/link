@@ -2,6 +2,7 @@
 require __DIR__ . '/../src/Database.php';
 require __DIR__ . '/../src/RedisClient.php';
 require __DIR__ . '/../src/Tracker.php';
+require __DIR__ . '/../src/PageviewQueue.php';
 
 $config = require __DIR__ . '/../config/config.php';
 
@@ -28,9 +29,28 @@ $payload = [
     'session_id' => $_GET['sid2'] ?? null,
     'duration' => $_GET['dur'] ?? null,
     'page_count' => $_GET['pc'] ?? null,
+    'occurred_at' => date('Y-m-d H:i:s'),
 ];
 
-$tracker->recordPageview($trackingId, $payload);
+$queueConfig = $config['queue'] ?? [];
+$queueEnabled = (bool) ($queueConfig['enabled'] ?? false);
+
+if ($queueEnabled) {
+    $queue = new PageviewQueue($redis, $queueConfig);
+    $siteId = null;
+    $strategy = $queueConfig['sharding']['strategy'] ?? 'time';
+    if ($strategy === 'site_id') {
+        $site = $tracker->getSiteByTrackingId($trackingId);
+        if (!$site) {
+            http_response_code(204);
+            exit;
+        }
+        $siteId = (int) $site['id'];
+    }
+    $queue->enqueue($trackingId, $payload, $siteId);
+} else {
+    $tracker->recordPageview($trackingId, $payload);
+}
 
 header('Content-Type: image/gif');
 header('Cache-Control: no-cache, no-store, must-revalidate');

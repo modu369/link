@@ -157,17 +157,79 @@ class Tracker
             return;
         }
 
+        $row = $this->buildPageviewRow($site, $payload);
+        if (!$row) {
+            return;
+        }
+
+        $this->insertPageviewRows([$row]);
+    }
+
+    public function recordPageviews(array $events, int $chunkSize = 1000): void
+    {
+        if (empty($events)) {
+            return;
+        }
+
+        $cache = [];
+        $rows = [];
+        foreach ($events as $event) {
+            if (!is_array($event)) {
+                continue;
+            }
+            $trackingId = $event['tracking_id'] ?? '';
+            if (!$trackingId) {
+                continue;
+            }
+            $site = $this->resolveSiteForTrackingId($trackingId, $cache);
+            if (!$site) {
+                continue;
+            }
+            $payload = $event['payload'] ?? [];
+            $row = $this->buildPageviewRow($site, $payload);
+            if ($row) {
+                $rows[] = $row;
+            }
+        }
+
+        if (empty($rows)) {
+            return;
+        }
+
+        $chunkSize = max(1, min(2000, $chunkSize));
+        foreach (array_chunk($rows, $chunkSize) as $chunk) {
+            $this->insertPageviewRows($chunk);
+        }
+    }
+
+    private function resolveSiteForTrackingId(string $trackingId, array &$cache): ?array
+    {
+        if (array_key_exists($trackingId, $cache)) {
+            return $cache[$trackingId];
+        }
+
+        $site = $this->getSiteByTrackingId($trackingId);
+        $cache[$trackingId] = $site ?: null;
+
+        return $cache[$trackingId];
+    }
+
+    private function buildPageviewRow(array $site, array $payload): ?array
+    {
         $parsedUrl = $this->parseUrl($payload['path'] ?? null, $site['domain'] ?? null);
         $path = $parsedUrl['path'];
         $host = $parsedUrl['host'];
         $canonicalHost = $parsedUrl['canonical'];
         $allowedDomains = $this->getAllSiteDomains((int) $site['id']);
         if ($canonicalHost && !empty($allowedDomains) && !in_array($canonicalHost, $allowedDomains, true)) {
-            return;
+            return null;
         }
+
         $ip = $payload['ip'] ?? '';
         $ipHash = $ip ? hash('sha256', $ip) : null;
-        $uniqueKey = sprintf('unique:%s:%s', $site['id'], date('Y-m-d'));
+        $occurredAt = $payload['occurred_at'] ?? date('Y-m-d H:i:s');
+        $occurredDate = date('Y-m-d', strtotime($occurredAt));
+        $uniqueKey = sprintf('unique:%s:%s', $site['id'], $occurredDate);
         $isUnique = false;
 
         $sessionId = $payload['session_id'] ?? ($ipHash ?: bin2hex(random_bytes(8)));
@@ -190,33 +252,82 @@ class Tracker
             $this->redis->expire($uniqueKey, 172800);
         }
 
-        $statement = $this->db->prepare(
-            'INSERT INTO pageviews (site_id, host, canonical_host, path, referrer, user_agent, ip_address, ip_hash, session_id, duration_seconds, page_count, keyword, is_mobile, is_bot, is_unique, country_name, region_name, city_name, isp_domain, country_code, continent_code, occurred_at) VALUES
-            (:site_id, :host, :canonical_host, :path, :referrer, :user_agent, :ip_address, :ip_hash, :session_id, :duration_seconds, :page_count, :keyword, :is_mobile, :is_bot, :is_unique, :country_name, :region_name, :city_name, :isp_domain, :country_code, :continent_code, NOW())'
+        return [
+            'site_id' => $site['id'],
+            'host' => $host,
+            'canonical_host' => $canonicalHost,
+            'path' => $path,
+            'referrer' => $payload['referrer'] ?? null,
+            'user_agent' => $userAgent,
+            'ip_address' => $ip,
+            'ip_hash' => $ipHash,
+            'session_id' => $sessionId,
+            'duration_seconds' => $duration,
+            'page_count' => $pageCount,
+            'keyword' => $keyword,
+            'is_mobile' => $isMobile ? 1 : 0,
+            'is_bot' => $isBot ? 1 : 0,
+            'is_unique' => $isUnique ? 1 : 0,
+            'country_name' => $countryName,
+            'region_name' => $regionName,
+            'city_name' => $cityName,
+            'isp_domain' => $ispName,
+            'country_code' => $countryCode,
+            'continent_code' => $continentCode,
+            'occurred_at' => $occurredAt,
+        ];
+    }
+
+    private function insertPageviewRows(array $rows): void
+    {
+        if (empty($rows)) {
+            return;
+        }
+
+        $columns = [
+            'site_id',
+            'host',
+            'canonical_host',
+            'path',
+            'referrer',
+            'user_agent',
+            'ip_address',
+            'ip_hash',
+            'session_id',
+            'duration_seconds',
+            'page_count',
+            'keyword',
+            'is_mobile',
+            'is_bot',
+            'is_unique',
+            'country_name',
+            'region_name',
+            'city_name',
+            'isp_domain',
+            'country_code',
+            'continent_code',
+            'occurred_at',
+        ];
+
+        $placeholders = [];
+        $values = [];
+        foreach ($rows as $row) {
+            $rowPlaceholders = [];
+            foreach ($columns as $column) {
+                $rowPlaceholders[] = '?';
+                $values[] = $row[$column] ?? null;
+            }
+            $placeholders[] = '(' . implode(',', $rowPlaceholders) . ')';
+        }
+
+        $sql = sprintf(
+            'INSERT INTO pageviews (%s) VALUES %s',
+            implode(', ', $columns),
+            implode(', ', $placeholders)
         );
-        $statement->execute([
-            ':site_id' => $site['id'],
-            ':host' => $host,
-            ':canonical_host' => $canonicalHost,
-            ':path' => $path,
-            ':referrer' => $payload['referrer'] ?? null,
-            ':user_agent' => $userAgent,
-            ':ip_address' => $ip,
-            ':ip_hash' => $ipHash,
-            ':session_id' => $sessionId,
-            ':duration_seconds' => $duration,
-            ':page_count' => $pageCount,
-            ':keyword' => $keyword,
-            ':is_mobile' => $isMobile ? 1 : 0,
-            ':is_bot' => $isBot ? 1 : 0,
-            ':is_unique' => $isUnique ? 1 : 0,
-            ':country_name' => $countryName,
-            ':region_name' => $regionName,
-            ':city_name' => $cityName,
-            ':isp_domain' => $ispName,
-            ':country_code' => $countryCode,
-            ':continent_code' => $continentCode,
-        ]);
+
+        $statement = $this->db->prepare($sql);
+        $statement->execute($values);
     }
 
     public function getOverview(int $siteId, string $range = 'today'): array

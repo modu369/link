@@ -59,3 +59,20 @@
 - `pageviews` 表默认包含复合索引（站点+时间、站点+蜘蛛、站点+移动端、站点+域名、站点+会话）以支持 20+ 站点与亿级日访问查询。
 - 建议为高并发环境开启 MySQL 分区（如按日期 RANGE 分区或 HASH(site_id) 分区）并启用冷热数据分库分表。
 - Redis 用作 UV 去重和站点缓存，可按 `REDIS_PREFIX` 区分实例或采用哨兵集群；必要时可在业务层增加按天汇总表减少实时聚合压力。
+
+## 异步 Worker（队列摄取 + 汇总）
+系统支持把 `track.php` 的事件写入 Redis 队列，再由 Worker 批量写入 `pageviews`，并由 rollup Worker 定时汇总到 `pageview_rollups`：
+
+1. **ingest worker**：从 Redis 取事件并批量写入 `pageviews`。
+2. **rollup worker**：按天汇总 `pageviews` 写入 `pageview_rollups`。
+3. **多实例并发**：
+   - `QUEUE_SHARD_STRATEGY=site_id` 时按站点分片（`QUEUE_SHARD_COUNT` 控制分片数）。
+   - `QUEUE_SHARD_STRATEGY=time` 时按时间分片（`QUEUE_SHARD_TIME_FORMAT` 控制时间粒度）。
+4. **批量大小**：默认 1k，可通过 `QUEUE_BATCH_SIZE` 调整到 1k~10k。
+5. **监控指标**：Redis `metrics:ingest`/`metrics:rollup` 保存队列深度、批处理耗时、rollup 延迟。
+
+启用队列需要设置 `QUEUE_ENABLED=true`，并运行 Worker：
+```bash
+php workers/ingest.php --batch-size=1000 --sleep=1
+php workers/rollup.php --days=1 --interval=300
+```

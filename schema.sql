@@ -64,3 +64,17 @@ CREATE TABLE IF NOT EXISTS settings (
     setting_value TEXT NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS pageview_rollups (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    site_id INT UNSIGNED NOT NULL,
+    period_start DATE NOT NULL,
+    pageviews INT UNSIGNED DEFAULT 0,
+    unique_visitors INT UNSIGNED DEFAULT 0,
+    unique_ips INT UNSIGNED DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_rollup_site_period (site_id, period_start),
+    INDEX idx_rollup_site_period (site_id, period_start),
+    CONSTRAINT fk_rollups_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
