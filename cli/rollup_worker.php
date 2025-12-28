@@ -1,9 +1,9 @@
 #!/usr/bin/env php
 <?php
-require __DIR__ . '/../src/Database.php';
-require __DIR__ . '/../src/RedisClient.php';
-require __DIR__ . '/../src/Tracker.php';
-require __DIR__ . '/../src/IpResolver.php';
+require_once __DIR__ . '/../src/Database.php';
+require_once __DIR__ . '/../src/RedisClient.php';
+require_once __DIR__ . '/../src/Tracker.php';
+require_once __DIR__ . '/../src/IpResolver.php';
 
 $config = require __DIR__ . '/../config/config.php';
 $db = Database::connection($config['db']);
