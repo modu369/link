@@ -25,6 +25,14 @@ $hoursBack = max(1, (int) ($options['hours'] ?? 2));
 $workerIndex = max(1, (int) ($options['worker'] ?? 1));
 $workerCount = max(1, (int) ($options['workers'] ?? 1));
 
+ob_implicit_flush(true);
+
+function logLine(string $message): void
+{
+    echo $message . PHP_EOL;
+    flush();
+}
+
 function truncateBucketStart(DateTimeImmutable $time): DateTimeImmutable
 {
     return $time->setTime((int) $time->format('H'), 0, 0);
@@ -342,6 +350,24 @@ do {
     $cutoff = $now->modify('-5 minutes');
     $endHour = truncateBucketStart($cutoff)->modify('+1 hour');
 
+    logLine(sprintf(
+        "[rollup worker %d/%d] sites=%d window_end=%s",
+        $workerIndex,
+        $workerCount,
+        count($siteIds),
+        $endHour->format('Y-m-d H:i:s')
+    ));
+
+    if (empty($siteIds)) {
+        if (!$loop) {
+            break;
+        }
+        if ($sleepSeconds > 0) {
+            sleep($sleepSeconds);
+        }
+        continue;
+    }
+
     foreach ($siteIds as $siteId) {
         if ($workerCount > 1 && ($siteId % $workerCount) !== ($workerIndex - 1)) {
             continue;
@@ -358,16 +384,16 @@ do {
             $bucketEnd = $bucketStart->modify('+1 hour');
             $summary = rollupSiteHour($db, $ipResolver, $siteId, $bucketStart, $bucketEnd);
             if (!empty($summary['error'])) {
-                echo sprintf(
+                logLine(sprintf(
                     "[rollup worker %d/%d] site=%d bucket=%s error=%s\n",
                     $workerIndex,
                     $workerCount,
                     $siteId,
                     $summary['bucket'] ?? $bucketStart->format('Y-m-d H:i:s'),
                     $summary['error']
-                );
+                ));
             } else {
-                echo sprintf(
+                logLine(sprintf(
                     "[rollup worker %d/%d] site=%d bucket=%s pv=%d uv=%d ip=%d sessions=%d\n",
                     $workerIndex,
                     $workerCount,
@@ -377,7 +403,7 @@ do {
                     $summary['uv'],
                     $summary['ips'],
                     $summary['sessions']
-                );
+                ));
             }
             $current = $bucketEnd;
         }
