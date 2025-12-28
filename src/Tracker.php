@@ -12,6 +12,7 @@ class Tracker
     private string $ipdbPath = '';
     private IpResolver $ipResolver;
     private bool $hasIpHashColumn = false;
+    private bool $hasGeoColumns = false;
     private bool $rollupOnly = true;
     private string $ingestMode = 'direct';
     private string $ingestQueueKey = 'tracker:ingest:pageviews';
@@ -227,6 +228,12 @@ class Tracker
         }
         $ip = $this->sanitizeIp($payload['ip'] ?? null);
         $ipHash = $ip ? hash('sha256', $ip) : null;
+        $geo = $ip ? $this->resolveIpMeta($ip) : [];
+        $countryName = $this->limitText($geo['country_name'] ?? '', 128);
+        $regionName = $this->limitText($geo['region_name'] ?? '', 128);
+        $cityName = $this->limitText($geo['city_name'] ?? '', 128);
+        $ispName = $this->limitText($geo['isp_domain'] ?? '', 128);
+        $countryCode = $this->limitText($geo['country_code'] ?? '', 16);
         $audienceLabel = 'returning';
         $uvToday = false;
         $isUnique = false;
@@ -245,8 +252,8 @@ class Tracker
         }
 
         $statement = $this->db->prepare(
-            'INSERT INTO pageviews (site_id, host, canonical_host, path, referrer, user_agent, ip_address, ip_hash, session_id, duration_seconds, page_count, keyword, is_mobile, is_bot, is_unique, occurred_at) VALUES
-            (:site_id, :host, :canonical_host, :path, :referrer, :user_agent, :ip_address, :ip_hash, :session_id, :duration_seconds, :page_count, :keyword, :is_mobile, :is_bot, :is_unique, NOW())'
+            'INSERT INTO pageviews (site_id, host, canonical_host, path, referrer, user_agent, ip_address, ip_hash, session_id, duration_seconds, page_count, keyword, is_mobile, is_bot, is_unique, country_name, region_name, city_name, isp_domain, country_code, occurred_at) VALUES
+            (:site_id, :host, :canonical_host, :path, :referrer, :user_agent, :ip_address, :ip_hash, :session_id, :duration_seconds, :page_count, :keyword, :is_mobile, :is_bot, :is_unique, :country_name, :region_name, :city_name, :isp_domain, :country_code, NOW())'
         );
         $statement->execute([
             ':site_id' => $site['id'],
@@ -264,6 +271,11 @@ class Tracker
             ':is_mobile' => $isMobile ? 1 : 0,
             ':is_bot' => $isBot ? 1 : 0,
             ':is_unique' => $isUnique ? 1 : 0,
+            ':country_name' => $countryName ?: null,
+            ':region_name' => $regionName ?: null,
+            ':city_name' => $cityName ?: null,
+            ':isp_domain' => $ispName ?: null,
+            ':country_code' => $countryCode ?: null,
         ]);
 
         if ($isBot) {
@@ -2734,6 +2746,11 @@ class Tracker
         $ensureColumn('is_mobile', 'TINYINT(1) DEFAULT 0');
         $ensureColumn('is_bot', 'TINYINT(1) DEFAULT 0');
         $ensureColumn('is_unique', 'TINYINT(1) DEFAULT 0');
+        $ensureColumn('country_name', 'VARCHAR(128)');
+        $ensureColumn('region_name', 'VARCHAR(128)');
+        $ensureColumn('city_name', 'VARCHAR(128)');
+        $ensureColumn('isp_domain', 'VARCHAR(128)');
+        $ensureColumn('country_code', 'VARCHAR(16)');
         $ensureColumn('occurred_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
         $ensureColumn('ip_address', 'VARCHAR(45)');
         $ensureColumn('ip_hash', 'CHAR(64)');
@@ -2744,6 +2761,7 @@ class Tracker
         $ensureIndex('idx_site_ref', 'site_id, referrer(120), occurred_at');
 
         $this->hasIpHashColumn = $columnExists('ip_hash');
+        $this->hasGeoColumns = $columnExists('region_name') && $columnExists('city_name');
 
         // If the column is missing (or inaccessible), attempt to add it and gracefully fall back.
         if (!$this->hasIpHashColumn) {
@@ -2765,6 +2783,35 @@ class Tracker
                     "UPDATE pageviews SET ip_hash = SHA2(COALESCE(ip_address, ''), 256)
                     WHERE (ip_hash IS NULL OR ip_hash = '') LIMIT 50000"
                 );
+            }
+        }
+
+        if ($this->hasGeoColumns) {
+            $geoBackfill = $this->db->query(
+                "SELECT 1 FROM pageviews WHERE (region_name IS NULL OR region_name = '') AND ip_address IS NOT NULL AND ip_address != '' LIMIT 1"
+            )->fetchColumn();
+            if ($geoBackfill !== false) {
+                $rows = $this->db->query(
+                    "SELECT id, ip_address FROM pageviews
+                     WHERE (region_name IS NULL OR region_name = '') AND ip_address IS NOT NULL AND ip_address != ''
+                     ORDER BY id DESC LIMIT 2000"
+                )->fetchAll();
+                foreach ($rows as $row) {
+                    $meta = $this->resolveIpMeta($row['ip_address'] ?? '');
+                    $stmt = $this->db->prepare(
+                        'UPDATE pageviews
+                         SET country_name = :country, region_name = :region, city_name = :city, isp_domain = :isp, country_code = :code
+                         WHERE id = :id'
+                    );
+                    $stmt->execute([
+                        ':country' => $meta['country_name'] ?? null,
+                        ':region' => $meta['region_name'] ?? null,
+                        ':city' => $meta['city_name'] ?? null,
+                        ':isp' => $meta['isp_domain'] ?? null,
+                        ':code' => $meta['country_code'] ?? null,
+                        ':id' => $row['id'],
+                    ]);
+                }
             }
         }
 

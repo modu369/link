@@ -6,8 +6,8 @@ $trackingId = $selectedSite['tracking_id'] ?? '';
 $baseUrl = rtrim($branding['base_url'] ?? $config['app']['base_url'] ?? 'http://localhost', '/');
 $scriptCode = sprintf(
     '<script src="%s/js/tracker.js" data-site="%s"></script>',
-    htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'),
-    htmlspecialchars($trackingId, ENT_QUOTES, 'UTF-8')
+    $baseUrl,
+    $trackingId
 );
 
 render_head('获取代码 - 统计后台');
@@ -27,7 +27,7 @@ render_topbar($branding);
                     </div>
                 </div>
                 <div style="display:flex; flex-direction:column; gap:12px;">
-                    <code class="inline" id="trackingCode"><?= $scriptCode ?></code>
+                    <code class="inline" id="trackingCode"><?= htmlspecialchars($scriptCode, ENT_QUOTES, 'UTF-8') ?></code>
                     <button class="ghost" type="button" id="copyCode">复制代码</button>
                 </div>
             </section>
