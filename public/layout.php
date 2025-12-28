@@ -99,6 +99,11 @@ function render_topbar(array $branding): void
             <a class="logout" href="?action=logout">退出</a>
         </div>
     </header>
+    <?php if (!empty($GLOBALS['rollup_only'])): ?>
+        <div style="padding:10px 24px; background:#fff7ed; color:#9a3412; border-bottom:1px solid #fed7aa; font-size:12px;">
+            当前为 Rollup 汇总模式，若数据为空说明正在汇总，请稍后刷新。
+        </div>
+    <?php endif; ?>
     <?php
 }
 

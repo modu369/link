@@ -2,6 +2,7 @@
 session_start();
 
 $config = require __DIR__ . '/../config/config.php';
+$GLOBALS['rollup_only'] = (bool) ($config['rollup_only'] ?? true);
 
 if (($_GET['action'] ?? '') === 'logout') {
     $entry = $config['security']['login_entry'] ?? 'admin';

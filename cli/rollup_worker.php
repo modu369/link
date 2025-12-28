@@ -3,11 +3,13 @@
 require __DIR__ . '/../src/Database.php';
 require __DIR__ . '/../src/RedisClient.php';
 require __DIR__ . '/../src/Tracker.php';
+require __DIR__ . '/../src/IpResolver.php';
 
 $config = require __DIR__ . '/../config/config.php';
 $db = Database::connection($config['db']);
 $redis = RedisClient::connection($config['redis']);
 $tracker = new Tracker($db, $redis, $config);
+$ipResolver = new IpResolver($config['ipdb']['path'] ?? null);
 
 $options = getopt('', [
     'loop::',
@@ -73,6 +75,18 @@ function regionLabelCase(string $alias): string
         WHEN COALESCE({$alias}.country_name,'') = '' THEN '未知'
         ELSE COALESCE({$alias}.country_name, '未知')
     END";
+}
+
+function regionLabel(string $country, string $region): string
+{
+    if ($country === '') {
+        return '未知';
+    }
+    if (str_starts_with($country, '中国')) {
+        return $region !== '' ? $region : '未知';
+    }
+
+    return $country;
 }
 
 function referrerHostExpr(string $alias): string
@@ -153,18 +167,6 @@ function rollupSiteHour(PDO $db, int $siteId, DateTimeImmutable $bucketStart, Da
                 COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
                 FROM pageviews p WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
                 GROUP BY dimension_value",
-            'region' => "SELECT LEFT(" . regionLabelCase('p') . ", 255) as dimension_value,
-                COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-                FROM pageviews p WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
-                GROUP BY dimension_value",
-            'country' => "SELECT LEFT(COALESCE(NULLIF(country_name,''), '未知'), 255) as dimension_value,
-                COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-                FROM pageviews p WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
-                GROUP BY dimension_value",
-            'isp' => "SELECT LEFT(COALESCE(NULLIF(isp_domain,''), '未知运营商'), 255) as dimension_value,
-                COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-                FROM pageviews p WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
-                GROUP BY dimension_value",
             'referrer_host' => "SELECT LEFT(" . referrerHostExpr('p') . ", 255) as dimension_value,
                 COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
                 FROM pageviews p WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
@@ -196,6 +198,88 @@ function rollupSiteHour(PDO $db, int $siteId, DateTimeImmutable $bucketStart, Da
                 ':dimension' => $dimension,
                 ':start' => $start,
                 ':end' => $end,
+            ]);
+        }
+
+        $geoStmt = $db->prepare(
+            "SELECT ip_address, ip_hash, COUNT(*) as pv, SUM(is_unique) as uv
+             FROM pageviews
+             WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
+               AND ip_address IS NOT NULL AND ip_address != ''
+             GROUP BY ip_hash, ip_address"
+        );
+        $geoStmt->execute([':site_id' => $siteId, ':start' => $start, ':end' => $end]);
+        $geoRows = $geoStmt->fetchAll();
+
+        $regionAgg = [];
+        $countryAgg = [];
+        $ispAgg = [];
+
+        foreach ($geoRows as $row) {
+            $meta = $ipResolver->resolve($row['ip_address'] ?? '');
+            $country = trim($meta['country_name'] ?? '');
+            $region = trim($meta['region_name'] ?? '');
+            $isp = trim($meta['isp_domain'] ?? '');
+
+            $regionKey = regionLabel($country, $region);
+            $countryKey = $country !== '' ? $country : '未知';
+            $ispKey = $isp !== '' ? $isp : '未知运营商';
+
+            $pv = (int) ($row['pv'] ?? 0);
+            $uv = (int) ($row['uv'] ?? 0);
+            $ips = 1;
+
+            $regionAgg[$regionKey]['pv'] = ($regionAgg[$regionKey]['pv'] ?? 0) + $pv;
+            $regionAgg[$regionKey]['uv'] = ($regionAgg[$regionKey]['uv'] ?? 0) + $uv;
+            $regionAgg[$regionKey]['ips'] = ($regionAgg[$regionKey]['ips'] ?? 0) + $ips;
+
+            $countryAgg[$countryKey]['pv'] = ($countryAgg[$countryKey]['pv'] ?? 0) + $pv;
+            $countryAgg[$countryKey]['uv'] = ($countryAgg[$countryKey]['uv'] ?? 0) + $uv;
+            $countryAgg[$countryKey]['ips'] = ($countryAgg[$countryKey]['ips'] ?? 0) + $ips;
+
+            $ispAgg[$ispKey]['pv'] = ($ispAgg[$ispKey]['pv'] ?? 0) + $pv;
+            $ispAgg[$ispKey]['uv'] = ($ispAgg[$ispKey]['uv'] ?? 0) + $uv;
+            $ispAgg[$ispKey]['ips'] = ($ispAgg[$ispKey]['ips'] ?? 0) + $ips;
+        }
+
+        $geoInsert = $db->prepare(
+            'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+             VALUES (:site_id, :bucket, :dimension, :value, :pv, :uv, :ips, 0, 0, 0, 0)'
+        );
+
+        foreach ($regionAgg as $label => $data) {
+            $geoInsert->execute([
+                ':site_id' => $siteId,
+                ':bucket' => $bucketKey,
+                ':dimension' => 'region',
+                ':value' => mb_substr($label, 0, 255),
+                ':pv' => $data['pv'],
+                ':uv' => $data['uv'],
+                ':ips' => $data['ips'],
+            ]);
+        }
+
+        foreach ($countryAgg as $label => $data) {
+            $geoInsert->execute([
+                ':site_id' => $siteId,
+                ':bucket' => $bucketKey,
+                ':dimension' => 'country',
+                ':value' => mb_substr($label, 0, 255),
+                ':pv' => $data['pv'],
+                ':uv' => $data['uv'],
+                ':ips' => $data['ips'],
+            ]);
+        }
+
+        foreach ($ispAgg as $label => $data) {
+            $geoInsert->execute([
+                ':site_id' => $siteId,
+                ':bucket' => $bucketKey,
+                ':dimension' => 'isp',
+                ':value' => mb_substr($label, 0, 255),
+                ':pv' => $data['pv'],
+                ':uv' => $data['uv'],
+                ':ips' => $data['ips'],
             ]);
         }
 

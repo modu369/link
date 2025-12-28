@@ -238,13 +238,6 @@ class Tracker
         $isBot = $this->isBot($userAgent);
         $isMobile = $this->isMobile($userAgent);
         $keyword = $this->limitText($this->extractKeyword($referrer) ?? '', 255);
-        $ipMeta = $this->resolveIpMeta($ip);
-        $countryName = $this->limitText($ipMeta['country_name'] ?? '未知', 128, '未知');
-        $regionName = $this->limitText($ipMeta['region_name'] ?? '未知', 128, '未知');
-        $cityName = $this->limitText($ipMeta['city_name'] ?? '', 128);
-        $ispName = $this->limitText($ipMeta['isp_domain'] ?? '未知运营商', 128, '未知运营商');
-        $countryCode = $this->limitText($ipMeta['country_code'] ?? '', 8);
-        $continentCode = $this->limitText($ipMeta['continent_code'] ?? '', 8);
 
         if (!$isBot && $ipHash) {
             [$uvToday, $audienceLabel] = $this->markIpAudienceState((int) $site['id'], $ipHash);
@@ -252,8 +245,8 @@ class Tracker
         }
 
         $statement = $this->db->prepare(
-            'INSERT INTO pageviews (site_id, host, canonical_host, path, referrer, user_agent, ip_address, ip_hash, session_id, duration_seconds, page_count, keyword, is_mobile, is_bot, is_unique, country_name, region_name, city_name, isp_domain, country_code, continent_code, occurred_at) VALUES
-            (:site_id, :host, :canonical_host, :path, :referrer, :user_agent, :ip_address, :ip_hash, :session_id, :duration_seconds, :page_count, :keyword, :is_mobile, :is_bot, :is_unique, :country_name, :region_name, :city_name, :isp_domain, :country_code, :continent_code, NOW())'
+            'INSERT INTO pageviews (site_id, host, canonical_host, path, referrer, user_agent, ip_address, ip_hash, session_id, duration_seconds, page_count, keyword, is_mobile, is_bot, is_unique, occurred_at) VALUES
+            (:site_id, :host, :canonical_host, :path, :referrer, :user_agent, :ip_address, :ip_hash, :session_id, :duration_seconds, :page_count, :keyword, :is_mobile, :is_bot, :is_unique, NOW())'
         );
         $statement->execute([
             ':site_id' => $site['id'],
@@ -271,12 +264,6 @@ class Tracker
             ':is_mobile' => $isMobile ? 1 : 0,
             ':is_bot' => $isBot ? 1 : 0,
             ':is_unique' => $isUnique ? 1 : 0,
-            ':country_name' => $countryName,
-            ':region_name' => $regionName,
-            ':city_name' => $cityName,
-            ':isp_domain' => $ispName,
-            ':country_code' => $countryCode,
-            ':continent_code' => $continentCode,
         ]);
 
         if ($isBot) {
@@ -2697,21 +2684,15 @@ class Tracker
                 site_id INT UNSIGNED NOT NULL,
                 host VARCHAR(255),
                 canonical_host VARCHAR(255),
-                path TEXT,
-                referrer TEXT,
-                user_agent TEXT,
+                path VARCHAR(2048) NOT NULL,
+                referrer VARCHAR(2048),
+                user_agent VARCHAR(1024),
                 ip_address VARCHAR(45),
                 ip_hash CHAR(64),
                 session_id VARCHAR(64),
                 duration_seconds INT DEFAULT 0,
                 page_count INT DEFAULT 1,
                 keyword VARCHAR(255),
-                country_name VARCHAR(128),
-                region_name VARCHAR(128),
-                city_name VARCHAR(128),
-                isp_domain VARCHAR(128),
-                country_code VARCHAR(8),
-                continent_code VARCHAR(8),
                 is_mobile TINYINT(1) DEFAULT 0,
                 is_bot TINYINT(1) DEFAULT 0,
                 is_unique TINYINT(1) DEFAULT 0,
@@ -2722,9 +2703,6 @@ class Tracker
                 INDEX idx_site_mobile (site_id, is_mobile, occurred_at),
                 INDEX idx_site_host (site_id, canonical_host, occurred_at),
                 INDEX idx_site_ip (site_id, ip_hash, occurred_at),
-                INDEX idx_site_country (site_id, country_name, occurred_at),
-                INDEX idx_site_region (site_id, region_name, occurred_at),
-                INDEX idx_site_isp (site_id, isp_domain, occurred_at),
                 INDEX idx_site_session (site_id, session_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
         );
@@ -2760,6 +2738,9 @@ class Tracker
 
         $ensureColumn('host', 'VARCHAR(255)', 'AFTER site_id');
         $ensureColumn('canonical_host', 'VARCHAR(255)', $columnExists('host') ? 'AFTER host' : 'AFTER site_id');
+        $ensureColumn('path', 'VARCHAR(2048)');
+        $ensureColumn('referrer', 'VARCHAR(2048)');
+        $ensureColumn('user_agent', 'VARCHAR(1024)');
         $ensureColumn('session_id', 'VARCHAR(64)');
         $ensureColumn('duration_seconds', 'INT DEFAULT 0');
         $ensureColumn('page_count', 'INT DEFAULT 1');
@@ -2770,20 +2751,11 @@ class Tracker
         $ensureColumn('occurred_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
         $ensureColumn('ip_address', 'VARCHAR(45)');
         $ensureColumn('ip_hash', 'CHAR(64)');
-        $ensureColumn('country_name', 'VARCHAR(128)');
-        $ensureColumn('region_name', 'VARCHAR(128)');
-        $ensureColumn('city_name', 'VARCHAR(128)');
-        $ensureColumn('isp_domain', 'VARCHAR(128)');
-        $ensureColumn('country_code', 'VARCHAR(8)');
-        $ensureColumn('continent_code', 'VARCHAR(8)');
 
         $ensureIndex('idx_site_host', 'site_id, canonical_host, occurred_at');
         $ensureIndex('idx_site_mobile', 'site_id, is_mobile, occurred_at');
         $ensureIndex('idx_site_ip', 'site_id, ip_hash, occurred_at');
         $ensureIndex('idx_site_ref', 'site_id, referrer(120), occurred_at');
-        $ensureIndex('idx_site_country', 'site_id, country_name, occurred_at');
-        $ensureIndex('idx_site_region', 'site_id, region_name, occurred_at');
-        $ensureIndex('idx_site_isp', 'site_id, isp_domain, occurred_at');
 
         $this->hasIpHashColumn = $columnExists('ip_hash');
 
