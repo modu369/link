@@ -368,8 +368,10 @@ do {
         continue;
     }
 
+    $processedBuckets = 0;
+
     foreach ($siteIds as $siteId) {
-        if ($workerCount > 1 && ($siteId % $workerCount) !== ($workerIndex - 1)) {
+        if ($workerCount > 1 && ((($siteId - 1) % $workerCount) !== ($workerIndex - 1))) {
             continue;
         }
 
@@ -377,6 +379,10 @@ do {
         $jobStmt->execute([':site_id' => $siteId]);
         $last = $jobStmt->fetchColumn();
         $lastRolled = $last ? new DateTimeImmutable($last) : truncateBucketStart($now->modify("-{$hoursBack} hours"));
+        $minStart = truncateBucketStart($endHour->modify("-{$hoursBack} hours"));
+        if ($lastRolled > $minStart) {
+            $lastRolled = $minStart;
+        }
 
         $current = truncateBucketStart($lastRolled);
         while ($current < $endHour) {
@@ -405,6 +411,7 @@ do {
                     $summary['sessions']
                 ));
             }
+            $processedBuckets++;
             $current = $bucketEnd;
         }
 
@@ -413,6 +420,15 @@ do {
              ON DUPLICATE KEY UPDATE last_rolled_at = VALUES(last_rolled_at)'
         );
         $upsert->execute([':site_id' => $siteId, ':last' => $endHour->format('Y-m-d H:i:s')]);
+    }
+
+    if ($processedBuckets === 0) {
+        logLine(sprintf(
+            "[rollup worker %d/%d] no buckets processed (sites=%d)",
+            $workerIndex,
+            $workerCount,
+            count($siteIds)
+        ));
     }
 
     if (!$loop) {
