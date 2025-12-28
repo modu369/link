@@ -36,4 +36,29 @@ return [
         // 每天定时清理的小时（0-23）
         'cleanup_hour' => (int) (getenv('RETENTION_CLEANUP_HOUR') ?: 3),
     ],
+    'queue' => [
+        // Redis 队列名称
+        'name' => getenv('PAGEVIEW_QUEUE') ?: 'pageview_queue',
+        // auto_drain 频率（秒），降低频率以减少瞬时负载
+        'auto_drain_seconds' => (int) (getenv('AUTO_DRAIN_SECONDS') ?: 30),
+        'auto_drain_batch' => (int) (getenv('AUTO_DRAIN_BATCH') ?: 50),
+        // Worker 批量处理与 backoff 配置
+        'worker_batch' => (int) (getenv('WORKER_BATCH') ?: 200),
+        'worker_sleep_ms' => (int) (getenv('WORKER_SLEEP_MS') ?: 200),
+        'worker_max_sleep_ms' => (int) (getenv('WORKER_MAX_SLEEP_MS') ?: 2000),
+    ],
+    'rollup' => [
+        // 仅保留小时间窗 pageviews，历史数据通过 rollup 读取
+        'pageview_window_days' => (int) (getenv('PAGEVIEW_WINDOW_DAYS') ?: 3),
+        // rollup 延迟窗口，避免聚合未完成的小时
+        'lag_minutes' => (int) (getenv('ROLLUP_LAG_MINUTES') ?: 10),
+        // 首次 rollup 回补小时数
+        'backfill_hours' => (int) (getenv('ROLLUP_BACKFILL_HOURS') ?: 24),
+        // rollup 触发频率（秒）
+        'interval_seconds' => (int) (getenv('ROLLUP_INTERVAL_SECONDS') ?: 30),
+        // 清理任务频率（秒）
+        'cleanup_interval_seconds' => (int) (getenv('ROLLUP_CLEANUP_INTERVAL_SECONDS') ?: 300),
+        // 是否在请求线程执行 retention 清理（默认关闭）
+        'cleanup_in_request' => (bool) (getenv('ROLLUP_CLEANUP_IN_REQUEST') ?: false),
+    ],
 ];

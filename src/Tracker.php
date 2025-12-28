@@ -7,8 +7,26 @@ class Tracker
     private int $cleanupHour = 3;
     private array $adminDefaults = ['user' => 'admin', 'pass' => 'admin123'];
     private array $retentionDefaults = ['days' => 0, 'cleanup_hour' => 3];
+    private array $queueDefaults = [
+        'name' => 'pageview_queue',
+        'auto_drain_seconds' => 30,
+        'auto_drain_batch' => 50,
+        'worker_batch' => 200,
+        'worker_sleep_ms' => 200,
+        'worker_max_sleep_ms' => 2000,
+    ];
+    private array $rollupDefaults = [
+        'pageview_window_days' => 3,
+        'lag_minutes' => 10,
+        'backfill_hours' => 24,
+        'interval_seconds' => 30,
+        'cleanup_interval_seconds' => 300,
+        'cleanup_in_request' => false,
+    ];
     private string $defaultLoginEntry = 'admin';
     private string $ipdbPath = '';
+    private array $queueConfig = [];
+    private array $rollupConfig = [];
     private IpResolver $ipResolver;
 
     public function __construct(
@@ -18,6 +36,8 @@ class Tracker
     ) {
         $this->adminDefaults = $this->options['app']['admin'] ?? $this->options['admin'] ?? $this->adminDefaults;
         $this->retentionDefaults = $this->options['retention'] ?? $this->retentionDefaults;
+        $this->queueConfig = array_merge($this->queueDefaults, $this->options['queue'] ?? []);
+        $this->rollupConfig = array_merge($this->rollupDefaults, $this->options['rollup'] ?? []);
         $this->defaultLoginEntry = trim($this->options['security']['login_entry'] ?? $this->defaultLoginEntry) ?: $this->defaultLoginEntry;
         $this->retentionDays = max(0, (int) ($this->retentionDefaults['days'] ?? 0));
         $this->cleanupHour = min(23, max(0, (int) ($this->retentionDefaults['cleanup_hour'] ?? 3)));
@@ -27,10 +47,13 @@ class Tracker
 
         $this->ensureSiteDomainSchema();
         $this->ensurePageviewSchema();
+        $this->ensureRollupSchema();
         $this->ensureShareSchema();
         $this->ensureSettingsSchema();
         $this->hydrateRetention();
-        $this->maybeCleanupRetention();
+        if (!empty($this->rollupConfig['cleanup_in_request'])) {
+            $this->maybeCleanupRetention();
+        }
     }
 
     public function createSite(string $name, string $domain): array
@@ -217,6 +240,98 @@ class Tracker
             ':country_code' => $countryCode,
             ':continent_code' => $continentCode,
         ]);
+    }
+
+    public function enqueuePageview(string $trackingId, array $payload): void
+    {
+        $entry = [
+            'tracking_id' => $trackingId,
+            'payload' => $payload,
+            'queued_at' => time(),
+        ];
+        $queueKey = $this->queueKey();
+        $this->redis->lPush($queueKey, json_encode($entry, JSON_UNESCAPED_UNICODE));
+        $this->maybeAutoDrain();
+    }
+
+    public function drainQueuedPageviews(int $limit): int
+    {
+        $items = $this->popQueueBatch(max(1, $limit));
+        if (empty($items)) {
+            return 0;
+        }
+
+        $processed = 0;
+        foreach ($items as $item) {
+            $payload = json_decode($item, true);
+            if (!is_array($payload)) {
+                continue;
+            }
+            $trackingId = $payload['tracking_id'] ?? '';
+            $data = $payload['payload'] ?? null;
+            if (!$trackingId || !is_array($data)) {
+                continue;
+            }
+
+            try {
+                $this->recordPageview($trackingId, $data);
+                $processed++;
+            } catch (Throwable $e) {
+                // skip malformed records, continue processing the batch
+            }
+        }
+
+        return $processed;
+    }
+
+    public function runRollup(): int
+    {
+        $window = $this->rollupWindow();
+        if (!$window) {
+            return 0;
+        }
+
+        $statement = $this->db->prepare(
+            "INSERT INTO rollup_hourly (site_id, window_start, views, uniques, ip_count)
+            SELECT site_id,
+                DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as window_start,
+                COUNT(*) as views,
+                SUM(is_unique) as uniques,
+                COUNT(DISTINCT ip_hash) as ip_count
+            FROM pageviews
+            WHERE occurred_at >= :start AND occurred_at < :end AND is_bot = 0
+            GROUP BY site_id, window_start
+            ON DUPLICATE KEY UPDATE
+                views = VALUES(views),
+                uniques = VALUES(uniques),
+                ip_count = VALUES(ip_count)"
+        );
+        $statement->execute([
+            ':start' => $window['start'],
+            ':end' => $window['end'],
+        ]);
+
+        $this->setSetting('rollup_state', [
+            'last_hour' => $window['last_hour'],
+        ]);
+
+        return $statement->rowCount();
+    }
+
+    public function cleanupRetention(): void
+    {
+        $this->maybeCleanupRetention();
+    }
+
+    public function prunePageviewsByWindow(): void
+    {
+        $days = max(0, (int) ($this->rollupConfig['pageview_window_days'] ?? 0));
+        if ($days <= 0) {
+            return;
+        }
+
+        $stmt = $this->db->prepare('DELETE FROM pageviews WHERE occurred_at < DATE_SUB(NOW(), INTERVAL :days DAY)');
+        $stmt->execute([':days' => $days]);
     }
 
     public function getOverview(int $siteId, string $range = 'today'): array
@@ -428,38 +543,68 @@ class Tracker
 
     private function getTotals(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $window = $this->rangeWindow($range);
+        $start = new DateTimeImmutable($window['start']);
+        $end = new DateTimeImmutable($window['end']);
+        $cutoff = $this->rollupCutoff('hour');
 
-        $row = $statement->fetch();
+        $totals = [
+            'views' => 0,
+            'uniques' => 0,
+            'ip_count' => 0,
+        ];
+
+        $rollupEnd = $end < $cutoff ? $end : $cutoff;
+        if ($start < $rollupEnd) {
+            $rollupTotals = $this->getRollupTotals($siteId, $start, $rollupEnd);
+            $totals['views'] += $rollupTotals['views'];
+            $totals['uniques'] += $rollupTotals['uniques'];
+            $totals['ip_count'] += $rollupTotals['ip_count'];
+        }
+
+        if ($end > $cutoff) {
+            $pageviewStart = $start > $cutoff ? $start : $cutoff;
+            $pageviewTotals = $this->getPageviewTotals($siteId, $pageviewStart, $end);
+            $totals['views'] += $pageviewTotals['views'];
+            $totals['uniques'] += $pageviewTotals['uniques'];
+            $totals['ip_count'] += $pageviewTotals['ip_count'];
+        }
+
+        $averages = ['duration' => 0, 'pages' => 0];
+        $bounceRate = 0.0;
+        if ($end > $cutoff) {
+            $pageviewStart = $start > $cutoff ? $start : $cutoff;
+            $averages = $this->getVisitAveragesForWindow($siteId, $pageviewStart, $end);
+            $bounceRate = $this->getBounceRateForWindow($siteId, $pageviewStart, $end);
+        }
 
         return [
-            'views' => (int) ($row['views'] ?? 0),
-            'uniques' => (int) ($row['uniques'] ?? 0),
-            'ip_count' => (int) ($row['ip_count'] ?? 0),
-            'averages' => $this->getVisitAverages($siteId, $range),
-            'bounce_rate' => $this->getBounceRate($siteId, $range),
+            'views' => (int) $totals['views'],
+            'uniques' => (int) $totals['uniques'],
+            'ip_count' => (int) $totals['ip_count'],
+            'averages' => $averages,
+            'bounce_rate' => $bounceRate,
         ];
     }
 
     private function getDailyStats(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range, true);
-        $statement = $this->db->prepare(
-            "SELECT DATE(occurred_at) as day, COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY day
-            ORDER BY day ASC"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $window = $this->rangeWindow($range);
+        $start = new DateTimeImmutable($window['start']);
+        $end = new DateTimeImmutable($window['end']);
+        $cutoff = $this->rollupCutoff('day');
 
-        return $statement->fetchAll();
+        $rows = [];
+        $rollupEnd = $end < $cutoff ? $end : $cutoff;
+        if ($start < $rollupEnd) {
+            $rows = array_merge($rows, $this->getDailyRollupStats($siteId, $start, $rollupEnd));
+        }
+        if ($end > $cutoff) {
+            $pageviewStart = $start > $cutoff ? $start : $cutoff;
+            $rows = array_merge($rows, $this->getDailyPageviewStats($siteId, $pageviewStart, $end));
+        }
+
+        return $this->mergeStatRows($rows, 'day');
     }
 
     private function getTopPages(int $siteId, string $range, int $limit = 50): array
@@ -1064,6 +1209,76 @@ class Tracker
         return (float) ($statement->fetch()['rate'] ?? 0.0);
     }
 
+    private function getVisitAveragesForWindow(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        if ($start >= $end) {
+            return ['duration' => 0, 'pages' => 0];
+        }
+
+        $avgDuration = $this->db->prepare(
+            "SELECT AVG(duration_seconds) as avg_duration
+            FROM (
+                SELECT MAX(duration_seconds) as duration_seconds
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL
+                    AND occurred_at >= :start AND occurred_at < :end
+                GROUP BY session_id
+            ) t"
+        );
+        $avgDuration->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+        $duration = $avgDuration->fetch()['avg_duration'] ?? 0;
+
+        $avgPages = $this->db->prepare(
+            "SELECT AVG(pages) as avg_pages
+            FROM (
+                SELECT MAX(page_count) as pages
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL
+                    AND occurred_at >= :start AND occurred_at < :end
+                GROUP BY session_id
+            ) t"
+        );
+        $avgPages->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+        $pages = $avgPages->fetch()['avg_pages'] ?? 0;
+
+        return [
+            'duration' => round((float) $duration, 2),
+            'pages' => round((float) $pages, 2),
+        ];
+    }
+
+    private function getBounceRateForWindow(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): float
+    {
+        if ($start >= $end) {
+            return 0.0;
+        }
+
+        $statement = $this->db->prepare(
+            "SELECT AVG(bounce) as rate FROM (
+                SELECT CASE WHEN MAX(page_count) = 1 THEN 1 ELSE 0 END as bounce
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL
+                    AND occurred_at >= :start AND occurred_at < :end
+                GROUP BY session_id
+            ) t"
+        );
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        return (float) ($statement->fetchColumn() ?: 0);
+    }
+
     private function getPredictions(int $siteId): array
     {
         $statement = $this->db->prepare(
@@ -1304,6 +1519,57 @@ class Tracker
         $ensureIndex('idx_site_country', 'site_id, country_name, occurred_at');
         $ensureIndex('idx_site_region', 'site_id, region_name, occurred_at');
         $ensureIndex('idx_site_isp', 'site_id, isp_domain, occurred_at');
+    }
+
+    private function ensureRollupSchema(): void
+    {
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS rollup_hourly (
+                site_id INT UNSIGNED NOT NULL,
+                window_start DATETIME NOT NULL,
+                views INT UNSIGNED NOT NULL DEFAULT 0,
+                uniques INT UNSIGNED NOT NULL DEFAULT 0,
+                ip_count INT UNSIGNED NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (site_id, window_start),
+                INDEX idx_window_start (window_start),
+                CONSTRAINT fk_rollup_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+    }
+
+    private function queueKey(): string
+    {
+        return (string) ($this->queueConfig['name'] ?? 'pageview_queue');
+    }
+
+    private function maybeAutoDrain(): void
+    {
+        $interval = (int) ($this->queueConfig['auto_drain_seconds'] ?? 0);
+        if ($interval <= 0) {
+            return;
+        }
+
+        $lockKey = $this->queueKey() . ':auto_drain';
+        $acquired = $this->redis->set($lockKey, (string) time(), ['nx', 'ex' => $interval]);
+        if ($acquired) {
+            $this->drainQueuedPageviews((int) ($this->queueConfig['auto_drain_batch'] ?? 50));
+        }
+    }
+
+    private function popQueueBatch(int $limit): array
+    {
+        $queueKey = $this->queueKey();
+        $limit = max(1, $limit);
+
+        $this->redis->multi();
+        $this->redis->lRange($queueKey, 0, $limit - 1);
+        $this->redis->lTrim($queueKey, $limit, -1);
+        $result = $this->redis->exec();
+
+        $items = $result[0] ?? [];
+        return is_array($items) ? $items : [];
     }
 
     private function ensureIpDbExists(): void
@@ -1746,42 +2012,28 @@ class Tracker
 
     private function getHourlyStats(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range, false, true);
-        $statement = $this->db->prepare(
-            "SELECT DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as hour,
-                COUNT(*) as views,
-                SUM(is_unique) as uniques,
-                COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY hour
-            ORDER BY hour ASC"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $window = $this->rangeWindow($range);
+        $start = new DateTimeImmutable($window['start']);
+        $end = new DateTimeImmutable($window['end']);
 
-        return $statement->fetchAll();
+        return $this->getHourlyStatsForWindow($siteId, $start, $end);
     }
 
     private function getHourlyStatsForWindow(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
-        $statement = $this->db->prepare(
-            "SELECT DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as hour,
-                COUNT(*) as views,
-                SUM(is_unique) as uniques,
-                COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
-            GROUP BY hour
-            ORDER BY hour ASC"
-        );
+        $cutoff = $this->rollupCutoff('hour');
 
-        $statement->execute([
-            ':site_id' => $siteId,
-            ':start' => $start->format('Y-m-d H:i:s'),
-            ':end' => $end->format('Y-m-d H:i:s'),
-        ]);
+        $rows = [];
+        $rollupEnd = $end < $cutoff ? $end : $cutoff;
+        if ($start < $rollupEnd) {
+            $rows = array_merge($rows, $this->getHourlyRollupStats($siteId, $start, $rollupEnd));
+        }
+        if ($end > $cutoff) {
+            $pageviewStart = $start > $cutoff ? $start : $cutoff;
+            $rows = array_merge($rows, $this->getHourlyPageviewStats($siteId, $pageviewStart, $end));
+        }
 
-        return $statement->fetchAll();
+        return $this->mergeStatRows($rows, 'hour');
     }
 
     private function normalizeHourlySeries(array $rows, DateTimeImmutable $dayStart): array
@@ -1854,6 +2106,193 @@ class Tracker
             'start' => $start->format('Y-m-d H:i:s'),
             'end' => $end->format('Y-m-d H:i:s'),
         ];
+    }
+
+    private function rollupWindow(): ?array
+    {
+        $now = new DateTimeImmutable('now');
+        $lagMinutes = max(0, (int) ($this->rollupConfig['lag_minutes'] ?? 0));
+        $cutoff = $now->modify("-{$lagMinutes} minutes");
+        $end = $cutoff->setTime((int) $cutoff->format('H'), 0, 0);
+
+        $state = $this->getSetting('rollup_state') ?? [];
+        $lastHour = $state['last_hour'] ?? null;
+        if ($lastHour) {
+            $start = (new DateTimeImmutable($lastHour))->modify('+1 hour');
+        } else {
+            $backfillHours = max(1, (int) ($this->rollupConfig['backfill_hours'] ?? 1));
+            $start = $end->modify("-{$backfillHours} hours");
+        }
+
+        if ($start >= $end) {
+            return null;
+        }
+
+        return [
+            'start' => $start->format('Y-m-d H:i:s'),
+            'end' => $end->format('Y-m-d H:i:s'),
+            'last_hour' => $end->modify('-1 hour')->format('Y-m-d H:i:s'),
+        ];
+    }
+
+    private function rollupCutoff(string $granularity): DateTimeImmutable
+    {
+        $days = max(0, (int) ($this->rollupConfig['pageview_window_days'] ?? 0));
+        $cutoff = (new DateTimeImmutable('now'))->modify("-{$days} days");
+
+        if ($granularity === 'day') {
+            return $cutoff->setTime(0, 0, 0);
+        }
+
+        return $cutoff->setTime((int) $cutoff->format('H'), 0, 0);
+    }
+
+    private function getRollupTotals(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        $statement = $this->db->prepare(
+            "SELECT SUM(views) as views, SUM(uniques) as uniques, SUM(ip_count) as ip_count
+            FROM rollup_hourly
+            WHERE site_id = :site_id AND window_start >= :start AND window_start < :end"
+        );
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+        $row = $statement->fetch();
+
+        return [
+            'views' => (int) ($row['views'] ?? 0),
+            'uniques' => (int) ($row['uniques'] ?? 0),
+            'ip_count' => (int) ($row['ip_count'] ?? 0),
+        ];
+    }
+
+    private function getPageviewTotals(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        $statement = $this->db->prepare(
+            "SELECT COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
+            FROM pageviews
+            WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end"
+        );
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+        $row = $statement->fetch();
+
+        return [
+            'views' => (int) ($row['views'] ?? 0),
+            'uniques' => (int) ($row['uniques'] ?? 0),
+            'ip_count' => (int) ($row['ip_count'] ?? 0),
+        ];
+    }
+
+    private function getDailyRollupStats(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        $statement = $this->db->prepare(
+            "SELECT DATE(window_start) as day, SUM(views) as views, SUM(uniques) as uniques, SUM(ip_count) as ip_count
+            FROM rollup_hourly
+            WHERE site_id = :site_id AND window_start >= :start AND window_start < :end
+            GROUP BY day
+            ORDER BY day ASC"
+        );
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        return $statement->fetchAll();
+    }
+
+    private function getDailyPageviewStats(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        $statement = $this->db->prepare(
+            "SELECT DATE(occurred_at) as day, COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
+            FROM pageviews
+            WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
+            GROUP BY day
+            ORDER BY day ASC"
+        );
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        return $statement->fetchAll();
+    }
+
+    private function getHourlyRollupStats(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        $statement = $this->db->prepare(
+            "SELECT window_start as hour, views, uniques, ip_count as ips
+            FROM rollup_hourly
+            WHERE site_id = :site_id AND window_start >= :start AND window_start < :end
+            ORDER BY hour ASC"
+        );
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        return $statement->fetchAll();
+    }
+
+    private function getHourlyPageviewStats(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        $statement = $this->db->prepare(
+            "SELECT DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as hour,
+                COUNT(*) as views,
+                SUM(is_unique) as uniques,
+                COUNT(DISTINCT ip_hash) as ips
+            FROM pageviews
+            WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
+            GROUP BY hour
+            ORDER BY hour ASC"
+        );
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        return $statement->fetchAll();
+    }
+
+    private function mergeStatRows(array $rows, string $key): array
+    {
+        $merged = [];
+        foreach ($rows as $row) {
+            $bucket = $row[$key] ?? null;
+            if (!$bucket) {
+                continue;
+            }
+            if (!isset($merged[$bucket])) {
+                $merged[$bucket] = [
+                    $key => $bucket,
+                    'views' => 0,
+                    'uniques' => 0,
+                    'ip_count' => 0,
+                    'ips' => 0,
+                ];
+            }
+
+            $merged[$bucket]['views'] += (int) ($row['views'] ?? 0);
+            $merged[$bucket]['uniques'] += (int) ($row['uniques'] ?? 0);
+            $merged[$bucket]['ip_count'] += (int) ($row['ip_count'] ?? 0);
+            $merged[$bucket]['ips'] += (int) ($row['ips'] ?? 0);
+        }
+
+        $result = array_values($merged);
+        usort($result, function ($a, $b) use ($key) {
+            return strcmp($a[$key], $b[$key]);
+        });
+
+        return $result;
     }
 
     private function rangeClause(string $range, bool $forceLowerBound = false, bool $hourly = false): array

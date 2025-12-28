@@ -30,7 +30,7 @@ $payload = [
     'page_count' => $_GET['pc'] ?? null,
 ];
 
-$tracker->recordPageview($trackingId, $payload);
+$tracker->enqueuePageview($trackingId, $payload);
 
 header('Content-Type: image/gif');
 header('Cache-Control: no-cache, no-store, must-revalidate');
