@@ -107,6 +107,10 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
     $bucketKey = $bucketStart->format('Y-m-d H:i:s');
     $start = $bucketStart->format('Y-m-d H:i:s');
     $end = $bucketEnd->format('Y-m-d H:i:s');
+    $dayStart = $bucketStart->setTime(0, 0, 0);
+    $dayEnd = $dayStart->modify('+1 day');
+    $dayStartKey = $dayStart->format('Y-m-d H:i:s');
+    $dayEndKey = $dayEnd->format('Y-m-d H:i:s');
 
     $db->beginTransaction();
     try {
@@ -187,7 +191,7 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
                 COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
                 FROM pageviews p WHERE site_id = ? AND is_bot = 0 AND keyword IS NOT NULL AND keyword != '' AND occurred_at >= ? AND occurred_at < ?
                 GROUP BY dimension_value",
-            'audience' => "SELECT LEFT(CASE WHEN a.first_seen >= DATE(?) AND a.first_seen < DATE(?) THEN 'new' ELSE 'returning' END, 255) as dimension_value,
+            'audience' => "SELECT LEFT(CASE WHEN a.first_seen >= ? AND a.first_seen < ? THEN 'new' ELSE 'returning' END, 255) as dimension_value,
                 COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT p.ip_hash) as ips
                 FROM pageviews p
                 LEFT JOIN site_ip_audience a ON a.site_id = p.site_id AND a.ip_hash = p.ip_hash
@@ -201,7 +205,7 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
                  SELECT ?, ?, ?, dimension_value, pv, uv, ips, 0, 0, 0, 0 FROM (' . $sql . ') t'
             );
             if ($dimension === 'audience') {
-                $params = [$start, $end, $siteId, $start, $end];
+                $params = [$dayStartKey, $dayEndKey, $siteId, $start, $end];
             } else {
                 $params = [$siteId, $start, $end];
             }

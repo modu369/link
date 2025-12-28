@@ -2023,14 +2023,6 @@ class Tracker
 
     private function getActiveSessions(int $siteId): array
     {
-        if ($this->rollupOnly) {
-            return [
-                5 => 0,
-                15 => 0,
-                30 => 0,
-            ];
-        }
-
         $windows = [5, 15, 30];
         $results = [];
 
@@ -2067,10 +2059,6 @@ class Tracker
 
     private function getVisitDetailCount(int $siteId, array $filters): int
     {
-        if ($this->rollupOnly) {
-            return 0;
-        }
-
         [$start, $end] = $this->visitFiltersWindow($filters);
 
         $conditions = ['1=1'];
@@ -2133,10 +2121,6 @@ class Tracker
 
     private function getVisitDetails(int $siteId, array $filters, int $page = 1, int $perPage = 50): array
     {
-        if ($this->rollupOnly) {
-            return [];
-        }
-
         [$start, $end] = $this->visitFiltersWindow($filters);
         $page = max(1, $page);
         $perPage = max(1, $perPage);
@@ -2282,7 +2266,9 @@ class Tracker
             }
 
             $statement = $this->db->prepare(
-                "SELECT path, referrer, user_agent, occurred_at, {$engineCase} as engine
+                "SELECT path, referrer, user_agent, ip_address,
+                    COALESCE(canonical_host, host, '') as domain,
+                    occurred_at, {$engineCase} as engine
                 FROM pageviews
                 WHERE site_id = :site_id AND is_bot = 1 {$rangeSql}{$engineFilter}
                 ORDER BY occurred_at DESC
@@ -2953,10 +2939,10 @@ class Tracker
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
             [$start, $end] = $this->rollupRangeBounds($range);
-
-            if ($this->rollupsCoverRange($siteId, $start, $end)) {
-                $hosts = $this->aggregateDimensionRollups($siteId, 'host', $start, $end, 200);
-                $hostDevices = $this->aggregateDimensionRollups($siteId, 'host_device', $start, $end, 400);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if ($span) {
+                $hosts = $this->aggregateDimensionRollups($siteId, 'host', $span['start'], $span['end'], 200);
+                $hostDevices = $this->aggregateDimensionRollups($siteId, 'host_device', $span['start'], $span['end'], 400);
 
                 if (!empty($hosts)) {
                     return $this->formatHostDeviceBreakdown($hosts, $hostDevices);
@@ -3171,8 +3157,9 @@ class Tracker
             $mobileIps = 0;
             $totalIps = 0;
 
-            if ($this->rollupsCoverRange($siteId, $start, $end)) {
-                $rollup = $this->aggregateDimensionRollups($siteId, 'device', $start, $end, 2);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if ($span) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'device', $span['start'], $span['end'], 2);
                 $lookup = [];
                 foreach ($rollup as $row) {
                     $lookup[$row['dimension_value'] ?? ''] = $row;
@@ -3182,7 +3169,7 @@ class Tracker
                 $mobileIps = (int) ($lookup['mobile']['ips'] ?? 0);
                 $desktopViews = (int) ($lookup['desktop']['views'] ?? 0);
 
-                $totals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
+                $totals = $this->aggregateTotalsWithRollups($siteId, $span['start'], $span['end']);
                 $totalIps = (int) ($totals['ip_count'] ?? 0);
             }
 
@@ -3207,8 +3194,9 @@ class Tracker
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
             [$start, $end] = $this->rollupRangeBounds($range);
-            if ($this->rollupsCoverRange($siteId, $start, $end)) {
-                $rollup = $this->aggregateDimensionRollups($siteId, 'browser', $start, $end, $limit);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if ($span) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'browser', $span['start'], $span['end'], $limit);
 
                 if (!empty($rollup)) {
                     return array_map(fn ($row) => [
@@ -3228,8 +3216,9 @@ class Tracker
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
             [$start, $end] = $this->rollupRangeBounds($range);
-            if ($this->rollupsCoverRange($siteId, $start, $end)) {
-                $rollup = $this->aggregateDimensionRollups($siteId, 'region', $start, $end, $limit);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if ($span) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'region', $span['start'], $span['end'], $limit);
 
                 if (!empty($rollup)) {
                     return array_map(fn ($row) => [
@@ -3249,8 +3238,9 @@ class Tracker
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
             [$start, $end] = $this->rollupRangeBounds($range);
-            if ($this->rollupsCoverRange($siteId, $start, $end)) {
-                $rollup = $this->aggregateDimensionRollups($siteId, 'country', $start, $end, $limit);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if ($span) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'country', $span['start'], $span['end'], $limit);
 
                 if (!empty($rollup)) {
                     return array_map(fn ($row) => [
@@ -3271,8 +3261,9 @@ class Tracker
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
             [$start, $end] = $this->rollupRangeBounds($range);
-            if ($this->rollupsCoverRange($siteId, $start, $end)) {
-                $rollup = $this->aggregateDimensionRollups($siteId, 'isp', $start, $end, $limit);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if ($span) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'isp', $span['start'], $span['end'], $limit);
 
                 if (!empty($rollup)) {
                     return array_map(fn ($row) => [
@@ -3292,8 +3283,10 @@ class Tracker
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
             [$start, $end] = $this->rollupRangeBounds($range);
-
-            $rows = $this->aggregateDimensionRollups($siteId, 'audience', $start, $end, 2);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            $rows = $span
+                ? $this->aggregateDimensionRollups($siteId, 'audience', $span['start'], $span['end'], 2)
+                : [];
 
             $newViews = 0;
             $returningViews = 0;

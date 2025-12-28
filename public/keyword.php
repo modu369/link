@@ -40,11 +40,23 @@ render_topbar($branding);
                         <tr><td colspan="4" class="muted">暂无关键词数据</td></tr>
                     <?php else: ?>
                         <?php foreach ($keywords as $row): ?>
+                            <?php
+                                $entry = trim((string) ($row['entry'] ?? '/'));
+                                if ($entry === '') {
+                                    $entry = '/';
+                                }
+                                $entryLabel = $entry;
+                                $siteDomain = trim((string) ($selectedSite['domain'] ?? ''));
+                                if (!str_starts_with($entryLabel, 'http://') && !str_starts_with($entryLabel, 'https://')) {
+                                    $entryLabel = ($siteDomain !== '' ? '//' . $siteDomain : '') . '/' . ltrim($entryLabel, '/');
+                                }
+                                $entryEscaped = htmlspecialchars($entryLabel, ENT_QUOTES, 'UTF-8');
+                            ?>
                             <tr>
                                 <td><?= htmlspecialchars($row['keyword'], ENT_QUOTES, 'UTF-8') ?></td>
                                 <td><?= htmlspecialchars($row['engines'], ENT_QUOTES, 'UTF-8') ?></td>
                                 <td><?= (int) $row['views'] ?></td>
-                                <td><?= htmlspecialchars($row['entry'], ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><span class="url-ellipsis" title="<?= $entryEscaped ?>"><?= $entryEscaped ?></span></td>
                             </tr>
                         <?php endforeach; ?>
                     <?php endif; ?>

@@ -63,16 +63,25 @@ render_topbar($branding);
                 <div class="section-title"><h3>抓取记录</h3><span class="muted">最新 200 条 · 每页 <?= $perPage ?> 条</span></div>
                 <div class="table-wrapper">
                     <table>
-                        <thead><tr><th>抓取页面</th><th>蜘蛛类别</th><th>UA</th><th>时间</th></tr></thead>
+                        <thead><tr><th>抓取页面</th><th>蜘蛛类别</th><th>IP</th><th>UA</th><th>时间</th></tr></thead>
                         <tbody>
                         <?php if (empty($botRows)): ?>
-                            <tr><td colspan="4" class="muted">暂无蜘蛛抓取</td></tr>
+                            <tr><td colspan="5" class="muted">暂无蜘蛛抓取</td></tr>
                         <?php else: ?>
                             <?php foreach ($botRows as $row): ?>
-                                <?php $botPath = htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8'); ?>
+                                <?php
+                                    $domain = trim((string) ($row['domain'] ?? ''));
+                                    $path = trim((string) ($row['path'] ?? ''));
+                                    $pathLabel = $path !== '' ? $path : '/';
+                                    if ($domain !== '' && !str_starts_with($pathLabel, 'http://') && !str_starts_with($pathLabel, 'https://')) {
+                                        $pathLabel = '//' . $domain . '/' . ltrim($pathLabel, '/');
+                                    }
+                                    $botPath = htmlspecialchars($pathLabel, ENT_QUOTES, 'UTF-8');
+                                ?>
                                 <tr>
                                     <td><span class="url-ellipsis" title="<?= $botPath ?>"><?= $botPath ?></span></td>
                                     <td><?= htmlspecialchars($row['engine'], ENT_QUOTES, 'UTF-8') ?></td>
+                                    <td><?= htmlspecialchars($row['ip_address'] ?? '-', ENT_QUOTES, 'UTF-8') ?></td>
                                     <td class="muted" style="max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
                                         <?= htmlspecialchars($row['user_agent'], ENT_QUOTES, 'UTF-8') ?>
                                     </td>

@@ -151,6 +151,7 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
                 'title' => '配置',
                 'items' => [
                     ['key' => 'config', 'label' => '配置修改', 'href' => "/config.php?site={$siteId}&range={$range}"],
+                    ['key' => 'code', 'label' => '获取代码', 'href' => "/code.php?site={$siteId}&range={$range}"],
                 ],
             ],
         ];
