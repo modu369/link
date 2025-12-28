@@ -196,6 +196,11 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
         ];
 
         foreach ($dimensionInserts as $dimension => $sql) {
+            $sql = str_replace(
+                [':site_id', ':start', ':end'],
+                [':site_id_inner', ':start_inner', ':end_inner'],
+                $sql
+            );
             $insert = $db->prepare(
                 'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
                  SELECT :site_id, :bucket, :dimension, dimension_value, pv, uv, ips, 0, 0, 0, 0 FROM (' . $sql . ') t'
@@ -204,8 +209,9 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
                 ':site_id' => $siteId,
                 ':bucket' => $bucketKey,
                 ':dimension' => $dimension,
-                ':start' => $start,
-                ':end' => $end,
+                ':site_id_inner' => $siteId,
+                ':start_inner' => $start,
+                ':end_inner' => $end,
             ]);
         }
 
