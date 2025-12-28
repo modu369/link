@@ -12,6 +12,7 @@ class Tracker
     private string $ipdbPath = '';
     private IpResolver $ipResolver;
     private bool $hasIpHashColumn = false;
+    private bool $rollupOnly = true;
     private string $ingestMode = 'direct';
     private string $ingestQueueKey = 'tracker:ingest:pageviews';
     private string $ingestProcessingKey = 'tracker:ingest:pageviews:processing';
@@ -32,6 +33,7 @@ class Tracker
         $this->retentionDays = max(0, (int) ($this->retentionDefaults['days'] ?? 0));
         $this->pageviewRetentionDays = max(0, (int) ($this->retentionDefaults['pageviews_days'] ?? 0));
         $this->cleanupHour = min(23, max(0, (int) ($this->retentionDefaults['cleanup_hour'] ?? 3)));
+        $this->rollupOnly = (bool) ($this->options['rollup_only'] ?? $this->rollupOnly);
         $this->ipdbPath = $this->options['ipdb']['path'] ?? (__DIR__ . '/../data/qqwry.ipdb');
         $ingest = $this->options['ingest'] ?? [];
         $this->ingestMode = strtolower($ingest['mode'] ?? $this->ingestMode);
@@ -287,32 +289,7 @@ class Tracker
         $referrerHost = $this->referrerHost($referrer);
         $entryPath = $this->captureEntryPath((int) $site['id'], $sessionId, $path);
 
-        $this->updateRollups(
-            (int) $site['id'],
-            $now,
-            $duration,
-            $pageCount,
-            $isUnique,
-            $uvToday,
-            $sessionId,
-            [
-                'path' => $path,
-                'keyword' => $keyword,
-                'engine' => $engine,
-                'referrer_host' => $referrerHost,
-                'is_mobile' => $isMobile,
-                'browser' => $browser,
-                'region' => [
-                    'country' => $countryName,
-                    'region' => $regionName,
-                ],
-                'isp' => $ispName,
-                'entry_path' => $entryPath,
-                'canonical_host' => $canonicalHost ?: '未知域名',
-                'is_unique' => $isUnique,
-                'audience_label' => $audienceLabel,
-            ]
-        );
+        // Rollup aggregation is handled by async workers for large-scale accuracy and lower write load.
     }
 
     private function enqueuePageview(string $trackingId, array $payload): void
@@ -677,6 +654,20 @@ class Tracker
 
     private function aggregateRawWindow(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
+        if ($this->rollupOnly) {
+            return [
+                'has_data' => false,
+                'coverage_start' => $start,
+                'views' => 0,
+                'uniques' => 0,
+                'ip_count' => 0,
+                'session_count' => 0,
+                'duration_sum' => 0,
+                'page_sum' => 0,
+                'bounce_count' => 0,
+            ];
+        }
+
         $ipExpr = $this->ipHashExpr('pageviews');
 
         $totalsStmt = $this->db->prepare(
@@ -2026,6 +2017,10 @@ class Tracker
 
     private function getRecentPageviews(int $siteId, string $range): array
     {
+        if ($this->rollupOnly) {
+            return [];
+        }
+
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
             "SELECT path, referrer, user_agent, occurred_at
@@ -2041,6 +2036,14 @@ class Tracker
 
     private function getActiveSessions(int $siteId): array
     {
+        if ($this->rollupOnly) {
+            return [
+                5 => 0,
+                15 => 0,
+                30 => 0,
+            ];
+        }
+
         $windows = [5, 15, 30];
         $results = [];
 
@@ -2077,6 +2080,10 @@ class Tracker
 
     private function getVisitDetailCount(int $siteId, array $filters): int
     {
+        if ($this->rollupOnly) {
+            return 0;
+        }
+
         [$start, $end] = $this->visitFiltersWindow($filters);
 
         $conditions = ['1=1'];
@@ -2139,6 +2146,10 @@ class Tracker
 
     private function getVisitDetails(int $siteId, array $filters, int $page = 1, int $perPage = 50): array
     {
+        if ($this->rollupOnly) {
+            return [];
+        }
+
         [$start, $end] = $this->visitFiltersWindow($filters);
         $page = max(1, $page);
         $perPage = max(1, $perPage);
@@ -2270,6 +2281,10 @@ class Tracker
         $cacheKey = "bots:{$siteId}:{$range}:" . ($engine ?? 'all');
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $engine) {
+            if ($this->rollupOnly) {
+                return [];
+            }
+
             [$rangeSql, $params] = $this->rangeClause($range);
             $engineCase = $this->searchEngineCase();
             $engineFilter = '';
@@ -2297,6 +2312,10 @@ class Tracker
         $cacheKey = "bot_engines:{$siteId}:{$range}";
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            if ($this->rollupOnly) {
+                return [];
+            }
+
             [$rangeSql, $params] = $this->rangeClause($range);
             $engineCase = $this->searchEngineCase();
 

@@ -30,6 +30,10 @@ return [
         // 隐蔽登录入口标识，访问 /index.php?entry=xxx 时才会展示登录页
         'login_entry' => getenv('LOGIN_ENTRY') ?: 'admin',
     ],
+    // 仅使用 rollup 数据读取页面统计，禁止读取原始 pageviews
+    'rollup_only' => getenv('ROLLUP_ONLY') === false
+        ? true
+        : (filter_var(getenv('ROLLUP_ONLY'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? true),
     'retention' => [
         // 汇总与维度表保留天数，超过后自动清理；设置为 0 可关闭
         'days' => (int) (getenv('RETENTION_DAYS') ?: 180),
