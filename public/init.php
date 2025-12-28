@@ -1,11 +1,26 @@
 <?php
 session_start();
 
+$config = require __DIR__ . '/../config/config.php';
+
+if (($_GET['action'] ?? '') === 'logout') {
+    $entry = $config['security']['login_entry'] ?? 'admin';
+    session_destroy();
+    $redirectEntry = $entry !== '' ? '?entry=' . urlencode($entry) : '';
+    header('Location: /index.php' . $redirectEntry);
+    exit;
+}
+
+if (!($_SESSION['admin_logged_in'] ?? false)) {
+    http_response_code(403);
+    echo '<!doctype html><html><head><meta charset="utf-8"><title>Forbidden</title></head><body><h1 style="text-align:center;font-family:Helvetica Neue, Helvetica, PingFang SC, Hiragino Sans GB, Microsoft YaHei, 微软雅黑, Arial, sans-serif;">403 Forbidden</h1></body></html>';
+    exit;
+}
+
 require __DIR__ . '/../src/Database.php';
 require __DIR__ . '/../src/RedisClient.php';
 require __DIR__ . '/../src/Tracker.php';
 
-$config = require __DIR__ . '/../config/config.php';
 $db = Database::connection($config['db']);
 $redis = RedisClient::connection($config['redis']);
 $tracker = new Tracker($db, $redis, $config);
@@ -15,19 +30,6 @@ $brandingFallback = $config['branding'] ?? [
     'brand_subtitle' => '亿级数据索引优化',
 ];
 $branding = $tracker->getBrandingSettings($brandingFallback);
-
-if (($_GET['action'] ?? '') === 'logout') {
-    $loginEntry = $tracker->getLoginEntry();
-    session_destroy();
-    $redirectEntry = $loginEntry !== '' ? '?entry=' . urlencode($loginEntry) : '';
-    header('Location: /index.php' . $redirectEntry);
-    exit;
-}
-
-if (!($_SESSION['admin_logged_in'] ?? false)) {
-    header('Location: /index.php');
-    exit;
-}
 
 $sites = $tracker->getSites();
 $siteId = null;
