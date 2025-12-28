@@ -110,21 +110,21 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
 
     $db->beginTransaction();
     try {
-        $db->prepare('DELETE FROM pageview_rollups WHERE site_id = :site_id AND bucket_start = :bucket')
-            ->execute([':site_id' => $siteId, ':bucket' => $bucketKey]);
-        $db->prepare('DELETE FROM pageview_dimension_rollups WHERE site_id = :site_id AND bucket_start = :bucket')
-            ->execute([':site_id' => $siteId, ':bucket' => $bucketKey]);
-        $db->prepare('DELETE FROM pageview_page_rollups WHERE site_id = :site_id AND bucket_start = :bucket')
-            ->execute([':site_id' => $siteId, ':bucket' => $bucketKey]);
-        $db->prepare('DELETE FROM pageview_entry_rollups WHERE site_id = :site_id AND bucket_start = :bucket')
-            ->execute([':site_id' => $siteId, ':bucket' => $bucketKey]);
+        $db->prepare('DELETE FROM pageview_rollups WHERE site_id = ? AND bucket_start = ?')
+            ->execute([$siteId, $bucketKey]);
+        $db->prepare('DELETE FROM pageview_dimension_rollups WHERE site_id = ? AND bucket_start = ?')
+            ->execute([$siteId, $bucketKey]);
+        $db->prepare('DELETE FROM pageview_page_rollups WHERE site_id = ? AND bucket_start = ?')
+            ->execute([$siteId, $bucketKey]);
+        $db->prepare('DELETE FROM pageview_entry_rollups WHERE site_id = ? AND bucket_start = ?')
+            ->execute([$siteId, $bucketKey]);
 
         $totalsStmt = $db->prepare(
             "SELECT COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ips
              FROM pageviews
-             WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end"
+             WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?"
         );
-        $totalsStmt->execute([':site_id' => $siteId, ':start' => $start, ':end' => $end]);
+        $totalsStmt->execute([$siteId, $start, $end]);
         $totals = $totalsStmt->fetch() ?: [];
 
         $sessionStmt = $db->prepare(
@@ -134,28 +134,28 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
                        MAX(page_count) as page_count,
                        CASE WHEN MAX(page_count) <= 1 THEN 1 ELSE 0 END as bounce
                 FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL
-                  AND occurred_at >= :start AND occurred_at < :end
+                WHERE site_id = ? AND is_bot = 0 AND session_id IS NOT NULL
+                  AND occurred_at >= ? AND occurred_at < ?
                 GROUP BY session_id
              ) t"
         );
-        $sessionStmt->execute([':site_id' => $siteId, ':start' => $start, ':end' => $end]);
+        $sessionStmt->execute([$siteId, $start, $end]);
         $sessions = $sessionStmt->fetch() ?: [];
 
         $insertRollup = $db->prepare(
             'INSERT INTO pageview_rollups (site_id, bucket_start, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
-             VALUES (:site_id, :bucket, :pv, :uv, :ips, :sessions, :duration_sum, :page_sum, :bounce_count)'
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         $insertRollup->execute([
-            ':site_id' => $siteId,
-            ':bucket' => $bucketKey,
-            ':pv' => (int) ($totals['views'] ?? 0),
-            ':uv' => (int) ($totals['uniques'] ?? 0),
-            ':ips' => (int) ($totals['ips'] ?? 0),
-            ':sessions' => (int) ($sessions['sessions'] ?? 0),
-            ':duration_sum' => (int) ($sessions['duration_sum'] ?? 0),
-            ':page_sum' => (int) ($sessions['page_sum'] ?? 0),
-            ':bounce_count' => (int) ($sessions['bounce_count'] ?? 0),
+            $siteId,
+            $bucketKey,
+            (int) ($totals['views'] ?? 0),
+            (int) ($totals['uniques'] ?? 0),
+            (int) ($totals['ips'] ?? 0),
+            (int) ($sessions['sessions'] ?? 0),
+            (int) ($sessions['duration_sum'] ?? 0),
+            (int) ($sessions['page_sum'] ?? 0),
+            (int) ($sessions['bounce_count'] ?? 0),
         ]);
 
         $dimensionInserts = [
@@ -211,11 +211,11 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
         $geoStmt = $db->prepare(
             "SELECT ip_address, ip_hash, COUNT(*) as pv, SUM(is_unique) as uv
              FROM pageviews
-             WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
+             WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?
                AND ip_address IS NOT NULL AND ip_address != ''
              GROUP BY ip_hash, ip_address"
         );
-        $geoStmt->execute([':site_id' => $siteId, ':start' => $start, ':end' => $end]);
+        $geoStmt->execute([$siteId, $start, $end]);
         $geoRows = $geoStmt->fetchAll();
 
         $regionAgg = [];
@@ -251,59 +251,59 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
 
         $geoInsert = $db->prepare(
             'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
-             VALUES (:site_id, :bucket, :dimension, :value, :pv, :uv, :ips, 0, 0, 0, 0)'
+             VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)'
         );
 
         foreach ($regionAgg as $label => $data) {
             $geoInsert->execute([
-                ':site_id' => $siteId,
-                ':bucket' => $bucketKey,
-                ':dimension' => 'region',
-                ':value' => mb_substr($label, 0, 255),
-                ':pv' => $data['pv'],
-                ':uv' => $data['uv'],
-                ':ips' => $data['ips'],
+                $siteId,
+                $bucketKey,
+                'region',
+                mb_substr($label, 0, 255),
+                $data['pv'],
+                $data['uv'],
+                $data['ips'],
             ]);
         }
 
         foreach ($countryAgg as $label => $data) {
             $geoInsert->execute([
-                ':site_id' => $siteId,
-                ':bucket' => $bucketKey,
-                ':dimension' => 'country',
-                ':value' => mb_substr($label, 0, 255),
-                ':pv' => $data['pv'],
-                ':uv' => $data['uv'],
-                ':ips' => $data['ips'],
+                $siteId,
+                $bucketKey,
+                'country',
+                mb_substr($label, 0, 255),
+                $data['pv'],
+                $data['uv'],
+                $data['ips'],
             ]);
         }
 
         foreach ($ispAgg as $label => $data) {
             $geoInsert->execute([
-                ':site_id' => $siteId,
-                ':bucket' => $bucketKey,
-                ':dimension' => 'isp',
-                ':value' => mb_substr($label, 0, 255),
-                ':pv' => $data['pv'],
-                ':uv' => $data['uv'],
-                ':ips' => $data['ips'],
+                $siteId,
+                $bucketKey,
+                'isp',
+                mb_substr($label, 0, 255),
+                $data['pv'],
+                $data['uv'],
+                $data['ips'],
             ]);
         }
 
         $pageStmt = $db->prepare(
             "INSERT INTO pageview_page_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
-             SELECT :site_id, :bucket, LEFT(COALESCE(path,'/'), 512) as path,
+             SELECT ?, ?, LEFT(COALESCE(path,'/'), 512) as path,
                 COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips,
                 0 as session_count, 0 as duration_sum, 0 as page_sum, 0 as bounce_count
              FROM pageviews p
-             WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
+             WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?
              GROUP BY path"
         );
-        $pageStmt->execute([':site_id' => $siteId, ':bucket' => $bucketKey, ':start' => $start, ':end' => $end]);
+        $pageStmt->execute([$siteId, $bucketKey, $siteId, $start, $end]);
 
         $entryStmt = $db->prepare(
             "INSERT INTO pageview_entry_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
-             SELECT :site_id, :bucket, LEFT(entry.path, 512) as path,
+             SELECT ?, ?, LEFT(entry.path, 512) as path,
                 COUNT(*) as pv, SUM(entry.is_unique) as uv, COUNT(DISTINCT entry.ip_hash) as ips,
                 COUNT(*) as session_count,
                 SUM(entry.duration_seconds) as duration_sum,
@@ -312,14 +312,14 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
              FROM (
                 SELECT MIN(id) as first_id, session_id
                 FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL
-                  AND occurred_at >= :start AND occurred_at < :end
+                WHERE site_id = ? AND is_bot = 0 AND session_id IS NOT NULL
+                  AND occurred_at >= ? AND occurred_at < ?
                 GROUP BY session_id
              ) s
              JOIN pageviews entry ON entry.id = s.first_id
              GROUP BY entry.path"
         );
-        $entryStmt->execute([':site_id' => $siteId, ':bucket' => $bucketKey, ':start' => $start, ':end' => $end]);
+        $entryStmt->execute([$siteId, $bucketKey, $siteId, $start, $end]);
 
         $db->commit();
 
