@@ -166,33 +166,14 @@ class Tracker
             return;
         }
         $ip = $payload['ip'] ?? '';
-        $ipHash = $ip ? hash('sha256', $ip) : null;
-        $uniqueKey = sprintf('unique:%s:%s', $site['id'], date('Y-m-d'));
-        $isUnique = false;
-
-        $sessionId = $payload['session_id'] ?? ($ipHash ?: bin2hex(random_bytes(8)));
+        $sessionId = $payload['session_id'] ?? ($ip ?: bin2hex(random_bytes(8)));
         $duration = max(0, (int) ($payload['duration'] ?? 0));
         $pageCount = max(1, (int) ($payload['page_count'] ?? 1));
         $userAgent = $payload['user_agent'] ?? '';
-        $isBot = $this->isBot($userAgent);
-        $isMobile = $this->isMobile($userAgent);
-        $keyword = $this->extractKeyword($payload['referrer'] ?? '');
-        $ipMeta = $this->resolveIpMeta($ip);
-        $countryName = $ipMeta['country_name'] ?? '未知';
-        $regionName = $ipMeta['region_name'] ?? '未知';
-        $cityName = $ipMeta['city_name'] ?? '';
-        $ispName = $ipMeta['isp_domain'] ?? '未知运营商';
-        $countryCode = $ipMeta['country_code'] ?? '';
-        $continentCode = $ipMeta['continent_code'] ?? '';
-
-        if ($ipHash) {
-            $isUnique = (bool) $this->redis->sAdd($uniqueKey, $ipHash);
-            $this->redis->expire($uniqueKey, 172800);
-        }
 
         $statement = $this->db->prepare(
-            'INSERT INTO pageviews (site_id, host, canonical_host, path, referrer, user_agent, ip_address, ip_hash, session_id, duration_seconds, page_count, keyword, is_mobile, is_bot, is_unique, country_name, region_name, city_name, isp_domain, country_code, continent_code, occurred_at) VALUES
-            (:site_id, :host, :canonical_host, :path, :referrer, :user_agent, :ip_address, :ip_hash, :session_id, :duration_seconds, :page_count, :keyword, :is_mobile, :is_bot, :is_unique, :country_name, :region_name, :city_name, :isp_domain, :country_code, :continent_code, NOW())'
+            'INSERT INTO pageviews (site_id, host, canonical_host, path, referrer, user_agent, ip_address, session_id, occurred_at) VALUES
+            (:site_id, :host, :canonical_host, :path, :referrer, :user_agent, :ip_address, :session_id, NOW())'
         );
         $statement->execute([
             ':site_id' => $site['id'],
@@ -202,21 +183,17 @@ class Tracker
             ':referrer' => $payload['referrer'] ?? null,
             ':user_agent' => $userAgent,
             ':ip_address' => $ip,
-            ':ip_hash' => $ipHash,
             ':session_id' => $sessionId,
-            ':duration_seconds' => $duration,
-            ':page_count' => $pageCount,
-            ':keyword' => $keyword,
-            ':is_mobile' => $isMobile ? 1 : 0,
-            ':is_bot' => $isBot ? 1 : 0,
-            ':is_unique' => $isUnique ? 1 : 0,
-            ':country_name' => $countryName,
-            ':region_name' => $regionName,
-            ':city_name' => $cityName,
-            ':isp_domain' => $ispName,
-            ':country_code' => $countryCode,
-            ':continent_code' => $continentCode,
         ]);
+
+        $pageviewId = (int) $this->db->lastInsertId();
+        if ($pageviewId > 0) {
+            $this->redis->lPush('pageview:rollup:queue', json_encode([
+                'id' => $pageviewId,
+                'duration' => $duration,
+                'page_count' => $pageCount,
+            ], JSON_UNESCAPED_UNICODE));
+        }
     }
 
     public function getOverview(int $siteId, string $range = 'today'): array
