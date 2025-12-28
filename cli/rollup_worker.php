@@ -161,58 +161,51 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
         $dimensionInserts = [
             'host' => "SELECT LEFT(COALESCE(canonical_host, '未知域名'), 255) as dimension_value,
                 COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-                FROM pageviews p WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
+                FROM pageviews p WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?
                 GROUP BY dimension_value",
             'host_device' => "SELECT LEFT(CONCAT(COALESCE(canonical_host, '未知域名'), '|', IF(is_mobile = 1, 'mobile', 'desktop')), 255) as dimension_value,
                 COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-                FROM pageviews p WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
+                FROM pageviews p WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?
                 GROUP BY dimension_value",
             'device' => "SELECT IF(is_mobile = 1, 'mobile', 'desktop') as dimension_value,
                 COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-                FROM pageviews p WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
+                FROM pageviews p WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?
                 GROUP BY dimension_value",
             'browser' => "SELECT LEFT(" . browserCase('p') . ", 255) as dimension_value,
                 COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-                FROM pageviews p WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
+                FROM pageviews p WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?
                 GROUP BY dimension_value",
             'referrer_host' => "SELECT LEFT(" . referrerHostExpr('p') . ", 255) as dimension_value,
                 COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-                FROM pageviews p WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
+                FROM pageviews p WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?
                 GROUP BY dimension_value",
             'search_engine' => "SELECT LEFT(" . engineCase('p') . ", 255) as dimension_value,
                 COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-                FROM pageviews p WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
+                FROM pageviews p WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?
                 GROUP BY dimension_value",
             'keyword_engine' => "SELECT LEFT(CONCAT(COALESCE(keyword,''), '|', " . engineCase('p') . ", '|', COALESCE(path,'/')), 255) as dimension_value,
                 COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-                FROM pageviews p WHERE site_id = :site_id AND is_bot = 0 AND keyword IS NOT NULL AND keyword != '' AND occurred_at >= :start AND occurred_at < :end
+                FROM pageviews p WHERE site_id = ? AND is_bot = 0 AND keyword IS NOT NULL AND keyword != '' AND occurred_at >= ? AND occurred_at < ?
                 GROUP BY dimension_value",
-            'audience' => "SELECT LEFT(CASE WHEN a.first_seen >= DATE(:start) AND a.first_seen < DATE(:end) THEN 'new' ELSE 'returning' END, 255) as dimension_value,
+            'audience' => "SELECT LEFT(CASE WHEN a.first_seen >= DATE(?) AND a.first_seen < DATE(?) THEN 'new' ELSE 'returning' END, 255) as dimension_value,
                 COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT p.ip_hash) as ips
                 FROM pageviews p
                 LEFT JOIN site_ip_audience a ON a.site_id = p.site_id AND a.ip_hash = p.ip_hash
-                WHERE p.site_id = :site_id AND p.is_bot = 0 AND p.occurred_at >= :start AND p.occurred_at < :end
+                WHERE p.site_id = ? AND p.is_bot = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
                 GROUP BY dimension_value",
         ];
 
         foreach ($dimensionInserts as $dimension => $sql) {
-            $sql = str_replace(
-                [':site_id', ':start', ':end'],
-                [':site_id_inner', ':start_inner', ':end_inner'],
-                $sql
-            );
             $insert = $db->prepare(
                 'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
-                 SELECT :site_id, :bucket, :dimension, dimension_value, pv, uv, ips, 0, 0, 0, 0 FROM (' . $sql . ') t'
+                 SELECT ?, ?, ?, dimension_value, pv, uv, ips, 0, 0, 0, 0 FROM (' . $sql . ') t'
             );
-            $insert->execute([
-                ':site_id' => $siteId,
-                ':bucket' => $bucketKey,
-                ':dimension' => $dimension,
-                ':site_id_inner' => $siteId,
-                ':start_inner' => $start,
-                ':end_inner' => $end,
-            ]);
+            if ($dimension === 'audience') {
+                $params = [$start, $end, $siteId, $start, $end];
+            } else {
+                $params = [$siteId, $start, $end];
+            }
+            $insert->execute(array_merge([$siteId, $bucketKey, $dimension], $params));
         }
 
         $geoStmt = $db->prepare(
