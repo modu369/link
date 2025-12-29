@@ -346,6 +346,7 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
 }
 
 do {
+    $loopStarted = microtime(true);
     $siteStmt = $db->query('SELECT id FROM sites ORDER BY id ASC');
     $siteIds = array_map('intval', $siteStmt->fetchAll(PDO::FETCH_COLUMN));
 
@@ -372,11 +373,15 @@ do {
     }
 
     $processedBuckets = 0;
+    $processedSites = 0;
+    $skippedSites = 0;
 
     foreach ($siteIds as $siteId) {
         if ($workerCount > 1 && ((($siteId - 1) % $workerCount) !== ($workerIndex - 1))) {
+            $skippedSites++;
             continue;
         }
+        $processedSites++;
 
         $jobStmt = $db->prepare('SELECT last_rolled_at FROM rollup_jobs WHERE site_id = :site_id');
         $jobStmt->execute([':site_id' => $siteId]);
@@ -431,6 +436,24 @@ do {
             $workerIndex,
             $workerCount,
             count($siteIds)
+        ));
+    }
+    $elapsed = microtime(true) - $loopStarted;
+    logLine(sprintf(
+        "[rollup worker %d/%d] summary sites=%d processed_sites=%d skipped_sites=%d buckets=%d elapsed=%.2fs",
+        $workerIndex,
+        $workerCount,
+        count($siteIds),
+        $processedSites,
+        $skippedSites,
+        $processedBuckets,
+        $elapsed
+    ));
+    if ($workerCount === 1 && count($siteIds) > 1) {
+        logLine(sprintf(
+            "[rollup worker %d/%d] hint: multiple sites detected; consider increasing --workers for faster coverage",
+            $workerIndex,
+            $workerCount
         ));
     }
 
