@@ -1,4 +1,11 @@
 <?php
+$candidate = trim($_GET['entry'] ?? '');
+if ($candidate === '') {
+    http_response_code(403);
+    echo '<!doctype html><html><head><meta charset="utf-8"><title>Forbidden</title></head><body><h1 style="text-align:center;font-family:Helvetica Neue, Helvetica, PingFang SC, Hiragino Sans GB, Microsoft YaHei, 微软雅黑, Arial, sans-serif;">403 Forbidden</h1></body></html>';
+    exit;
+}
+
 session_start();
 
 require __DIR__ . '/../src/Database.php';
@@ -7,8 +14,7 @@ require __DIR__ . '/../src/Tracker.php';
 
 $config = require __DIR__ . '/../config/config.php';
 $loginError = null;
-$entryVerified = $_SESSION['login_entry_verified'] ?? false;
-
+$entryVerified = false;
 $loginEntry = $config['security']['login_entry'] ?? 'admin';
 
 try {
@@ -20,21 +26,19 @@ try {
     $loginError = '服务暂不可用，请稍后再试';
 }
 
-if (!$entryVerified) {
-    $candidate = trim($_GET['entry'] ?? '');
-    if ($candidate !== '' && hash_equals($loginEntry, $candidate)) {
-        $_SESSION['login_entry_verified'] = true;
-        $entryVerified = true;
-    }
+if ($candidate !== '' && hash_equals($loginEntry, $candidate)) {
+    $entryVerified = true;
 }
 
 if (($_GET['action'] ?? '') === 'logout') {
     session_destroy();
+    header('Location: /index.php?entry=' . urlencode($loginEntry));
+    exit;
 }
 
 if (!$entryVerified) {
-    http_response_code(404);
-    echo '<!doctype html><html><head><meta charset="utf-8"><title>Not Found</title></head><body><h1 style="text-align:center;font-family:Helvetica Neue, Helvetica, PingFang SC, Hiragino Sans GB, Microsoft YaHei, 微软雅黑, Arial, sans-serif;">404 Not Found</h1></body></html>';
+    http_response_code(403);
+    echo '<!doctype html><html><head><meta charset="utf-8"><title>Forbidden</title></head><body><h1 style="text-align:center;font-family:Helvetica Neue, Helvetica, PingFang SC, Hiragino Sans GB, Microsoft YaHei, 微软雅黑, Arial, sans-serif;">403 Forbidden</h1></body></html>';
     exit;
 }
 

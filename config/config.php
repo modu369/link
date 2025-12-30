@@ -30,10 +30,33 @@ return [
         // 隐蔽登录入口标识，访问 /index.php?entry=xxx 时才会展示登录页
         'login_entry' => getenv('LOGIN_ENTRY') ?: 'admin',
     ],
+    // 仅使用 rollup 数据读取页面统计，禁止读取原始 pageviews
+    'rollup_only' => getenv('ROLLUP_ONLY') === false
+        ? true
+        : (filter_var(getenv('ROLLUP_ONLY'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? true),
     'retention' => [
-        // 数据保留天数，超过后自动清理；设置为 0 可关闭
+        // 汇总与维度表保留天数，超过后自动清理；设置为 0 可关闭
         'days' => (int) (getenv('RETENTION_DAYS') ?: 180),
+        // pageviews 表保留天数，允许与汇总表不同
+        'pageviews_days' => (int) (getenv('RETENTION_PAGEVIEWS_DAYS') ?: 60),
         // 每天定时清理的小时（0-23）
         'cleanup_hour' => (int) (getenv('RETENTION_CLEANUP_HOUR') ?: 3),
+    ],
+    'ingest' => [
+        // 采集模式：direct 直接写库；queue 写入 Redis 队列由后台任务异步入库
+        'mode' => getenv('INGEST_MODE') ?: 'queue',
+        'queue_key' => getenv('INGEST_QUEUE_KEY') ?: 'tracker:ingest:pageviews',
+        // 处理中队列，避免消费异常导致数据丢失
+        'processing_key' => getenv('INGEST_PROCESSING_KEY') ?: 'tracker:ingest:pageviews:processing',
+        // 队列长度上限，防止异常堆积；0 表示不限制
+        'max_queue_length' => (int) (getenv('INGEST_QUEUE_MAX') ?: 100000),
+        // 自动抽样消费队列，避免忘记启动 worker 时数据堆积
+        'auto_drain' => getenv('INGEST_AUTO_DRAIN') === false
+            ? true
+            : (filter_var(getenv('INGEST_AUTO_DRAIN'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? true),
+        'auto_drain_every' => (int) (getenv('INGEST_AUTO_DRAIN_EVERY') ?: 20),
+        'auto_drain_batch' => (int) (getenv('INGEST_AUTO_DRAIN_BATCH') ?: 50),
+        // 处理中的数据超过该秒数将重新入队
+        'stalled_after' => (int) (getenv('INGEST_STALLED_AFTER') ?: 300),
     ],
 ];

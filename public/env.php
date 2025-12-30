@@ -17,7 +17,6 @@ render_topbar($branding);
                 <div class="section-title">
                     <div>
                         <h2 style="margin:0;">系统环境概览</h2>
-                        <p class="muted" style="margin:2px 0 0;">设备类别与浏览器类型按 IP 聚合</p>
                     </div>
                     <?php render_range_filters($allowedRanges, $range, 'env', (int) $selectedSite['id']); ?>
                 </div>
