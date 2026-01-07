@@ -80,6 +80,63 @@ function applyReplacements(string $name, array $replacements): string
     return trim($result);
 }
 
+function normalizeTitle(string $title): string
+{
+    $normalized = preg_replace('/[\s\p{P}\p{S}]+/u', '', $title);
+    if ($normalized === null) {
+        return '';
+    }
+
+    return trim($normalized);
+}
+
+function findVodMatch(PDO $pdo, string $title): ?array
+{
+    $exact = $pdo->prepare('SELECT vod_id, vod_name, vod_sub FROM mac_vod WHERE vod_name = ? OR vod_sub = ? LIMIT 1');
+    $exact->execute([$title, $title]);
+    $row = $exact->fetch(PDO::FETCH_ASSOC);
+    if ($row) {
+        return $row;
+    }
+
+    $normalizedTarget = normalizeTitle($title);
+    if ($normalizedTarget === '') {
+        return null;
+    }
+
+    $fragment = mb_substr($normalizedTarget, 0, 4, 'UTF-8');
+    $like = '%' . $fragment . '%';
+    $stmt = $pdo->prepare('SELECT vod_id, vod_name, vod_sub FROM mac_vod WHERE vod_name LIKE ? OR vod_sub LIKE ? LIMIT 50');
+    $stmt->execute([$like, $like]);
+    $best = null;
+    $bestScore = 0;
+
+    while ($candidate = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        foreach (['vod_name', 'vod_sub'] as $field) {
+            $value = (string)($candidate[$field] ?? '');
+            if ($value === '') {
+                continue;
+            }
+            $normalized = normalizeTitle($value);
+            if ($normalized === '') {
+                continue;
+            }
+            if ($normalized === $normalizedTarget) {
+                return $candidate;
+            }
+            if (str_contains($normalized, $normalizedTarget) || str_contains($normalizedTarget, $normalized)) {
+                $score = 80 - abs(mb_strlen($normalized, 'UTF-8') - mb_strlen($normalizedTarget, 'UTF-8'));
+                if ($score > $bestScore) {
+                    $bestScore = $score;
+                    $best = $candidate;
+                }
+            }
+        }
+    }
+
+    return $best;
+}
+
 function parseScheduleFromHtml(string $html, array $replacements): array
 {
     $html = trim($html);
@@ -251,7 +308,7 @@ function connectDb(array $db): PDO
     ]);
 }
 
-function updateWeekday(array $dbs, array $schedule): array
+function updateWeekday(array $dbs, array $schedule, array $replacements): array
 {
     $summary = [
         'success' => [],
@@ -264,11 +321,13 @@ function updateWeekday(array $dbs, array $schedule): array
         try {
             $pdo = connectDb($db);
             foreach ($schedule as $item) {
-                $name = $item['name'];
+                $sourceName = $item['original_name'] ?? $item['name'] ?? '';
+                $name = applyReplacements($sourceName, $replacements);
+                if ($name === '') {
+                    $name = $item['name'] ?? '';
+                }
                 $weekday = $item['weekday'];
-                $stmt = $pdo->prepare('SELECT vod_id FROM mac_vod WHERE vod_name = ? LIMIT 1');
-                $stmt->execute([$name]);
-                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                $row = findVodMatch($pdo, $name);
                 if ($row) {
                     $update = $pdo->prepare('UPDATE mac_vod SET vod_weekday = ? WHERE vod_id = ?');
                     $update->execute([$weekday, $row['vod_id']]);

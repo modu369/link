@@ -6,7 +6,7 @@ require_once __DIR__ . '/app.php';
 session_start();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    header('Location: /login.html');
+    header('Location: /portal.html');
     exit;
 }
 
@@ -15,10 +15,10 @@ $password = (string)($_POST['password'] ?? '');
 
 if ($password !== '' && hash_equals($settings['admin_password'], $password)) {
     $_SESSION['authenticated'] = true;
-    header('Location: /index.html');
+    header('Location: /console.html');
     exit;
 }
 
 $_SESSION['authenticated'] = false;
-header('Location: /login.html?error=1');
+header('Location: /portal.html?error=1');
 exit;

@@ -110,7 +110,8 @@ try {
             break;
         case 'update_weekday':
             $scheduleData = loadSchedule();
-            $summary = updateWeekday($settings['dbs'], $scheduleData['items'] ?? []);
+            $replacements = parseReplacements($settings['replacements_text']);
+            $summary = updateWeekday($settings['dbs'], $scheduleData['items'] ?? [], $replacements);
             echo json_encode(['summary' => $summary], JSON_UNESCAPED_UNICODE);
             break;
         case 'cleanup_weekday':
