@@ -82,7 +82,8 @@ try {
             if ($schedule === []) {
                 throw new RuntimeException('未识别到有效的更番表内容，请检查抓取或手动HTML。');
             }
-            saveSchedule($schedule);
+            $scheduleData = loadSchedule();
+            saveSchedule($schedule, $scheduleData['manual_items'] ?? []);
             echo json_encode([
                 'message' => '更番表已更新。',
                 'count' => count($schedule),
@@ -105,13 +106,15 @@ try {
             if ($schedule === []) {
                 throw new RuntimeException('未识别到有效的更番表内容，请确认粘贴的是更番表 HTML。');
             }
-            saveSchedule($schedule);
+            $scheduleData = loadSchedule();
+            saveSchedule($schedule, $scheduleData['manual_items'] ?? []);
             echo json_encode(['message' => '已从手动HTML提取更番信息。', 'count' => count($schedule)], JSON_UNESCAPED_UNICODE);
             break;
         case 'update_weekday':
             $scheduleData = loadSchedule();
             $replacements = parseReplacements($settings['replacements_text']);
-            $summary = updateWeekday($settings['dbs'], $scheduleData['items'] ?? [], $replacements);
+            $items = array_merge($scheduleData['items'] ?? [], $scheduleData['manual_items'] ?? []);
+            $summary = updateWeekday($settings['dbs'], $items, $replacements);
             echo json_encode(['summary' => $summary], JSON_UNESCAPED_UNICODE);
             break;
         case 'add_schedule_item':
@@ -125,13 +128,13 @@ try {
                 throw new RuntimeException('星期与名称不能为空');
             }
             $scheduleData = loadSchedule();
-            $items = $scheduleData['items'] ?? [];
-            $items[] = [
+            $manualItems = $scheduleData['manual_items'] ?? [];
+            $manualItems[] = [
                 'weekday' => $weekday,
                 'name' => $name,
                 'original_name' => $name,
             ];
-            saveSchedule($items);
+            saveSchedule($scheduleData['items'] ?? [], $manualItems);
             echo json_encode(['message' => '已新增更番信息。'], JSON_UNESCAPED_UNICODE);
             break;
         case 'update_schedule_item':
@@ -146,14 +149,14 @@ try {
                 throw new RuntimeException('索引、星期与名称不能为空');
             }
             $scheduleData = loadSchedule();
-            $items = $scheduleData['items'] ?? [];
-            if (!array_key_exists($index, $items)) {
+            $manualItems = $scheduleData['manual_items'] ?? [];
+            if (!array_key_exists($index, $manualItems)) {
                 throw new RuntimeException('未找到该更番信息');
             }
-            $items[$index]['weekday'] = $weekday;
-            $items[$index]['name'] = $name;
-            $items[$index]['original_name'] = $name;
-            saveSchedule($items);
+            $manualItems[$index]['weekday'] = $weekday;
+            $manualItems[$index]['name'] = $name;
+            $manualItems[$index]['original_name'] = $name;
+            saveSchedule($scheduleData['items'] ?? [], $manualItems);
             echo json_encode(['message' => '更番信息已更新。'], JSON_UNESCAPED_UNICODE);
             break;
         case 'delete_schedule_item':
@@ -166,13 +169,18 @@ try {
                 throw new RuntimeException('索引不能为空');
             }
             $scheduleData = loadSchedule();
-            $items = $scheduleData['items'] ?? [];
-            if (!array_key_exists($index, $items)) {
+            $manualItems = $scheduleData['manual_items'] ?? [];
+            if (!array_key_exists($index, $manualItems)) {
                 throw new RuntimeException('未找到该更番信息');
             }
-            array_splice($items, $index, 1);
-            saveSchedule($items);
+            array_splice($manualItems, $index, 1);
+            saveSchedule($scheduleData['items'] ?? [], $manualItems);
             echo json_encode(['message' => '更番信息已删除。'], JSON_UNESCAPED_UNICODE);
+            break;
+        case 'clear_manual_schedule':
+            $scheduleData = loadSchedule();
+            saveSchedule($scheduleData['items'] ?? [], []);
+            echo json_encode(['message' => '已清空手动更番信息。'], JSON_UNESCAPED_UNICODE);
             break;
         case 'cleanup_weekday':
             $summary = cleanupWeekday($settings['dbs'], $settings['cleanup_keywords']);

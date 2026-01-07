@@ -109,7 +109,7 @@
 
     <div class="card">
       <h2>手动维护更番信息</h2>
-      <p class="muted">可新增、修改或删除更番表中的条目。</p>
+      <p class="muted">手动条目不会被抓取覆盖，只能手动修改或删除。</p>
       <div class="grid grid-2">
         <div>
           <label for="new-weekday">星期</label>
@@ -121,9 +121,21 @@
         </div>
         <div>
           <button class="btn" id="add-schedule-item">新增条目</button>
+          <button class="btn btn-secondary" id="clear-manual">清空手动条目</button>
         </div>
       </div>
-      <div id="schedule-editor" class="weekday-list" style="margin-top: 16px;"></div>
+      <div class="weekday-card" style="margin-top: 16px;">
+        <table style="width: 100%; border-collapse: collapse;">
+          <thead>
+            <tr>
+              <th style="text-align: left; padding: 8px 6px;">星期</th>
+              <th style="text-align: left; padding: 8px 6px;">名称</th>
+              <th style="text-align: left; padding: 8px 6px; width: 160px;">操作</th>
+            </tr>
+          </thead>
+          <tbody id="schedule-editor"></tbody>
+        </table>
+      </div>
     </div>
   </main>
 </div>
@@ -169,26 +181,18 @@
   function renderScheduleEditor(items) {
     const container = document.getElementById('schedule-editor');
     if (!items.length) {
-      container.innerHTML = '<div class="muted">暂无更番信息。</div>';
+      container.innerHTML = '<tr><td colspan="3" class="muted" style="padding: 8px 6px;">暂无手动更番信息。</td></tr>';
       return;
     }
     container.innerHTML = items.map((item, index) => `
-      <div class="weekday-card" data-index="${index}">
-        <div class="grid grid-2">
-          <div>
-            <label>星期</label>
-            <input type="text" class="edit-weekday" value="${item.weekday || ''}">
-          </div>
-          <div>
-            <label>名称</label>
-            <input type="text" class="edit-name" value="${item.name || ''}">
-          </div>
-          <div>
-            <button class="btn save-item">保存修改</button>
-            <button class="btn btn-secondary delete-item">删除</button>
-          </div>
-        </div>
-      </div>
+      <tr data-index="${index}">
+        <td style="padding: 6px;"><input type="text" class="edit-weekday" value="${item.weekday || ''}" style="width: 80px;"></td>
+        <td style="padding: 6px;"><input type="text" class="edit-name" value="${item.name || ''}"></td>
+        <td style="padding: 6px;">
+          <button class="btn save-item">保存</button>
+          <button class="btn btn-secondary delete-item">删除</button>
+        </td>
+      </tr>
     `).join('');
   }
 
@@ -202,9 +206,12 @@
     }
     const data = await res.json();
     scheduleUpdated.textContent = data.schedule.updated_at || '尚未更新';
-    scheduleCount.textContent = data.schedule.items.length || 0;
-    renderSchedule(data.schedule.items || []);
-    renderScheduleEditor(data.schedule.items || []);
+    const scheduleItems = data.schedule.items || [];
+    const manualItems = data.schedule.manual_items || [];
+    const combinedItems = [...scheduleItems, ...manualItems];
+    scheduleCount.textContent = combinedItems.length || 0;
+    renderSchedule(combinedItems);
+    renderScheduleEditor(manualItems);
   }
 
   async function postAction(action, payload = null) {
@@ -296,17 +303,17 @@
   });
 
   document.getElementById('schedule-editor').addEventListener('click', async (event) => {
-    const card = event.target.closest('.weekday-card');
-    if (!card) {
+    const row = event.target.closest('tr');
+    if (!row) {
       return;
     }
-    const index = Number(card.dataset.index);
+    const index = Number(row.dataset.index);
     if (Number.isNaN(index)) {
       return;
     }
     if (event.target.classList.contains('save-item')) {
-      const weekday = card.querySelector('.edit-weekday').value.trim();
-      const name = card.querySelector('.edit-name').value.trim();
+      const weekday = row.querySelector('.edit-weekday').value.trim();
+      const name = row.querySelector('.edit-name').value.trim();
       if (!weekday || !name) {
         showMessage('星期与名称不能为空。', true);
         return;
@@ -325,6 +332,15 @@
       } catch (err) {
         showMessage(err.message, true);
       }
+    }
+  });
+
+  document.getElementById('clear-manual').addEventListener('click', async () => {
+    try {
+      await postAction('clear_manual_schedule');
+      await loadState();
+    } catch (err) {
+      showMessage(err.message, true);
     }
   });
 

@@ -255,11 +255,12 @@ function scrapeSchedule(array $replacements, array $settings): array
     return parseScheduleFromHtml($result['html'], $replacements);
 }
 
-function saveSchedule(array $schedule): void
+function saveSchedule(array $schedule, ?array $manualItems = null): void
 {
     $payload = [
         'updated_at' => date('c'),
         'items' => $schedule,
+        'manual_items' => $manualItems ?? [],
     ];
     file_put_contents(SCHEDULE_PATH, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 }
@@ -267,14 +268,15 @@ function saveSchedule(array $schedule): void
 function loadSchedule(): array
 {
     if (!file_exists(SCHEDULE_PATH)) {
-        return ['updated_at' => null, 'items' => []];
+        return ['updated_at' => null, 'items' => [], 'manual_items' => []];
     }
     $raw = file_get_contents(SCHEDULE_PATH);
     $decoded = json_decode($raw ?: '[]', true);
     if (!is_array($decoded)) {
-        return ['updated_at' => null, 'items' => []];
+        return ['updated_at' => null, 'items' => [], 'manual_items' => []];
     }
     $decoded['items'] = $decoded['items'] ?? [];
+    $decoded['manual_items'] = $decoded['manual_items'] ?? [];
 
     return $decoded;
 }
