@@ -114,6 +114,7 @@ function parseScheduleFromHtml(string $html, array $replacements): array
         '日' => '日',
         '天' => '日',
     ];
+    $todayWeekday = null;
 
     $results = [];
     foreach ($rows as $row) {
@@ -122,11 +123,20 @@ function parseScheduleFromHtml(string $html, array $replacements): array
             continue;
         }
         $labelText = trim(preg_replace('/\s+/', '', $cells->item(0)->textContent));
-        if (!preg_match('/星期([一二三四五六日天])/u', $labelText, $match)) {
-            continue;
+        if (str_contains($labelText, '今天')) {
+            if ($todayWeekday === null) {
+                $tz = new DateTimeZone('Asia/Shanghai');
+                $weekdayIndex = (int)(new DateTime('now', $tz))->format('w');
+                $weekdayMapIndex = ['日', '一', '二', '三', '四', '五', '六'];
+                $todayWeekday = $weekdayMapIndex[$weekdayIndex] ?? '日';
+            }
+            $weekday = $todayWeekday;
+        } elseif (preg_match('/星期([一二三四五六日天])/u', $labelText, $match)) {
+            $weekdayKey = $match[1];
+            $weekday = $weekdayMap[$weekdayKey] ?? null;
+        } else {
+            $weekday = null;
         }
-        $weekdayKey = $match[1];
-        $weekday = $weekdayMap[$weekdayKey] ?? null;
         if ($weekday === null) {
             continue;
         }
@@ -251,6 +261,25 @@ function connectDb(array $db): PDO
     ]);
 }
 
+function normalizeName(string $value): string
+{
+    $value = preg_replace('/[\s\p{P}\p{S}]+/u', '', $value);
+    return mb_strtolower($value ?? '', 'UTF-8');
+}
+
+function scoreMatch(string $needle, array $row): float
+{
+    $normalizedNeedle = normalizeName($needle);
+    $name = normalizeName((string)($row['vod_name'] ?? ''));
+    $sub = normalizeName((string)($row['vod_sub'] ?? ''));
+    if ($normalizedNeedle === '' || ($name === '' && $sub === '')) {
+        return 0.0;
+    }
+    similar_text($normalizedNeedle, $name, $scoreName);
+    similar_text($normalizedNeedle, $sub, $scoreSub);
+    return max($scoreName, $scoreSub);
+}
+
 function updateWeekday(array $dbs, array $schedule): array
 {
     $summary = [
@@ -266,12 +295,28 @@ function updateWeekday(array $dbs, array $schedule): array
             foreach ($schedule as $item) {
                 $name = $item['name'];
                 $weekday = $item['weekday'];
-                $stmt = $pdo->prepare('SELECT vod_id FROM mac_vod WHERE vod_name = ? LIMIT 1');
-                $stmt->execute([$name]);
-                $row = $stmt->fetch(PDO::FETCH_ASSOC);
-                if ($row) {
+                $stmt = $pdo->prepare('SELECT vod_id, vod_name, vod_sub, vod_time FROM mac_vod WHERE vod_name LIKE ? OR vod_sub LIKE ? LIMIT 50');
+                $like = '%' . $name . '%';
+                $stmt->execute([$like, $like]);
+                $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                $best = null;
+                $bestScore = 0.0;
+                foreach ($rows as $row) {
+                    $score = scoreMatch($name, $row);
+                    if ($score > $bestScore) {
+                        $bestScore = $score;
+                        $best = $row;
+                    } elseif ($score === $bestScore && $best !== null) {
+                        $currentTime = (int)($row['vod_time'] ?? 0);
+                        $bestTime = (int)($best['vod_time'] ?? 0);
+                        if ($currentTime > $bestTime) {
+                            $best = $row;
+                        }
+                    }
+                }
+                if ($best) {
                     $update = $pdo->prepare('UPDATE mac_vod SET vod_weekday = ? WHERE vod_id = ?');
-                    $update->execute([$weekday, $row['vod_id']]);
+                    $update->execute([$weekday, $best['vod_id']]);
                     $summary['success'][$name] = true;
                 } else {
                     $summary['failed'][$name] = true;
