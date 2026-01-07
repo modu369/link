@@ -140,6 +140,7 @@ if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? fals
         <div>
           <button class="btn" id="add-schedule-item">新增条目</button>
           <button class="btn btn-secondary" id="clear-manual">清空手动条目</button>
+          <div class="message" id="message-manual-add" style="margin-top: 10px; display: none;"></div>
         </div>
       </div>
       <div class="weekday-card" style="margin-top: 16px;">
@@ -168,6 +169,16 @@ if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? fals
     messageBox.style.display = 'block';
     setTimeout(() => {
       messageBox.style.display = 'none';
+    }, 4000);
+  }
+
+  function showInlineMessage(elementId, text, isError = false) {
+    const message = document.getElementById(elementId);
+    message.textContent = text;
+    message.classList.toggle('error', isError);
+    message.style.display = 'block';
+    setTimeout(() => {
+      message.style.display = 'none';
     }, 4000);
   }
 
@@ -334,7 +345,7 @@ if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? fals
     const weekday = document.getElementById('new-weekday').value.trim();
     const name = document.getElementById('new-name').value.trim();
     if (!weekday || !name) {
-      showMessage('星期与名称不能为空。', true);
+      showInlineMessage('message-manual-add', '星期与名称不能为空。', true);
       return;
     }
     try {
@@ -343,7 +354,7 @@ if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? fals
       document.getElementById('new-name').value = '';
       await loadState();
     } catch (err) {
-      showMessage(err.message, true);
+      showInlineMessage('message-manual-add', err.message, true);
     }
   });
 
