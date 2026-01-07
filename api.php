@@ -142,13 +142,19 @@ try {
                 throw new RuntimeException('星期与名称不能为空');
             }
             $scheduleData = loadSchedule();
+            $items = $scheduleData['items'] ?? [];
             $manualItems = $scheduleData['manual_items'] ?? [];
+            foreach (array_merge($items, $manualItems) as $item) {
+                if (trim((string)($item['name'] ?? '')) === $name) {
+                    throw new RuntimeException('已存在同名更番信息，已阻止新增。');
+                }
+            }
             $manualItems[] = [
                 'weekday' => $weekday,
                 'name' => $name,
                 'original_name' => $name,
             ];
-            saveSchedule($scheduleData['items'] ?? [], $manualItems);
+            saveSchedule($items, $manualItems);
             echo json_encode(['message' => '已新增更番信息。'], JSON_UNESCAPED_UNICODE);
             break;
         case 'update_schedule_item':
