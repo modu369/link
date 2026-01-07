@@ -3,7 +3,7 @@ require_once __DIR__ . '/app.php';
 
 session_start();
 $settings = loadSettings();
-$entryKey = hash('sha256', (string)$settings['admin_password']);
+$entryValue = (string)($settings['entry_value'] ?? 'admin123');
 if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? false)) {
     http_response_code(404);
     echo 'Not Found';
@@ -46,7 +46,7 @@ if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? fals
   </div>
   <div>
     <a class="btn btn-secondary" href="/console.php">控制台</a>
-    <a class="btn btn-secondary" href="/portal.php?entry=<?php echo urlencode($entryKey); ?>">入口</a>
+    <a class="btn btn-secondary" href="/portal.php?entry=<?php echo urlencode($entryValue); ?>">入口</a>
     <a class="btn btn-secondary" href="/logout.php">退出登录</a>
   </div>
 </header>
@@ -124,6 +124,14 @@ if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? fals
   </div>
 
   <div class="card">
+    <h2>入口参数</h2>
+    <label for="entry-value">入口 entry 值（默认 admin123）</label>
+    <input type="text" id="entry-value" placeholder="例如 admin123">
+    <button class="btn" id="save-entry">保存入口参数</button>
+    <div class="message" id="message-entry"></div>
+  </div>
+
+  <div class="card">
     <h2>同义词替换（<span id="replacements-count">0</span> 条）</h2>
     <label for="replacements-text">格式：原文=替换为（每行一条）</label>
     <textarea id="replacements-text"></textarea>
@@ -192,6 +200,7 @@ if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? fals
     document.getElementById('proxy-user').value = data.settings.proxy_user || '';
     document.getElementById('proxy-pass').value = data.settings.proxy_pass || '';
     document.getElementById('manual-html').value = data.settings.manual_schedule_html || '';
+    document.getElementById('entry-value').value = data.settings.entry_value || 'admin123';
     document.getElementById('replacements-text').value = data.settings.replacements_text;
   }
 
@@ -218,6 +227,7 @@ if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? fals
       proxy_pass: document.getElementById('proxy-pass').value,
       manual_schedule_html: document.getElementById('manual-html').value,
       replacements_text: document.getElementById('replacements-text').value,
+      entry_value: document.getElementById('entry-value').value,
       admin_password: document.getElementById('admin-password').value,
     };
   }
@@ -238,6 +248,7 @@ if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? fals
   document.getElementById('save-proxy').addEventListener('click', () => saveSettings('message-proxy', '代理设置已保存。'));
   document.getElementById('save-manual').addEventListener('click', () => saveSettings('message-manual', '手动HTML已保存。'));
   document.getElementById('save-password').addEventListener('click', () => saveSettings('message-password', '管理员密码已保存。'));
+  document.getElementById('save-entry').addEventListener('click', () => saveSettings('message-entry', '入口参数已保存。'));
   document.getElementById('save-replacements').addEventListener('click', () => saveSettings('message-replacements', '同义词替换已保存。'));
 
   document.getElementById('parse-manual').addEventListener('click', async () => {

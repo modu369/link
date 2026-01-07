@@ -3,9 +3,9 @@ require_once __DIR__ . '/app.php';
 
 session_start();
 $settings = loadSettings();
-$entryKey = hash('sha256', (string)$settings['admin_password']);
+$entryValue = (string)($settings['entry_value'] ?? 'admin123');
 $provided = $_GET['entry'] ?? '';
-if (!hash_equals($entryKey, (string)$provided)) {
+if (!hash_equals($entryValue, (string)$provided)) {
     http_response_code(404);
     echo 'Not Found';
     exit;

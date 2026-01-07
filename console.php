@@ -3,7 +3,7 @@ require_once __DIR__ . '/app.php';
 
 session_start();
 $settings = loadSettings();
-$entryKey = hash('sha256', (string)$settings['admin_password']);
+$entryValue = (string)($settings['entry_value'] ?? 'admin123');
 if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? false)) {
     http_response_code(404);
     echo 'Not Found';
@@ -59,7 +59,7 @@ if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? fals
     </div>
     <div class="nav">
       <a href="/settings.php">设置</a>
-      <a class="entry-link" href="/portal.php?entry=<?php echo urlencode($entryKey); ?>">入口</a>
+      <a class="entry-link" href="/portal.php?entry=<?php echo urlencode($entryValue); ?>">入口</a>
       <a href="/logout.php">退出登录</a>
     </div>
     <div>

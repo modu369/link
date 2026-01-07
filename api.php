@@ -25,6 +25,7 @@ try {
                     'dbs' => $settings['dbs'],
                     'cleanup_keywords' => $settings['cleanup_keywords'],
                     'replacements_text' => $settings['replacements_text'],
+                    'entry_value' => $settings['entry_value'],
                     'proxy_host' => $settings['proxy_host'],
                     'proxy_port' => $settings['proxy_port'],
                     'proxy_user' => $settings['proxy_user'],
@@ -41,6 +42,7 @@ try {
             }
             $settings['cleanup_keywords'] = array_values(array_filter(array_map('trim', $payload['cleanup_keywords'] ?? [])));
             $settings['replacements_text'] = $payload['replacements_text'] ?? '';
+            $settings['entry_value'] = trim((string)($payload['entry_value'] ?? $settings['entry_value']));
             $settings['proxy_host'] = trim((string)($payload['proxy_host'] ?? ''));
             $settings['proxy_port'] = trim((string)($payload['proxy_port'] ?? ''));
             $settings['proxy_user'] = (string)($payload['proxy_user'] ?? '');

@@ -12,6 +12,7 @@ function loadSettings(): array
             'cleanup_keywords' => ['全', '完'],
             'replacements_text' => '',
             'admin_password' => 'admin123',
+            'entry_value' => 'admin123',
             'proxy_host' => '',
             'proxy_port' => '',
             'proxy_user' => '',
@@ -32,6 +33,7 @@ function loadSettings(): array
     $settings['cleanup_keywords'] = $settings['cleanup_keywords'] ?? ['全', '完'];
     $settings['replacements_text'] = $settings['replacements_text'] ?? '';
     $settings['admin_password'] = $settings['admin_password'] ?? 'admin123';
+    $settings['entry_value'] = $settings['entry_value'] ?? 'admin123';
     $settings['proxy_host'] = $settings['proxy_host'] ?? '';
     $settings['proxy_port'] = $settings['proxy_port'] ?? '';
     $settings['proxy_user'] = $settings['proxy_user'] ?? '';

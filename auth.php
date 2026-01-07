@@ -26,5 +26,6 @@ if ($password !== '' && hash_equals($settings['admin_password'], $password)) {
 }
 
 $_SESSION['authenticated'] = false;
-header('Location: /portal.php?entry=' . urlencode(hash('sha256', (string)$settings['admin_password'])) . '&error=1');
+$entryValue = (string)($settings['entry_value'] ?? 'admin123');
+header('Location: /portal.php?entry=' . urlencode($entryValue) . '&error=1');
 exit;
