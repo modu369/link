@@ -160,7 +160,8 @@
   document.getElementById('fetch-schedule').addEventListener('click', async () => {
     try {
       const data = await postAction('fetch_schedule');
-      showMessage(data.message || '更番表已更新。');
+      const statusText = data.status_code ? `（HTTP ${data.status_code}）` : '';
+      showMessage(`${data.message || '更番表已更新。'} ${statusText} 已抓取 ${data.count || 0} 条。`.trim());
       await loadState();
     } catch (err) {
       showMessage(err.message, true);

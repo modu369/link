@@ -87,7 +87,7 @@ function parseScheduleFromHtml(string $html, array $replacements): array
         return [];
     }
     $html = str_replace('\\n', "\n", $html);
-    if (str_contains($html, '&lt;') && !str_contains($html, '<table')) {
+    if ((str_contains($html, '&lt;') || str_contains($html, '&gt;')) && !str_contains($html, '<table')) {
         $html = html_entity_decode($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
     }
 
@@ -97,8 +97,10 @@ function parseScheduleFromHtml(string $html, array $replacements): array
     libxml_clear_errors();
 
     $xpath = new DOMXPath($dom);
-    $rows = $xpath->query("//table[contains(concat(' ', normalize-space(@class), ' '), ' list_style ')]//tr");
-    if (!$rows || $rows->length === 0) {
+    $table = $xpath->query("//table[contains(concat(' ', normalize-space(@class), ' '), ' list_style ')]")->item(0);
+    if ($table) {
+        $rows = $xpath->query(".//tbody/tr|.//tr", $table);
+    } else {
         $rows = $xpath->query('//tr');
     }
 
@@ -120,7 +122,7 @@ function parseScheduleFromHtml(string $html, array $replacements): array
             continue;
         }
         $labelText = trim(preg_replace('/\s+/', '', $cells->item(0)->textContent));
-        if (!preg_match('/星期([一二三四五六日天])/', $labelText, $match)) {
+        if (!preg_match('/星期([一二三四五六日天])/u', $labelText, $match)) {
             continue;
         }
         $weekdayKey = $match[1];
@@ -149,13 +151,8 @@ function parseScheduleFromHtml(string $html, array $replacements): array
     return $results;
 }
 
-function scrapeSchedule(array $replacements, array $settings): array
+function fetchScheduleHtml(array $settings): array
 {
-    $manualHtml = trim((string)($settings['manual_schedule_html'] ?? ''));
-    if ($manualHtml !== '') {
-        return parseScheduleFromHtml($manualHtml, $replacements);
-    }
-
     $ch = curl_init('https://www.comicat.org/');
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
@@ -163,6 +160,7 @@ function scrapeSchedule(array $replacements, array $settings): array
         CURLOPT_TIMEOUT => 20,
         CURLOPT_CONNECTTIMEOUT => 10,
         CURLOPT_ENCODING => '',
+        CURLOPT_HEADER => false,
         CURLOPT_HTTPHEADER => [
             'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -184,14 +182,29 @@ function scrapeSchedule(array $replacements, array $settings): array
         }
     }
     $html = curl_exec($ch);
-    if ($html === false) {
-        $error = curl_error($ch);
-        curl_close($ch);
-        throw new RuntimeException('抓取失败：' . $error);
-    }
+    $error = $html === false ? curl_error($ch) : null;
+    $statusCode = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
     curl_close($ch);
 
-    return parseScheduleFromHtml($html, $replacements);
+    if ($html === false) {
+        throw new RuntimeException('抓取失败：' . $error);
+    }
+
+    return [
+        'html' => $html,
+        'status_code' => $statusCode,
+    ];
+}
+
+function scrapeSchedule(array $replacements, array $settings): array
+{
+    $manualHtml = trim((string)($settings['manual_schedule_html'] ?? ''));
+    if ($manualHtml !== '') {
+        return parseScheduleFromHtml($manualHtml, $replacements);
+    }
+
+    $result = fetchScheduleHtml($settings);
+    return parseScheduleFromHtml($result['html'], $replacements);
 }
 
 function saveSchedule(array $schedule): void

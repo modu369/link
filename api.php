@@ -70,9 +70,24 @@ try {
             break;
         case 'fetch_schedule':
             $replacements = parseReplacements($settings['replacements_text']);
-            $schedule = scrapeSchedule($replacements, $settings);
+            $manualHtml = trim((string)($settings['manual_schedule_html'] ?? ''));
+            $statusCode = null;
+            if ($manualHtml !== '') {
+                $schedule = parseScheduleFromHtml($manualHtml, $replacements);
+            } else {
+                $fetchResult = fetchScheduleHtml($settings);
+                $statusCode = $fetchResult['status_code'];
+                $schedule = parseScheduleFromHtml($fetchResult['html'], $replacements);
+            }
+            if ($schedule === []) {
+                throw new RuntimeException('未识别到有效的更番表内容，请检查抓取或手动HTML。');
+            }
             saveSchedule($schedule);
-            echo json_encode(['message' => '更番表已更新。', 'count' => count($schedule)], JSON_UNESCAPED_UNICODE);
+            echo json_encode([
+                'message' => '更番表已更新。',
+                'count' => count($schedule),
+                'status_code' => $statusCode,
+            ], JSON_UNESCAPED_UNICODE);
             break;
         case 'parse_manual_html':
             $payload = json_decode(file_get_contents('php://input') ?: '{}', true);
