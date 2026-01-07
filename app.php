@@ -341,6 +341,7 @@ function loadSettings(): array
             'dbs' => [],
             'cleanup_keywords' => ['全', '完'],
             'replacements_text' => defaultReplacementsText(),
+            'admin_password' => 'admin123',
         ];
         file_put_contents(SETTINGS_PATH, json_encode($defaults, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
         return $defaults;
@@ -355,6 +356,7 @@ function loadSettings(): array
     $settings['dbs'] = $settings['dbs'] ?? [];
     $settings['cleanup_keywords'] = $settings['cleanup_keywords'] ?? ['全', '完'];
     $settings['replacements_text'] = $settings['replacements_text'] ?? defaultReplacementsText();
+    $settings['admin_password'] = $settings['admin_password'] ?? 'admin123';
 
     return $settings;
 }
@@ -400,18 +402,28 @@ function applyReplacements(string $name, array $replacements): string
 
 function scrapeSchedule(array $replacements): array
 {
-    $context = stream_context_create([
-        'http' => [
-            'method' => 'GET',
-            'header' => "User-Agent: Mozilla/5.0\r\n",
-            'timeout' => 15,
+    $ch = curl_init('https://www.comicat.org/');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => 20,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_HTTPHEADER => [
+            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language: zh-CN,zh;q=0.9',
+            'Cache-Control: no-cache',
+            'Pragma: no-cache',
+            'Referer: https://www.comicat.org/',
         ],
     ]);
-
-    $html = file_get_contents('https://www.comicat.org/', false, $context);
+    $html = curl_exec($ch);
     if ($html === false) {
-        throw new RuntimeException('无法获取页面内容。');
+        $error = curl_error($ch);
+        curl_close($ch);
+        throw new RuntimeException('抓取失败：' . $error);
     }
+    curl_close($ch);
 
     $dom = new DOMDocument();
     libxml_use_internal_errors(true);
@@ -573,256 +585,3 @@ function cleanupWeekday(array $dbs, array $keywords): array
 
     return $summary;
 }
-
-$settings = loadSettings();
-$message = null;
-$updateSummary = null;
-$cleanupSummary = null;
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = $_POST['action'] ?? '';
-    if ($action === 'save_settings') {
-        $settings['cleanup_keywords'] = array_values(array_filter(array_map('trim', explode(',', $_POST['cleanup_keywords'] ?? ''))));
-        $settings['replacements_text'] = $_POST['replacements_text'] ?? '';
-
-        $dbs = [];
-        $labels = $_POST['db_label'] ?? [];
-        $hosts = $_POST['db_host'] ?? [];
-        $ports = $_POST['db_port'] ?? [];
-        $names = $_POST['db_name'] ?? [];
-        $users = $_POST['db_user'] ?? [];
-        $passes = $_POST['db_pass'] ?? [];
-        $count = max(count($labels), count($hosts), count($names));
-        for ($i = 0; $i < $count; $i++) {
-            if (trim($names[$i] ?? '') === '') {
-                continue;
-            }
-            $dbs[] = [
-                'label' => trim($labels[$i] ?? ''),
-                'host' => trim($hosts[$i] ?? 'localhost'),
-                'port' => trim($ports[$i] ?? '3306'),
-                'name' => trim($names[$i] ?? ''),
-                'user' => trim($users[$i] ?? ''),
-                'pass' => $passes[$i] ?? '',
-            ];
-        }
-        $settings['dbs'] = $dbs;
-        saveSettings($settings);
-        $message = '设置已保存。';
-    }
-
-    if ($action === 'fetch_schedule') {
-        try {
-            $replacements = parseReplacements($settings['replacements_text']);
-            $schedule = scrapeSchedule($replacements);
-            saveSchedule($schedule);
-            $message = '更番表已更新。';
-        } catch (Throwable $e) {
-            $message = '抓取失败：' . $e->getMessage();
-        }
-    }
-
-    if ($action === 'update_weekday') {
-        $scheduleData = loadSchedule();
-        $scheduleItems = $scheduleData['items'] ?? [];
-        $updateSummary = updateWeekday($settings['dbs'], $scheduleItems);
-    }
-
-    if ($action === 'cleanup_weekday') {
-        $cleanupSummary = cleanupWeekday($settings['dbs'], $settings['cleanup_keywords']);
-    }
-
-    if ($action === 'add_replacement') {
-        $from = trim($_POST['replacement_from'] ?? '');
-        $to = trim($_POST['replacement_to'] ?? '');
-        if ($from !== '') {
-            $settings['replacements_text'] = trim($settings['replacements_text'] . "\n{$from}={$to}");
-            saveSettings($settings);
-            $message = '已新增同名替换。';
-        }
-    }
-
-    $settings = loadSettings();
-}
-
-$scheduleData = loadSchedule();
-$replacementsCount = count(parseReplacements($settings['replacements_text']));
-?>
-<!doctype html>
-<html lang="zh-CN">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>更番表同步工具</title>
-    <style>
-        body { font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif; background: #f5f7fb; margin: 0; color: #1f2937; }
-        header { background: #111827; color: #fff; padding: 20px 30px; }
-        main { max-width: 1100px; margin: 0 auto; padding: 20px 30px 60px; }
-        .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08); }
-        h2 { margin-top: 0; font-size: 20px; }
-        label { display: block; font-weight: 600; margin-bottom: 6px; }
-        input[type="text"], input[type="password"], textarea { width: 100%; border-radius: 8px; border: 1px solid #cbd5f5; padding: 10px 12px; box-sizing: border-box; }
-        textarea { min-height: 160px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
-        .grid { display: grid; gap: 16px; }
-        .grid-2 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #e2e8f0; }
-        th { background: #f8fafc; }
-        .btn { background: #2563eb; color: #fff; border: none; padding: 10px 16px; border-radius: 8px; cursor: pointer; }
-        .btn-secondary { background: #64748b; }
-        .btn + .btn { margin-left: 8px; }
-        .tag { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #e0f2fe; color: #0369a1; font-size: 12px; margin-right: 6px; }
-        .message { background: #ecfeff; border: 1px solid #a5f3fc; color: #0e7490; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; }
-        .warning { background: #fef3c7; border-color: #fde68a; color: #92400e; }
-        .error { background: #fee2e2; border-color: #fecaca; color: #991b1b; }
-        .muted { color: #64748b; font-size: 13px; }
-    </style>
-</head>
-<body>
-<header>
-    <h1>更番表同步工具</h1>
-    <p class="muted">抓取 https://www.comicat.org/ 的更番表并同步到苹果CMS。</p>
-</header>
-<main>
-    <?php if ($message): ?>
-        <div class="message"><?php echo htmlspecialchars($message, ENT_QUOTES, 'UTF-8'); ?></div>
-    <?php endif; ?>
-
-    <div class="card">
-        <h2>更番表抓取</h2>
-        <p>当前更新：<?php echo $scheduleData['updated_at'] ? htmlspecialchars($scheduleData['updated_at'], ENT_QUOTES, 'UTF-8') : '尚未更新'; ?></p>
-        <form method="post">
-            <input type="hidden" name="action" value="fetch_schedule">
-            <button class="btn" type="submit">抓取并保存更番表</button>
-        </form>
-        <?php if (!empty($scheduleData['items'])): ?>
-            <p class="muted">已抓取 <?php echo count($scheduleData['items']); ?> 条番剧信息。</p>
-        <?php endif; ?>
-    </div>
-
-    <div class="card">
-        <h2>同步 mac_vod.vod_weekday</h2>
-        <form method="post">
-            <input type="hidden" name="action" value="update_weekday">
-            <button class="btn" type="submit">更新更番表</button>
-        </form>
-        <?php if ($updateSummary): ?>
-            <?php if ($updateSummary['errors']): ?>
-                <div class="message error">
-                    <?php foreach ($updateSummary['errors'] as $error): ?>
-                        <div><?php echo htmlspecialchars($error, ENT_QUOTES, 'UTF-8'); ?></div>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-            <div class="grid grid-2">
-                <div>
-                    <h3>更新成功</h3>
-                    <?php if ($updateSummary['success']): ?>
-                        <?php foreach (array_keys($updateSummary['success']) as $name): ?>
-                            <div class="tag"><?php echo htmlspecialchars($name, ENT_QUOTES, 'UTF-8'); ?></div>
-                        <?php endforeach; ?>
-                    <?php else: ?>
-                        <p class="muted">暂无成功记录。</p>
-                    <?php endif; ?>
-                </div>
-                <div>
-                    <h3>更新失败</h3>
-                    <?php if ($updateSummary['failed']): ?>
-                        <?php foreach (array_keys($updateSummary['failed']) as $name): ?>
-                            <div class="tag"><?php echo htmlspecialchars($name, ENT_QUOTES, 'UTF-8'); ?></div>
-                        <?php endforeach; ?>
-                    <?php else: ?>
-                        <p class="muted">暂无失败记录。</p>
-                    <?php endif; ?>
-                </div>
-            </div>
-        <?php endif; ?>
-    </div>
-
-    <div class="card">
-        <h2>快速新增同名替换</h2>
-        <p class="muted">更新失败后，可在这里添加同名替换，然后再点击“更新更番表”。</p>
-        <form method="post" class="grid grid-2">
-            <input type="hidden" name="action" value="add_replacement">
-            <div>
-                <label for="replacement_from">原名称</label>
-                <input type="text" id="replacement_from" name="replacement_from" placeholder="抓取到的名称">
-            </div>
-            <div>
-                <label for="replacement_to">替换为</label>
-                <input type="text" id="replacement_to" name="replacement_to" placeholder="数据库中的名称">
-            </div>
-            <div>
-                <button class="btn" type="submit">新增替换</button>
-            </div>
-        </form>
-    </div>
-
-    <div class="card">
-        <h2>去除完结条目的 vod_weekday</h2>
-        <form method="post">
-            <input type="hidden" name="action" value="cleanup_weekday">
-            <button class="btn btn-secondary" type="submit">执行清理</button>
-        </form>
-        <?php if ($cleanupSummary): ?>
-            <?php if ($cleanupSummary['errors']): ?>
-                <div class="message error">
-                    <?php foreach ($cleanupSummary['errors'] as $error): ?>
-                        <div><?php echo htmlspecialchars($error, ENT_QUOTES, 'UTF-8'); ?></div>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-            <?php foreach ($cleanupSummary['affected'] as $label => $count): ?>
-                <p><?php echo htmlspecialchars($label, ENT_QUOTES, 'UTF-8'); ?>：已清理 <?php echo $count; ?> 条记录。</p>
-            <?php endforeach; ?>
-        <?php endif; ?>
-    </div>
-
-    <div class="card">
-        <h2>后台设置</h2>
-        <form method="post">
-            <input type="hidden" name="action" value="save_settings">
-            <h3>数据库配置</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th>名称</th>
-                        <th>Host</th>
-                        <th>Port</th>
-                        <th>数据库</th>
-                        <th>用户名</th>
-                        <th>密码</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php $dbs = $settings['dbs']; ?>
-                    <?php $rows = max(1, count($dbs) + 1); ?>
-                    <?php for ($i = 0; $i < $rows; $i++): ?>
-                        <?php $db = $dbs[$i] ?? []; ?>
-                        <tr>
-                            <td><input type="text" name="db_label[]" value="<?php echo htmlspecialchars($db['label'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"></td>
-                            <td><input type="text" name="db_host[]" value="<?php echo htmlspecialchars($db['host'] ?? 'localhost', ENT_QUOTES, 'UTF-8'); ?>"></td>
-                            <td><input type="text" name="db_port[]" value="<?php echo htmlspecialchars($db['port'] ?? '3306', ENT_QUOTES, 'UTF-8'); ?>"></td>
-                            <td><input type="text" name="db_name[]" value="<?php echo htmlspecialchars($db['name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"></td>
-                            <td><input type="text" name="db_user[]" value="<?php echo htmlspecialchars($db['user'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"></td>
-                            <td><input type="password" name="db_pass[]" value="<?php echo htmlspecialchars($db['pass'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"></td>
-                        </tr>
-                    <?php endfor; ?>
-                </tbody>
-            </table>
-            <p class="muted">留空可删除数据库配置。支持同时配置多个苹果CMS数据库。</p>
-
-            <h3>完结关键字</h3>
-            <label for="cleanup_keywords">使用英文逗号分隔</label>
-            <input type="text" id="cleanup_keywords" name="cleanup_keywords" value="<?php echo htmlspecialchars(implode(',', $settings['cleanup_keywords']), ENT_QUOTES, 'UTF-8'); ?>">
-
-            <h3>同义词替换（<?php echo $replacementsCount; ?> 条）</h3>
-            <label for="replacements_text">格式：原文=替换为（每行一条）</label>
-            <textarea id="replacements_text" name="replacements_text"><?php echo htmlspecialchars($settings['replacements_text'], ENT_QUOTES, 'UTF-8'); ?></textarea>
-
-            <button class="btn" type="submit">保存设置</button>
-        </form>
-    </div>
-</main>
-</body>
-</html>

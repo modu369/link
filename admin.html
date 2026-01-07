@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>更番表同步工具</title>
+  <style>
+    body { font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif; background: #f5f7fb; margin: 0; color: #1f2937; }
+    header { background: #111827; color: #fff; padding: 20px 30px; display: flex; justify-content: space-between; align-items: center; }
+    main { max-width: 1100px; margin: 0 auto; padding: 20px 30px 60px; }
+    .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08); }
+    h2 { margin-top: 0; font-size: 20px; }
+    label { display: block; font-weight: 600; margin-bottom: 6px; }
+    input[type="text"], input[type="password"], textarea { width: 100%; border-radius: 8px; border: 1px solid #cbd5f5; padding: 10px 12px; box-sizing: border-box; }
+    textarea { min-height: 160px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    .grid { display: grid; gap: 16px; }
+    .grid-2 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #e2e8f0; }
+    th { background: #f8fafc; }
+    .btn { background: #2563eb; color: #fff; border: none; padding: 10px 16px; border-radius: 8px; cursor: pointer; }
+    .btn-secondary { background: #64748b; }
+    .btn + .btn { margin-left: 8px; }
+    .tag { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #e0f2fe; color: #0369a1; font-size: 12px; margin-right: 6px; margin-bottom: 6px; }
+    .message { background: #ecfeff; border: 1px solid #a5f3fc; color: #0e7490; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; display: none; }
+    .error { background: #fee2e2; border-color: #fecaca; color: #991b1b; }
+    .muted { color: #64748b; font-size: 13px; }
+  </style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>更番表同步工具</h1>
+    <p class="muted">抓取 https://www.comicat.org/ 的更番表并同步到苹果CMS。</p>
+  </div>
+  <div>
+    <a class="btn btn-secondary" href="/logout.php">退出登录</a>
+  </div>
+</header>
+<main>
+  <div id="message" class="message"></div>
+
+  <div class="card">
+    <h2>更番表抓取</h2>
+    <p>当前更新：<span id="schedule-updated">尚未更新</span></p>
+    <button class="btn" id="fetch-schedule">抓取并保存更番表</button>
+    <p class="muted">已抓取 <span id="schedule-count">0</span> 条番剧信息。</p>
+  </div>
+
+  <div class="card">
+    <h2>同步 mac_vod.vod_weekday</h2>
+    <button class="btn" id="update-weekday">更新更番表</button>
+    <div class="grid grid-2">
+      <div>
+        <h3>更新成功</h3>
+        <div id="update-success" class="muted">暂无成功记录。</div>
+      </div>
+      <div>
+        <h3>更新失败</h3>
+        <div id="update-failed" class="muted">暂无失败记录。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>快速新增同名替换</h2>
+    <p class="muted">更新失败后，可在这里添加同名替换，然后再点击“更新更番表”。</p>
+    <div class="grid grid-2">
+      <div>
+        <label for="replacement-from">原名称</label>
+        <input type="text" id="replacement-from" placeholder="抓取到的名称">
+      </div>
+      <div>
+        <label for="replacement-to">替换为</label>
+        <input type="text" id="replacement-to" placeholder="数据库中的名称">
+      </div>
+      <div>
+        <button class="btn" id="add-replacement">新增替换</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>去除完结条目的 vod_weekday</h2>
+    <button class="btn btn-secondary" id="cleanup-weekday">执行清理</button>
+    <div id="cleanup-result" class="muted"></div>
+  </div>
+
+  <div class="card">
+    <h2>后台设置</h2>
+    <h3>数据库配置</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>名称</th>
+          <th>Host</th>
+          <th>Port</th>
+          <th>数据库</th>
+          <th>用户名</th>
+          <th>密码</th>
+        </tr>
+      </thead>
+      <tbody id="db-table"></tbody>
+    </table>
+    <button class="btn btn-secondary" id="add-db-row">新增一行</button>
+    <p class="muted">留空可删除数据库配置。支持同时配置多个苹果CMS数据库。</p>
+
+    <h3>完结关键字</h3>
+    <label for="cleanup-keywords">使用英文逗号分隔</label>
+    <input type="text" id="cleanup-keywords">
+
+    <h3>管理员密码</h3>
+    <label for="admin-password">留空则不修改密码</label>
+    <input type="password" id="admin-password" placeholder="可选">
+
+    <h3>同义词替换（<span id="replacements-count">0</span> 条）</h3>
+    <label for="replacements-text">格式：原文=替换为（每行一条）</label>
+    <textarea id="replacements-text"></textarea>
+
+    <button class="btn" id="save-settings">保存设置</button>
+  </div>
+</main>
+<script>
+  const messageBox = document.getElementById('message');
+  const scheduleUpdated = document.getElementById('schedule-updated');
+  const scheduleCount = document.getElementById('schedule-count');
+  const replacementsCount = document.getElementById('replacements-count');
+  const dbTable = document.getElementById('db-table');
+
+  function showMessage(text, isError = false) {
+    messageBox.textContent = text;
+    messageBox.classList.toggle('error', isError);
+    messageBox.style.display = 'block';
+    setTimeout(() => {
+      messageBox.style.display = 'none';
+    }, 4000);
+  }
+
+  function createDbRow(db = {}) {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td><input type="text" class="db-label" value="${db.label || ''}"></td>
+      <td><input type="text" class="db-host" value="${db.host || 'localhost'}"></td>
+      <td><input type="text" class="db-port" value="${db.port || '3306'}"></td>
+      <td><input type="text" class="db-name" value="${db.name || ''}"></td>
+      <td><input type="text" class="db-user" value="${db.user || ''}"></td>
+      <td><input type="password" class="db-pass" value="${db.pass || ''}"></td>
+    `;
+    dbTable.appendChild(row);
+  }
+
+  function collectDbRows() {
+    const rows = Array.from(dbTable.querySelectorAll('tr'));
+    return rows.map(row => ({
+      label: row.querySelector('.db-label').value,
+      host: row.querySelector('.db-host').value,
+      port: row.querySelector('.db-port').value,
+      name: row.querySelector('.db-name').value,
+      user: row.querySelector('.db-user').value,
+      pass: row.querySelector('.db-pass').value,
+    }));
+  }
+
+  async function loadState() {
+    const res = await fetch('/api.php?action=state');
+    if (!res.ok) {
+      if (res.status === 401) {
+        window.location.href = '/login.html';
+      }
+      return;
+    }
+    const data = await res.json();
+    scheduleUpdated.textContent = data.schedule.updated_at || '尚未更新';
+    scheduleCount.textContent = data.schedule.items.length || 0;
+    replacementsCount.textContent = data.replacements_count || 0;
+
+    dbTable.innerHTML = '';
+    if (data.settings.dbs.length === 0) {
+      createDbRow();
+    } else {
+      data.settings.dbs.forEach(db => createDbRow(db));
+      createDbRow();
+    }
+
+    document.getElementById('cleanup-keywords').value = data.settings.cleanup_keywords.join(',');
+    document.getElementById('replacements-text').value = data.settings.replacements_text;
+  }
+
+  async function postAction(action, payload = null) {
+    const res = await fetch(`/api.php?action=${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload ? JSON.stringify(payload) : null,
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || '操作失败');
+    }
+    return data;
+  }
+
+  document.getElementById('fetch-schedule').addEventListener('click', async () => {
+    try {
+      const data = await postAction('fetch_schedule');
+      showMessage(data.message || '更番表已更新。');
+      await loadState();
+    } catch (err) {
+      showMessage(err.message, true);
+    }
+  });
+
+  document.getElementById('update-weekday').addEventListener('click', async () => {
+    try {
+      const data = await postAction('update_weekday');
+      const success = Object.keys(data.summary.success || {});
+      const failed = Object.keys(data.summary.failed || {});
+      const successBox = document.getElementById('update-success');
+      const failedBox = document.getElementById('update-failed');
+      successBox.innerHTML = success.length ? success.map(name => `<span class="tag">${name}</span>`).join('') : '暂无成功记录。';
+      failedBox.innerHTML = failed.length ? failed.map(name => `<span class="tag">${name}</span>`).join('') : '暂无失败记录。';
+      if (data.summary.errors && data.summary.errors.length) {
+        showMessage(data.summary.errors.join('\n'), true);
+      }
+    } catch (err) {
+      showMessage(err.message, true);
+    }
+  });
+
+  document.getElementById('add-replacement').addEventListener('click', async () => {
+    const from = document.getElementById('replacement-from').value.trim();
+    const to = document.getElementById('replacement-to').value.trim();
+    if (!from) {
+      showMessage('原名称不能为空。', true);
+      return;
+    }
+    try {
+      await postAction('add_replacement', { from, to });
+      showMessage('已新增同名替换。');
+      document.getElementById('replacement-from').value = '';
+      document.getElementById('replacement-to').value = '';
+      await loadState();
+    } catch (err) {
+      showMessage(err.message, true);
+    }
+  });
+
+  document.getElementById('cleanup-weekday').addEventListener('click', async () => {
+    try {
+      const data = await postAction('cleanup_weekday');
+      const result = Object.entries(data.summary.affected || {}).map(([label, count]) => `${label}：已清理 ${count} 条记录。`).join('<br>');
+      document.getElementById('cleanup-result').innerHTML = result || '暂无清理结果。';
+      if (data.summary.errors && data.summary.errors.length) {
+        showMessage(data.summary.errors.join('\n'), true);
+      }
+    } catch (err) {
+      showMessage(err.message, true);
+    }
+  });
+
+  document.getElementById('save-settings').addEventListener('click', async () => {
+    const payload = {
+      dbs: collectDbRows(),
+      cleanup_keywords: document.getElementById('cleanup-keywords').value.split(',').map(item => item.trim()).filter(Boolean),
+      replacements_text: document.getElementById('replacements-text').value,
+      admin_password: document.getElementById('admin-password').value,
+    };
+    try {
+      const data = await postAction('save_settings', payload);
+      showMessage(data.message || '设置已保存。');
+      document.getElementById('admin-password').value = '';
+      await loadState();
+    } catch (err) {
+      showMessage(err.message, true);
+    }
+  });
+
+  document.getElementById('add-db-row').addEventListener('click', () => {
+    createDbRow();
+  });
+
+  loadState();
+</script>
+</body>
+</html>
