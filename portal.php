@@ -1,0 +1,54 @@
+<?php
+require_once __DIR__ . '/app.php';
+
+session_start();
+$settings = loadSettings();
+$entryKey = hash('sha256', (string)$settings['admin_password']);
+$provided = $_GET['entry'] ?? '';
+if (!hash_equals($entryKey, (string)$provided)) {
+    http_response_code(404);
+    echo 'Not Found';
+    exit;
+}
+$_SESSION['entry_valid'] = true;
+if ($_SESSION['authenticated'] ?? false) {
+    header('Location: /console.php');
+    exit;
+}
+?>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>管理入口</title>
+  <style>
+    body { font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif; background: #e2e8f0; margin: 0; color: #0f172a; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .card { background: #fff; border-radius: 12px; padding: 32px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.15); width: 100%; max-width: 420px; }
+    h1 { margin-top: 0; font-size: 20px; }
+    label { display: block; font-weight: 600; margin-bottom: 6px; }
+    input { width: 100%; border-radius: 8px; border: 1px solid #cbd5f5; padding: 10px 12px; box-sizing: border-box; }
+    button { margin-top: 16px; width: 100%; background: #0f172a; color: #fff; border: none; padding: 10px 16px; border-radius: 8px; cursor: pointer; }
+    .error { margin-top: 12px; color: #b91c1c; }
+    .muted { color: #64748b; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>管理入口</h1>
+    <p class="muted">请输入授权口令进入控制台。</p>
+    <form method="post" action="/auth.php">
+      <label for="password">口令</label>
+      <input type="password" id="password" name="password" required>
+      <button type="submit">进入</button>
+    </form>
+    <div class="error" id="error" style="display:none;">口令错误，请重试。</div>
+  </div>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('error') === '1') {
+      document.getElementById('error').style.display = 'block';
+    }
+  </script>
+</body>
+</html>

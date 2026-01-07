@@ -6,9 +6,9 @@ require_once __DIR__ . '/app.php';
 session_start();
 header('Content-Type: application/json; charset=utf-8');
 
-if (!($_SESSION['authenticated'] ?? false)) {
-    http_response_code(401);
-    echo json_encode(['error' => '未登录'], JSON_UNESCAPED_UNICODE);
+if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? false)) {
+    http_response_code(404);
+    echo json_encode(['error' => 'Not Found'], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -117,6 +117,18 @@ try {
             $summary = updateWeekday($settings['dbs'], $items, $replacements);
             echo json_encode(['summary' => $summary], JSON_UNESCAPED_UNICODE);
             break;
+        case 'update_weekday_fetched':
+            $scheduleData = loadSchedule();
+            $replacements = parseReplacements($settings['replacements_text']);
+            $summary = updateWeekday($settings['dbs'], $scheduleData['items'] ?? [], $replacements);
+            echo json_encode(['summary' => $summary], JSON_UNESCAPED_UNICODE);
+            break;
+        case 'update_weekday_manual':
+            $scheduleData = loadSchedule();
+            $replacements = parseReplacements($settings['replacements_text']);
+            $summary = updateWeekday($settings['dbs'], $scheduleData['manual_items'] ?? [], $replacements);
+            echo json_encode(['summary' => $summary], JSON_UNESCAPED_UNICODE);
+            break;
         case 'add_schedule_item':
             $payload = json_decode(file_get_contents('php://input') ?: '{}', true);
             if (!is_array($payload)) {
@@ -181,6 +193,65 @@ try {
             $scheduleData = loadSchedule();
             saveSchedule($scheduleData['items'] ?? [], []);
             echo json_encode(['message' => '已清空手动更番信息。'], JSON_UNESCAPED_UNICODE);
+            break;
+        case 'update_schedule_entry':
+            $payload = json_decode(file_get_contents('php://input') ?: '{}', true);
+            if (!is_array($payload)) {
+                throw new RuntimeException('参数格式错误');
+            }
+            $index = (int)($payload['index'] ?? -1);
+            $name = trim((string)($payload['name'] ?? ''));
+            $source = (string)($payload['source'] ?? '');
+            if ($index < 0 || $name === '' || ($source !== 'fetched' && $source !== 'manual')) {
+                throw new RuntimeException('参数错误');
+            }
+            $scheduleData = loadSchedule();
+            if ($source === 'fetched') {
+                $items = $scheduleData['items'] ?? [];
+                if (!array_key_exists($index, $items)) {
+                    throw new RuntimeException('未找到该更番信息');
+                }
+                $items[$index]['name'] = $name;
+                $items[$index]['original_name'] = $items[$index]['original_name'] ?? $name;
+                saveSchedule($items, $scheduleData['manual_items'] ?? []);
+            } else {
+                $manualItems = $scheduleData['manual_items'] ?? [];
+                if (!array_key_exists($index, $manualItems)) {
+                    throw new RuntimeException('未找到该更番信息');
+                }
+                $manualItems[$index]['name'] = $name;
+                $manualItems[$index]['original_name'] = $name;
+                saveSchedule($scheduleData['items'] ?? [], $manualItems);
+            }
+            echo json_encode(['message' => '更番信息已更新。'], JSON_UNESCAPED_UNICODE);
+            break;
+        case 'delete_schedule_entry':
+            $payload = json_decode(file_get_contents('php://input') ?: '{}', true);
+            if (!is_array($payload)) {
+                throw new RuntimeException('参数格式错误');
+            }
+            $index = (int)($payload['index'] ?? -1);
+            $source = (string)($payload['source'] ?? '');
+            if ($index < 0 || ($source !== 'fetched' && $source !== 'manual')) {
+                throw new RuntimeException('参数错误');
+            }
+            $scheduleData = loadSchedule();
+            if ($source === 'fetched') {
+                $items = $scheduleData['items'] ?? [];
+                if (!array_key_exists($index, $items)) {
+                    throw new RuntimeException('未找到该更番信息');
+                }
+                array_splice($items, $index, 1);
+                saveSchedule($items, $scheduleData['manual_items'] ?? []);
+            } else {
+                $manualItems = $scheduleData['manual_items'] ?? [];
+                if (!array_key_exists($index, $manualItems)) {
+                    throw new RuntimeException('未找到该更番信息');
+                }
+                array_splice($manualItems, $index, 1);
+                saveSchedule($scheduleData['items'] ?? [], $manualItems);
+            }
+            echo json_encode(['message' => '更番信息已删除。'], JSON_UNESCAPED_UNICODE);
             break;
         case 'cleanup_weekday':
             $summary = cleanupWeekday($settings['dbs'], $settings['cleanup_keywords']);

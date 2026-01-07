@@ -4,5 +4,5 @@ declare(strict_types=1);
 session_start();
 $_SESSION = [];
 session_destroy();
-header('Location: /portal.html');
+header('Location: /portal.php');
 exit;
