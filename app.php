@@ -108,8 +108,6 @@ function findVodMatch(PDO $pdo, string $title): ?array
     $like = '%' . $fragment . '%';
     $stmt = $pdo->prepare('SELECT vod_id, vod_name, vod_sub FROM mac_vod WHERE vod_name LIKE ? OR vod_sub LIKE ? LIMIT 50');
     $stmt->execute([$like, $like]);
-    $best = null;
-    $bestScore = 0;
 
     while ($candidate = $stmt->fetch(PDO::FETCH_ASSOC)) {
         foreach (['vod_name', 'vod_sub'] as $field) {
@@ -124,17 +122,10 @@ function findVodMatch(PDO $pdo, string $title): ?array
             if ($normalized === $normalizedTarget) {
                 return $candidate;
             }
-            if (str_contains($normalized, $normalizedTarget) || str_contains($normalizedTarget, $normalized)) {
-                $score = 80 - abs(mb_strlen($normalized, 'UTF-8') - mb_strlen($normalizedTarget, 'UTF-8'));
-                if ($score > $bestScore) {
-                    $bestScore = $score;
-                    $best = $candidate;
-                }
-            }
         }
     }
 
-    return $best;
+    return null;
 }
 
 function parseScheduleFromHtml(string $html, array $replacements): array

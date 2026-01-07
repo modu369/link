@@ -114,6 +114,66 @@ try {
             $summary = updateWeekday($settings['dbs'], $scheduleData['items'] ?? [], $replacements);
             echo json_encode(['summary' => $summary], JSON_UNESCAPED_UNICODE);
             break;
+        case 'add_schedule_item':
+            $payload = json_decode(file_get_contents('php://input') ?: '{}', true);
+            if (!is_array($payload)) {
+                throw new RuntimeException('参数格式错误');
+            }
+            $weekday = trim((string)($payload['weekday'] ?? ''));
+            $name = trim((string)($payload['name'] ?? ''));
+            if ($weekday === '' || $name === '') {
+                throw new RuntimeException('星期与名称不能为空');
+            }
+            $scheduleData = loadSchedule();
+            $items = $scheduleData['items'] ?? [];
+            $items[] = [
+                'weekday' => $weekday,
+                'name' => $name,
+                'original_name' => $name,
+            ];
+            saveSchedule($items);
+            echo json_encode(['message' => '已新增更番信息。'], JSON_UNESCAPED_UNICODE);
+            break;
+        case 'update_schedule_item':
+            $payload = json_decode(file_get_contents('php://input') ?: '{}', true);
+            if (!is_array($payload)) {
+                throw new RuntimeException('参数格式错误');
+            }
+            $index = (int)($payload['index'] ?? -1);
+            $weekday = trim((string)($payload['weekday'] ?? ''));
+            $name = trim((string)($payload['name'] ?? ''));
+            if ($index < 0 || $weekday === '' || $name === '') {
+                throw new RuntimeException('索引、星期与名称不能为空');
+            }
+            $scheduleData = loadSchedule();
+            $items = $scheduleData['items'] ?? [];
+            if (!array_key_exists($index, $items)) {
+                throw new RuntimeException('未找到该更番信息');
+            }
+            $items[$index]['weekday'] = $weekday;
+            $items[$index]['name'] = $name;
+            $items[$index]['original_name'] = $name;
+            saveSchedule($items);
+            echo json_encode(['message' => '更番信息已更新。'], JSON_UNESCAPED_UNICODE);
+            break;
+        case 'delete_schedule_item':
+            $payload = json_decode(file_get_contents('php://input') ?: '{}', true);
+            if (!is_array($payload)) {
+                throw new RuntimeException('参数格式错误');
+            }
+            $index = (int)($payload['index'] ?? -1);
+            if ($index < 0) {
+                throw new RuntimeException('索引不能为空');
+            }
+            $scheduleData = loadSchedule();
+            $items = $scheduleData['items'] ?? [];
+            if (!array_key_exists($index, $items)) {
+                throw new RuntimeException('未找到该更番信息');
+            }
+            array_splice($items, $index, 1);
+            saveSchedule($items);
+            echo json_encode(['message' => '更番信息已删除。'], JSON_UNESCAPED_UNICODE);
+            break;
         case 'cleanup_weekday':
             $summary = cleanupWeekday($settings['dbs'], $settings['cleanup_keywords']);
             echo json_encode(['summary' => $summary], JSON_UNESCAPED_UNICODE);
