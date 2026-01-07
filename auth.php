@@ -15,7 +15,7 @@ $password = (string)($_POST['password'] ?? '');
 
 if ($password !== '' && hash_equals($settings['admin_password'], $password)) {
     $_SESSION['authenticated'] = true;
-    header('Location: /admin.html');
+    header('Location: /index.html');
     exit;
 }
 

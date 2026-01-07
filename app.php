@@ -80,47 +80,8 @@ function applyReplacements(string $name, array $replacements): string
     return trim($result);
 }
 
-function scrapeSchedule(array $replacements, array $settings): array
+function parseScheduleFromHtml(string $html, array $replacements): array
 {
-    $manualHtml = trim((string)($settings['manual_schedule_html'] ?? ''));
-    if ($manualHtml !== '') {
-        $html = $manualHtml;
-    } else {
-        $ch = curl_init('https://www.comicat.org/');
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_TIMEOUT => 20,
-            CURLOPT_CONNECTTIMEOUT => 10,
-            CURLOPT_HTTPHEADER => [
-                'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Accept-Language: zh-CN,zh;q=0.9',
-                'Cache-Control: no-cache',
-                'Pragma: no-cache',
-                'Referer: https://www.comicat.org/',
-            ],
-        ]);
-        $proxyHost = trim((string)($settings['proxy_host'] ?? ''));
-        if ($proxyHost !== '') {
-            $proxyPort = trim((string)($settings['proxy_port'] ?? ''));
-            $proxyAddress = $proxyHost . ($proxyPort !== '' ? ':' . $proxyPort : '');
-            curl_setopt($ch, CURLOPT_PROXY, $proxyAddress);
-            $proxyUser = (string)($settings['proxy_user'] ?? '');
-            $proxyPass = (string)($settings['proxy_pass'] ?? '');
-            if ($proxyUser !== '' || $proxyPass !== '') {
-                curl_setopt($ch, CURLOPT_PROXYUSERPWD, $proxyUser . ':' . $proxyPass);
-            }
-        }
-        $html = curl_exec($ch);
-        if ($html === false) {
-            $error = curl_error($ch);
-            curl_close($ch);
-            throw new RuntimeException('抓取失败：' . $error);
-        }
-        curl_close($ch);
-    }
-
     $dom = new DOMDocument();
     libxml_use_internal_errors(true);
     $dom->loadHTML($html);
@@ -167,6 +128,50 @@ function scrapeSchedule(array $replacements, array $settings): array
     }
 
     return $results;
+}
+
+function scrapeSchedule(array $replacements, array $settings): array
+{
+    $manualHtml = trim((string)($settings['manual_schedule_html'] ?? ''));
+    if ($manualHtml !== '') {
+        return parseScheduleFromHtml($manualHtml, $replacements);
+    }
+
+    $ch = curl_init('https://www.comicat.org/');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => 20,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_HTTPHEADER => [
+            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language: zh-CN,zh;q=0.9',
+            'Cache-Control: no-cache',
+            'Pragma: no-cache',
+            'Referer: https://www.comicat.org/',
+        ],
+    ]);
+    $proxyHost = trim((string)($settings['proxy_host'] ?? ''));
+    if ($proxyHost !== '') {
+        $proxyPort = trim((string)($settings['proxy_port'] ?? ''));
+        $proxyAddress = $proxyHost . ($proxyPort !== '' ? ':' . $proxyPort : '');
+        curl_setopt($ch, CURLOPT_PROXY, $proxyAddress);
+        $proxyUser = (string)($settings['proxy_user'] ?? '');
+        $proxyPass = (string)($settings['proxy_pass'] ?? '');
+        if ($proxyUser !== '' || $proxyPass !== '') {
+            curl_setopt($ch, CURLOPT_PROXYUSERPWD, $proxyUser . ':' . $proxyPass);
+        }
+    }
+    $html = curl_exec($ch);
+    if ($html === false) {
+        $error = curl_error($ch);
+        curl_close($ch);
+        throw new RuntimeException('抓取失败：' . $error);
+    }
+    curl_close($ch);
+
+    return parseScheduleFromHtml($html, $replacements);
 }
 
 function saveSchedule(array $schedule): void

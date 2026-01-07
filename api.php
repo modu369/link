@@ -74,6 +74,22 @@ try {
             saveSchedule($schedule);
             echo json_encode(['message' => '更番表已更新。', 'count' => count($schedule)], JSON_UNESCAPED_UNICODE);
             break;
+        case 'parse_manual_html':
+            $payload = json_decode(file_get_contents('php://input') ?: '{}', true);
+            if (!is_array($payload)) {
+                throw new RuntimeException('参数格式错误');
+            }
+            $manualHtml = trim((string)($payload['manual_schedule_html'] ?? ''));
+            if ($manualHtml === '') {
+                throw new RuntimeException('手动HTML不能为空');
+            }
+            $settings['manual_schedule_html'] = $manualHtml;
+            saveSettings($settings);
+            $replacements = parseReplacements($settings['replacements_text']);
+            $schedule = parseScheduleFromHtml($manualHtml, $replacements);
+            saveSchedule($schedule);
+            echo json_encode(['message' => '已从手动HTML提取更番信息。', 'count' => count($schedule)], JSON_UNESCAPED_UNICODE);
+            break;
         case 'update_weekday':
             $scheduleData = loadSchedule();
             $summary = updateWeekday($settings['dbs'], $scheduleData['items'] ?? []);
