@@ -25,6 +25,11 @@ try {
                     'dbs' => $settings['dbs'],
                     'cleanup_keywords' => $settings['cleanup_keywords'],
                     'replacements_text' => $settings['replacements_text'],
+                    'proxy_host' => $settings['proxy_host'],
+                    'proxy_port' => $settings['proxy_port'],
+                    'proxy_user' => $settings['proxy_user'],
+                    'proxy_pass' => $settings['proxy_pass'],
+                    'manual_schedule_html' => $settings['manual_schedule_html'],
                 ],
                 'replacements_count' => count(parseReplacements($settings['replacements_text'])),
             ], JSON_UNESCAPED_UNICODE);
@@ -36,6 +41,11 @@ try {
             }
             $settings['cleanup_keywords'] = array_values(array_filter(array_map('trim', $payload['cleanup_keywords'] ?? [])));
             $settings['replacements_text'] = $payload['replacements_text'] ?? '';
+            $settings['proxy_host'] = trim((string)($payload['proxy_host'] ?? ''));
+            $settings['proxy_port'] = trim((string)($payload['proxy_port'] ?? ''));
+            $settings['proxy_user'] = (string)($payload['proxy_user'] ?? '');
+            $settings['proxy_pass'] = (string)($payload['proxy_pass'] ?? '');
+            $settings['manual_schedule_html'] = (string)($payload['manual_schedule_html'] ?? '');
             if (!empty($payload['admin_password'])) {
                 $settings['admin_password'] = (string)$payload['admin_password'];
             }
@@ -60,7 +70,7 @@ try {
             break;
         case 'fetch_schedule':
             $replacements = parseReplacements($settings['replacements_text']);
-            $schedule = scrapeSchedule($replacements);
+            $schedule = scrapeSchedule($replacements, $settings);
             saveSchedule($schedule);
             echo json_encode(['message' => '更番表已更新。', 'count' => count($schedule)], JSON_UNESCAPED_UNICODE);
             break;

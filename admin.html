@@ -109,6 +109,30 @@
     <label for="cleanup-keywords">使用英文逗号分隔</label>
     <input type="text" id="cleanup-keywords">
 
+    <h3>代理设置（可选）</h3>
+    <div class="grid grid-2">
+      <div>
+        <label for="proxy-host">代理IP</label>
+        <input type="text" id="proxy-host" placeholder="例如 127.0.0.1">
+      </div>
+      <div>
+        <label for="proxy-port">代理端口</label>
+        <input type="text" id="proxy-port" placeholder="例如 7890">
+      </div>
+      <div>
+        <label for="proxy-user">代理账号</label>
+        <input type="text" id="proxy-user" placeholder="可选">
+      </div>
+      <div>
+        <label for="proxy-pass">代理密码</label>
+        <input type="password" id="proxy-pass" placeholder="可选">
+      </div>
+    </div>
+
+    <h3>手动更番表 HTML</h3>
+    <label for="manual-html">粘贴 https://www.comicat.org/ 更番表区域的 HTML</label>
+    <textarea id="manual-html" placeholder="如果填写，将优先使用这里的 HTML 进行解析。"></textarea>
+
     <h3>管理员密码</h3>
     <label for="admin-password">留空则不修改密码</label>
     <input type="password" id="admin-password" placeholder="可选">
@@ -183,6 +207,11 @@
     }
 
     document.getElementById('cleanup-keywords').value = data.settings.cleanup_keywords.join(',');
+    document.getElementById('proxy-host').value = data.settings.proxy_host || '';
+    document.getElementById('proxy-port').value = data.settings.proxy_port || '';
+    document.getElementById('proxy-user').value = data.settings.proxy_user || '';
+    document.getElementById('proxy-pass').value = data.settings.proxy_pass || '';
+    document.getElementById('manual-html').value = data.settings.manual_schedule_html || '';
     document.getElementById('replacements-text').value = data.settings.replacements_text;
   }
 
@@ -261,6 +290,11 @@
     const payload = {
       dbs: collectDbRows(),
       cleanup_keywords: document.getElementById('cleanup-keywords').value.split(',').map(item => item.trim()).filter(Boolean),
+      proxy_host: document.getElementById('proxy-host').value,
+      proxy_port: document.getElementById('proxy-port').value,
+      proxy_user: document.getElementById('proxy-user').value,
+      proxy_pass: document.getElementById('proxy-pass').value,
+      manual_schedule_html: document.getElementById('manual-html').value,
       replacements_text: document.getElementById('replacements-text').value,
       admin_password: document.getElementById('admin-password').value,
     };
