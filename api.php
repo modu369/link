@@ -87,6 +87,9 @@ try {
             saveSettings($settings);
             $replacements = parseReplacements($settings['replacements_text']);
             $schedule = parseScheduleFromHtml($manualHtml, $replacements);
+            if ($schedule === []) {
+                throw new RuntimeException('未识别到有效的更番表内容，请确认粘贴的是更番表 HTML。');
+            }
             saveSchedule($schedule);
             echo json_encode(['message' => '已从手动HTML提取更番信息。', 'count' => count($schedule)], JSON_UNESCAPED_UNICODE);
             break;

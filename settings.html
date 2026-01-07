@@ -38,8 +38,6 @@
   </div>
 </header>
 <main>
-  <div id="message" class="message"></div>
-
   <div class="card">
     <h2>数据库配置</h2>
     <table>
@@ -57,6 +55,7 @@
     </table>
     <button class="btn btn-secondary" id="add-db-row">新增一行</button>
     <button class="btn" id="save-db">保存数据库配置</button>
+    <div class="message" id="message-db"></div>
     <p class="muted">留空可删除数据库配置。支持同时配置多个苹果CMS数据库。</p>
   </div>
 
@@ -65,6 +64,7 @@
     <label for="cleanup-keywords">使用英文逗号分隔</label>
     <input type="text" id="cleanup-keywords">
     <button class="btn" id="save-cleanup">保存完结关键字</button>
+    <div class="message" id="message-cleanup"></div>
   </div>
 
   <div class="card">
@@ -88,6 +88,7 @@
       </div>
     </div>
     <button class="btn" id="save-proxy">保存代理设置</button>
+    <div class="message" id="message-proxy"></div>
   </div>
 
   <div class="card">
@@ -98,6 +99,7 @@
       <button class="btn" id="save-manual">保存手动HTML</button>
       <button class="btn btn-secondary" id="parse-manual">从粘贴的HTML提取更番信息</button>
     </div>
+    <div class="message" id="message-manual"></div>
   </div>
 
   <div class="card">
@@ -105,6 +107,7 @@
     <label for="admin-password">留空则不修改密码</label>
     <input type="password" id="admin-password" placeholder="可选">
     <button class="btn" id="save-password">保存管理员密码</button>
+    <div class="message" id="message-password"></div>
   </div>
 
   <div class="card">
@@ -112,14 +115,15 @@
     <label for="replacements-text">格式：原文=替换为（每行一条）</label>
     <textarea id="replacements-text"></textarea>
     <button class="btn" id="save-replacements">保存同义词替换</button>
+    <div class="message" id="message-replacements"></div>
   </div>
 </main>
 <script>
-  const messageBox = document.getElementById('message');
   const replacementsCount = document.getElementById('replacements-count');
   const dbTable = document.getElementById('db-table');
 
-  function showMessage(text, isError = false) {
+  function showMessage(elementId, text, isError = false) {
+    const messageBox = document.getElementById(elementId);
     messageBox.textContent = text;
     messageBox.classList.toggle('error', isError);
     messageBox.style.display = 'block';
@@ -208,31 +212,31 @@
     };
   }
 
-  async function saveSettings(message) {
+  async function saveSettings(messageId, message) {
     try {
       const data = await postAction('save_settings', buildPayload());
-      showMessage(message || data.message || '设置已保存。');
+      showMessage(messageId, message || data.message || '设置已保存。');
       document.getElementById('admin-password').value = '';
       await loadState();
     } catch (err) {
-      showMessage(err.message, true);
+      showMessage(messageId, err.message, true);
     }
   }
 
-  document.getElementById('save-db').addEventListener('click', () => saveSettings('数据库配置已保存。'));
-  document.getElementById('save-cleanup').addEventListener('click', () => saveSettings('完结关键字已保存。'));
-  document.getElementById('save-proxy').addEventListener('click', () => saveSettings('代理设置已保存。'));
-  document.getElementById('save-manual').addEventListener('click', () => saveSettings('手动HTML已保存。'));
-  document.getElementById('save-password').addEventListener('click', () => saveSettings('管理员密码已保存。'));
-  document.getElementById('save-replacements').addEventListener('click', () => saveSettings('同义词替换已保存。'));
+  document.getElementById('save-db').addEventListener('click', () => saveSettings('message-db', '数据库配置已保存。'));
+  document.getElementById('save-cleanup').addEventListener('click', () => saveSettings('message-cleanup', '完结关键字已保存。'));
+  document.getElementById('save-proxy').addEventListener('click', () => saveSettings('message-proxy', '代理设置已保存。'));
+  document.getElementById('save-manual').addEventListener('click', () => saveSettings('message-manual', '手动HTML已保存。'));
+  document.getElementById('save-password').addEventListener('click', () => saveSettings('message-password', '管理员密码已保存。'));
+  document.getElementById('save-replacements').addEventListener('click', () => saveSettings('message-replacements', '同义词替换已保存。'));
 
   document.getElementById('parse-manual').addEventListener('click', async () => {
     try {
       const manualHtml = document.getElementById('manual-html').value;
       const data = await postAction('parse_manual_html', { manual_schedule_html: manualHtml });
-      showMessage(data.message || '已从手动HTML提取更番信息。');
+      showMessage('message-manual', (data.message || '已从手动HTML提取更番信息。') + `（${data.count || 0} 条）`);
     } catch (err) {
-      showMessage(err.message, true);
+      showMessage('message-manual', err.message, true);
     }
   });
 

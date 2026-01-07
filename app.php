@@ -82,23 +82,35 @@ function applyReplacements(string $name, array $replacements): string
 
 function parseScheduleFromHtml(string $html, array $replacements): array
 {
+    $html = trim($html);
+    if ($html === '') {
+        return [];
+    }
+    $html = str_replace('\\n', "\n", $html);
+    if (str_contains($html, '&lt;') && !str_contains($html, '<table')) {
+        $html = html_entity_decode($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+
     $dom = new DOMDocument();
     libxml_use_internal_errors(true);
-    $dom->loadHTML($html);
+    $dom->loadHTML('<?xml encoding="utf-8" ?>' . $html, LIBXML_NOERROR | LIBXML_NOWARNING);
     libxml_clear_errors();
 
     $xpath = new DOMXPath($dom);
-    $rows = $xpath->query("//table[contains(@class,'list_style')]/tbody/tr");
+    $rows = $xpath->query("//table[contains(concat(' ', normalize-space(@class), ' '), ' list_style ')]//tr");
+    if (!$rows || $rows->length === 0) {
+        $rows = $xpath->query('//tr');
+    }
 
     $weekdayMap = [
-        '星期一' => '一',
-        '星期二' => '二',
-        '星期三' => '三',
-        '星期四' => '四',
-        '星期五' => '五',
-        '星期六' => '六',
-        '星期日' => '日',
-        '星期天' => '日',
+        '一' => '一',
+        '二' => '二',
+        '三' => '三',
+        '四' => '四',
+        '五' => '五',
+        '六' => '六',
+        '日' => '日',
+        '天' => '日',
     ];
 
     $results = [];
@@ -107,11 +119,15 @@ function parseScheduleFromHtml(string $html, array $replacements): array
         if ($cells->length < 2) {
             continue;
         }
-        $weekdayLabel = trim(preg_replace('/\s+/', '', $cells->item(0)->textContent));
-        if (!isset($weekdayMap[$weekdayLabel])) {
+        $labelText = trim(preg_replace('/\s+/', '', $cells->item(0)->textContent));
+        if (!preg_match('/星期([一二三四五六日天])/', $labelText, $match)) {
             continue;
         }
-        $weekday = $weekdayMap[$weekdayLabel];
+        $weekdayKey = $match[1];
+        $weekday = $weekdayMap[$weekdayKey] ?? null;
+        if ($weekday === null) {
+            continue;
+        }
         $links = $cells->item(1)->getElementsByTagName('a');
         foreach ($links as $link) {
             $name = trim($link->textContent);
@@ -119,6 +135,9 @@ function parseScheduleFromHtml(string $html, array $replacements): array
                 continue;
             }
             $normalized = applyReplacements($name, $replacements);
+            if ($normalized === '') {
+                continue;
+            }
             $results[] = [
                 'weekday' => $weekday,
                 'name' => $normalized,
@@ -143,6 +162,7 @@ function scrapeSchedule(array $replacements, array $settings): array
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_TIMEOUT => 20,
         CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_ENCODING => '',
         CURLOPT_HTTPHEADER => [
             'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
