@@ -82,6 +82,37 @@ function applyReplacements(string $name, array $replacements): string
     return trim($result);
 }
 
+function buildMatchCandidates(string $sourceName, string $fallbackName, array $replacements): array
+{
+    $candidates = [];
+    $primary = applyReplacements($sourceName, $replacements);
+    if ($primary !== '') {
+        $candidates[] = $primary;
+    }
+    if ($fallbackName !== '' && $fallbackName !== $primary) {
+        $candidates[] = $fallbackName;
+    }
+
+    foreach ($replacements as [$from, $to]) {
+        if ($from !== '' && $to !== '') {
+            $reverse = str_replace($to, $from, $sourceName);
+            if ($reverse !== '' && $reverse !== $primary) {
+                $candidates[] = $reverse;
+            }
+        }
+    }
+
+    $unique = [];
+    foreach ($candidates as $candidate) {
+        $candidate = trim($candidate);
+        if ($candidate !== '' && !in_array($candidate, $unique, true)) {
+            $unique[] = $candidate;
+        }
+    }
+
+    return $unique;
+}
+
 function normalizeTitle(string $title): string
 {
     $normalized = preg_replace('/[\s\p{P}\p{S}]+/u', '', $title);
@@ -317,12 +348,18 @@ function updateWeekday(array $dbs, array $schedule, array $replacements): array
             $pdo = connectDb($db);
             foreach ($schedule as $item) {
                 $sourceName = $item['original_name'] ?? $item['name'] ?? '';
-                $matchName = applyReplacements($sourceName, $replacements);
-                if ($matchName === '') {
-                    $matchName = $item['name'] ?? '';
-                }
+                $fallbackName = $item['name'] ?? '';
+                $matchCandidates = buildMatchCandidates($sourceName, $fallbackName, $replacements);
+                $row = null;
+                $matchName = $matchCandidates[0] ?? $fallbackName;
                 $weekday = $item['weekday'];
-                $row = findVodMatch($pdo, $matchName);
+                foreach ($matchCandidates as $candidate) {
+                    $row = findVodMatch($pdo, $candidate);
+                    if ($row) {
+                        $matchName = $candidate;
+                        break;
+                    }
+                }
                 if ($row) {
                     $currentSub = (string)($row['vod_sub'] ?? '');
                     $currentName = (string)($row['vod_name'] ?? '');
