@@ -324,8 +324,20 @@ function updateWeekday(array $dbs, array $schedule, array $replacements): array
                 $weekday = $item['weekday'];
                 $row = findVodMatch($pdo, $name);
                 if ($row) {
-                    $update = $pdo->prepare('UPDATE mac_vod SET vod_weekday = ? WHERE vod_id = ?');
-                    $update->execute([$weekday, $row['vod_id']]);
+                    $currentSub = (string)($row['vod_sub'] ?? '');
+                    $currentName = (string)($row['vod_name'] ?? '');
+                    $newSub = $currentSub;
+                    $original = trim((string)$sourceName);
+                    if ($original !== '' && !str_contains($currentName, $original) && !str_contains($currentSub, $original)) {
+                        $newSub = $currentSub === '' ? $original : rtrim($currentSub, ',') . ',' . $original;
+                    }
+                    if ($newSub !== $currentSub) {
+                        $update = $pdo->prepare('UPDATE mac_vod SET vod_weekday = ?, vod_sub = ? WHERE vod_id = ?');
+                        $update->execute([$weekday, $newSub, $row['vod_id']]);
+                    } else {
+                        $update = $pdo->prepare('UPDATE mac_vod SET vod_weekday = ? WHERE vod_id = ?');
+                        $update->execute([$weekday, $row['vod_id']]);
+                    }
                     $summary['success'][$name] = true;
                 } else {
                     $summary['failed'][$name] = true;
