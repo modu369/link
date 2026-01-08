@@ -129,6 +129,10 @@ function findVodMatch(PDO $pdo, string $title): ?array
     }
 
     $fragment = mb_substr($normalizedTarget, 0, 4, 'UTF-8');
+    $punctStripped = preg_replace('/[\\s\\p{P}\\p{S}]+/u', '', $title);
+    if ($punctStripped === null) {
+        $punctStripped = $title;
+    }
     $like = '%' . $fragment . '%';
     $stmt = $pdo->prepare('SELECT vod_id, vod_name, vod_sub FROM mac_vod WHERE vod_name LIKE ? OR vod_sub LIKE ? LIMIT 50');
     $stmt->execute([$like, $like]);
@@ -146,6 +150,9 @@ function findVodMatch(PDO $pdo, string $title): ?array
             if ($normalized === $normalizedTarget) {
                 return $candidate;
             }
+        }
+        if (str_contains((string)($candidate['vod_name'] ?? ''), $punctStripped) || str_contains((string)($candidate['vod_sub'] ?? ''), $punctStripped)) {
+            return $candidate;
         }
     }
 
