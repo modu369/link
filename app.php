@@ -317,12 +317,12 @@ function updateWeekday(array $dbs, array $schedule, array $replacements): array
             $pdo = connectDb($db);
             foreach ($schedule as $item) {
                 $sourceName = $item['original_name'] ?? $item['name'] ?? '';
-                $name = applyReplacements($sourceName, $replacements);
-                if ($name === '') {
-                    $name = $item['name'] ?? '';
+                $matchName = applyReplacements($sourceName, $replacements);
+                if ($matchName === '') {
+                    $matchName = $item['name'] ?? '';
                 }
                 $weekday = $item['weekday'];
-                $row = findVodMatch($pdo, $name);
+                $row = findVodMatch($pdo, $matchName);
                 if ($row) {
                     $currentSub = (string)($row['vod_sub'] ?? '');
                     $currentName = (string)($row['vod_name'] ?? '');
@@ -338,9 +338,9 @@ function updateWeekday(array $dbs, array $schedule, array $replacements): array
                         $update = $pdo->prepare('UPDATE mac_vod SET vod_weekday = ? WHERE vod_id = ?');
                         $update->execute([$weekday, $row['vod_id']]);
                     }
-                    $summary['success'][$name] = true;
+                    $summary['success'][$matchName] = true;
                 } else {
-                    $summary['failed'][$name] = true;
+                    $summary['failed'][$matchName] = true;
                 }
             }
         } catch (Throwable $e) {
