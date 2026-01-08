@@ -93,15 +93,6 @@ function buildMatchCandidates(string $sourceName, string $fallbackName, array $r
         $candidates[] = $fallbackName;
     }
 
-    foreach ($replacements as [$from, $to]) {
-        if ($from !== '' && $to !== '') {
-            $reverse = str_replace($to, $from, $sourceName);
-            if ($reverse !== '' && $reverse !== $primary) {
-                $candidates[] = $reverse;
-            }
-        }
-    }
-
     $unique = [];
     foreach ($candidates as $candidate) {
         $candidate = trim($candidate);
