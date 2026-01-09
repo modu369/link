@@ -106,12 +106,39 @@ function buildMatchCandidates(string $sourceName, string $fallbackName, array $r
 
 function normalizeTitle(string $title): string
 {
-    $normalized = preg_replace('/[\s\p{P}\p{S}]+/u', '', $title);
+    $normalized = preg_replace('/[^\p{L}\p{N}]+/u', '', $title);
     if ($normalized === null) {
         return '';
     }
 
     return trim($normalized);
+}
+
+function hasSeasonTag(string $title): bool
+{
+    return (bool)preg_match('/第[一二三四五六七八九十0-9]+[季部]/u', $title);
+}
+
+function containsAlias(string $vodName, string $vodSub, string $alias): bool
+{
+    $aliasNormalized = normalizeTitle($alias);
+    if ($aliasNormalized === '') {
+        return true;
+    }
+    if (normalizeTitle($vodName) === $aliasNormalized) {
+        return true;
+    }
+    $parts = preg_split('/[\\/，,]+/u', $vodSub);
+    if ($parts === false) {
+        $parts = [$vodSub];
+    }
+    foreach ($parts as $part) {
+        if (normalizeTitle((string)$part) === $aliasNormalized) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 function findVodMatch(PDO $pdo, string $title): ?array
@@ -129,10 +156,6 @@ function findVodMatch(PDO $pdo, string $title): ?array
     }
 
     $fragment = mb_substr($normalizedTarget, 0, 4, 'UTF-8');
-    $punctStripped = preg_replace('/[\\s\\p{P}\\p{S}]+/u', '', $title);
-    if ($punctStripped === null) {
-        $punctStripped = $title;
-    }
     $like = '%' . $fragment . '%';
     $stmt = $pdo->prepare('SELECT vod_id, vod_name, vod_sub FROM mac_vod WHERE vod_name LIKE ? OR vod_sub LIKE ? LIMIT 50');
     $stmt->execute([$like, $like]);
@@ -150,9 +173,10 @@ function findVodMatch(PDO $pdo, string $title): ?array
             if ($normalized === $normalizedTarget) {
                 return $candidate;
             }
-        }
-        if (str_contains((string)($candidate['vod_name'] ?? ''), $punctStripped) || str_contains((string)($candidate['vod_sub'] ?? ''), $punctStripped)) {
-            return $candidate;
+            if ((str_contains($normalized, $normalizedTarget) || str_contains($normalizedTarget, $normalized))
+                && hasSeasonTag($title) && hasSeasonTag($value)) {
+                return $candidate;
+            }
         }
     }
 
@@ -363,8 +387,14 @@ function updateWeekday(array $dbs, array $schedule, array $replacements): array
                     $currentName = (string)($row['vod_name'] ?? '');
                     $newSub = $currentSub;
                     $original = trim((string)$sourceName);
-                    if ($original !== '' && !str_contains($currentName, $original) && !str_contains($currentSub, $original)) {
-                        $newSub = $currentSub === '' ? $original : rtrim($currentSub, ',') . ',' . $original;
+                    if ($original !== '' && !containsAlias($currentName, $currentSub, $original)) {
+                        $separator = ',';
+                        if (str_contains($currentSub, '/')) {
+                            $separator = '/';
+                        } elseif (str_contains($currentSub, ',')) {
+                            $separator = ',';
+                        }
+                        $newSub = $currentSub === '' ? $original : rtrim($currentSub, "/,") . $separator . $original;
                     }
                     if ($newSub !== $currentSub) {
                         $update = $pdo->prepare('UPDATE mac_vod SET vod_weekday = ?, vod_sub = ? WHERE vod_id = ?');
