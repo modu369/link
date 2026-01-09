@@ -118,6 +118,7 @@ if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? fals
       <h2>去除完结条目的 vod_weekday</h2>
       <button class="btn btn-secondary" id="cleanup-weekday">执行清理</button>
       <div id="cleanup-result" class="muted"></div>
+      <div id="cleanup-names" style="margin-top: 12px;"></div>
     </div>
 
     <div class="card">
@@ -264,10 +265,13 @@ if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? fals
   function renderUpdateSummary(data) {
     const success = Object.keys(data.summary.success || {});
     const failed = Object.keys(data.summary.failed || {});
+    const skipped = Object.keys(data.summary.skipped || {});
     const successBox = document.getElementById('update-success');
     const failedBox = document.getElementById('update-failed');
     successBox.innerHTML = success.length ? success.map(name => `<span class="tag">${name}</span>`).join('') : '暂无成功记录。';
-    failedBox.innerHTML = failed.length ? failed.map(name => `<span class="tag">${name}</span>`).join('') : '暂无失败记录。';
+    const failedTags = failed.length ? failed.map(name => `<span class="tag">${name}</span>`).join('') : '暂无失败记录。';
+    const skippedTags = skipped.length ? `<div class="muted" style="margin-top: 8px;">已跳过：${skipped.map(name => `<span class="tag">${name}</span>`).join('')}</div>` : '';
+    failedBox.innerHTML = failedTags + skippedTags;
     if (data.summary.errors && data.summary.errors.length) {
       showMessage(data.summary.errors.join('\n'), true);
     }
@@ -333,9 +337,46 @@ if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? fals
       const data = await postAction('cleanup_weekday');
       const result = Object.entries(data.summary.affected || {}).map(([label, count]) => `${label}：已清理 ${count} 条记录。`).join('<br>');
       document.getElementById('cleanup-result').innerHTML = result || '暂无清理结果。';
+      const namesByDb = data.summary.names || {};
+      const allNames = Object.values(namesByDb).flat().filter(Boolean);
+      if (allNames.length) {
+        const uniqueNames = [...new Set(allNames)];
+        const list = uniqueNames.map(name => `
+          <label style="display: inline-flex; align-items: center; margin-right: 10px; margin-bottom: 6px;">
+            <input type="checkbox" class="cleanup-name" value="${name}" checked>
+            <span style="margin-left: 6px;">${name}</span>
+          </label>
+        `).join('');
+        document.getElementById('cleanup-names').innerHTML = `
+          <div class="muted" style="margin-bottom: 8px;">已清理的条目，可选择从系统更番表中删除：</div>
+          <div>${list}</div>
+          <button class="btn btn-secondary" id="delete-cleanup-names" style="margin-top: 10px;">删除选中更番信息</button>
+        `;
+      } else {
+        document.getElementById('cleanup-names').innerHTML = '';
+      }
       if (data.summary.errors && data.summary.errors.length) {
         showMessage(data.summary.errors.join('\n'), true);
       }
+    } catch (err) {
+      showMessage(err.message, true);
+    }
+  });
+
+  document.getElementById('cleanup-names').addEventListener('click', async (event) => {
+    if (!event.target.closest('#delete-cleanup-names')) {
+      return;
+    }
+    const checked = Array.from(document.querySelectorAll('.cleanup-name:checked')).map(input => input.value);
+    if (!checked.length) {
+      showMessage('请先选择需要删除的更番信息。', true);
+      return;
+    }
+    try {
+      await postAction('delete_schedule_names', { names: checked });
+      await loadState();
+      document.getElementById('cleanup-names').innerHTML = '';
+      showMessage('已删除选中的更番信息。');
     } catch (err) {
       showMessage(err.message, true);
     }

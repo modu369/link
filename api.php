@@ -265,6 +265,35 @@ try {
             $summary = cleanupWeekday($settings['dbs'], $settings['cleanup_keywords']);
             echo json_encode(['summary' => $summary], JSON_UNESCAPED_UNICODE);
             break;
+        case 'delete_schedule_names':
+            $payload = json_decode(file_get_contents('php://input') ?: '{}', true);
+            if (!is_array($payload)) {
+                throw new RuntimeException('参数格式错误');
+            }
+            $names = $payload['names'] ?? [];
+            if (!is_array($names) || $names === []) {
+                throw new RuntimeException('需要提供删除名称');
+            }
+            $normalized = [];
+            foreach ($names as $name) {
+                $name = trim((string)$name);
+                if ($name !== '') {
+                    $normalized[] = normalizeTitle($name);
+                }
+            }
+            if ($normalized === []) {
+                throw new RuntimeException('需要提供删除名称');
+            }
+            $scheduleData = loadSchedule();
+            $items = array_values(array_filter($scheduleData['items'] ?? [], function ($item) use ($normalized) {
+                return !in_array(normalizeTitle((string)($item['name'] ?? '')), $normalized, true);
+            }));
+            $manualItems = array_values(array_filter($scheduleData['manual_items'] ?? [], function ($item) use ($normalized) {
+                return !in_array(normalizeTitle((string)($item['name'] ?? '')), $normalized, true);
+            }));
+            saveSchedule($items, $manualItems);
+            echo json_encode(['message' => '已删除选中的更番信息。'], JSON_UNESCAPED_UNICODE);
+            break;
         case 'add_replacement':
             $payload = json_decode(file_get_contents('php://input') ?: '{}', true);
             if (!is_array($payload)) {

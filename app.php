@@ -155,7 +155,7 @@ function containsAlias(string $vodName, string $vodSub, string $alias): bool
 
 function findVodMatch(PDO $pdo, string $title): ?array
 {
-    $exact = $pdo->prepare('SELECT vod_id, vod_name, vod_sub FROM mac_vod WHERE vod_name = ? OR vod_sub = ? LIMIT 1');
+    $exact = $pdo->prepare('SELECT vod_id, vod_name, vod_sub, vod_time FROM mac_vod WHERE vod_name = ? OR vod_sub = ? LIMIT 1');
     $exact->execute([$title, $title]);
     $row = $exact->fetch(PDO::FETCH_ASSOC);
     if ($row) {
@@ -169,7 +169,7 @@ function findVodMatch(PDO $pdo, string $title): ?array
 
     $fragment = mb_substr($normalizedTarget, 0, 4, 'UTF-8');
     $like = '%' . $fragment . '%';
-    $stmt = $pdo->prepare('SELECT vod_id, vod_name, vod_sub FROM mac_vod WHERE vod_name LIKE ? OR vod_sub LIKE ? LIMIT 50');
+    $stmt = $pdo->prepare('SELECT vod_id, vod_name, vod_sub, vod_time FROM mac_vod WHERE vod_name LIKE ? OR vod_sub LIKE ? LIMIT 50');
     $stmt->execute([$like, $like]);
 
     $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -180,7 +180,7 @@ function findVodMatch(PDO $pdo, string $title): ?array
         }
         $rawFragment = mb_substr($rawFragment, 0, 2, 'UTF-8');
         if ($rawFragment !== '') {
-            $stmt = $pdo->prepare('SELECT vod_id, vod_name, vod_sub FROM mac_vod WHERE vod_name LIKE ? OR vod_sub LIKE ? LIMIT 50');
+            $stmt = $pdo->prepare('SELECT vod_id, vod_name, vod_sub, vod_time FROM mac_vod WHERE vod_name LIKE ? OR vod_sub LIKE ? LIMIT 50');
             $stmt->execute(['%' . $rawFragment . '%', '%' . $rawFragment . '%']);
             $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
         }
@@ -393,6 +393,7 @@ function updateWeekday(array $dbs, array $schedule, array $replacements): array
     $summary = [
         'success' => [],
         'failed' => [],
+        'skipped' => [],
         'errors' => [],
     ];
 
@@ -415,6 +416,12 @@ function updateWeekday(array $dbs, array $schedule, array $replacements): array
                     }
                 }
                 if ($row) {
+                    $vodTime = isset($row['vod_time']) ? (int)$row['vod_time'] : 0;
+                    $cutoff = time() - 10 * 86400;
+                    if ($vodTime > 0 && $vodTime < $cutoff) {
+                        $summary['skipped'][$matchName] = true;
+                        continue;
+                    }
                     $currentSub = (string)($row['vod_sub'] ?? '');
                     $currentName = (string)($row['vod_name'] ?? '');
                     $newSub = $currentSub;
@@ -452,6 +459,7 @@ function cleanupWeekday(array $dbs, array $keywords): array
 {
     $summary = [
         'affected' => [],
+        'names' => [],
         'errors' => [],
     ];
 
@@ -471,10 +479,15 @@ function cleanupWeekday(array $dbs, array $keywords): array
                 $params[] = '%' . $keyword . '%';
             }
             $where = implode(' OR ', $conditions);
+            $selectSql = "SELECT vod_name FROM mac_vod WHERE vod_weekday <> '' AND ({$where})";
+            $selectStmt = $pdo->prepare($selectSql);
+            $selectStmt->execute($params);
+            $names = $selectStmt->fetchAll(PDO::FETCH_COLUMN);
             $sql = "UPDATE mac_vod SET vod_weekday = '' WHERE vod_weekday <> '' AND ({$where})";
             $stmt = $pdo->prepare($sql);
             $stmt->execute($params);
             $summary['affected'][$label] = $stmt->rowCount();
+            $summary['names'][$label] = $names ?: [];
         } catch (Throwable $e) {
             $summary['errors'][] = $label . '：' . $e->getMessage();
         }
