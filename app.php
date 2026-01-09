@@ -119,6 +119,18 @@ function hasSeasonTag(string $title): bool
     return (bool)preg_match('/第[一二三四五六七八九十0-9]+[季部]/u', $title);
 }
 
+function extractSeasonToken(string $title): string
+{
+    if (preg_match('/第([一二三四五六七八九十0-9]+)[季部]/u', $title, $match)) {
+        return '第' . $match[1] . '季';
+    }
+    if (preg_match('/part\\s*([0-9]+)/i', $title, $match)) {
+        return 'part' . $match[1];
+    }
+
+    return '';
+}
+
 function containsAlias(string $vodName, string $vodSub, string $alias): bool
 {
     $aliasNormalized = normalizeTitle($alias);
@@ -160,7 +172,22 @@ function findVodMatch(PDO $pdo, string $title): ?array
     $stmt = $pdo->prepare('SELECT vod_id, vod_name, vod_sub FROM mac_vod WHERE vod_name LIKE ? OR vod_sub LIKE ? LIMIT 50');
     $stmt->execute([$like, $like]);
 
-    while ($candidate = $stmt->fetch(PDO::FETCH_ASSOC)) {
+    $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    if ($candidates === []) {
+        $rawFragment = preg_replace('/\s+/u', '', $title);
+        if ($rawFragment === null) {
+            $rawFragment = $title;
+        }
+        $rawFragment = mb_substr($rawFragment, 0, 2, 'UTF-8');
+        if ($rawFragment !== '') {
+            $stmt = $pdo->prepare('SELECT vod_id, vod_name, vod_sub FROM mac_vod WHERE vod_name LIKE ? OR vod_sub LIKE ? LIMIT 50');
+            $stmt->execute(['%' . $rawFragment . '%', '%' . $rawFragment . '%']);
+            $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+    }
+
+    $targetToken = extractSeasonToken($title);
+    foreach ($candidates as $candidate) {
         foreach (['vod_name', 'vod_sub'] as $field) {
             $value = (string)($candidate[$field] ?? '');
             if ($value === '') {
@@ -173,9 +200,14 @@ function findVodMatch(PDO $pdo, string $title): ?array
             if ($normalized === $normalizedTarget) {
                 return $candidate;
             }
-            if ((str_contains($normalized, $normalizedTarget) || str_contains($normalizedTarget, $normalized))
-                && hasSeasonTag($title) && hasSeasonTag($value)) {
-                return $candidate;
+            if (str_contains($normalized, $normalizedTarget) || str_contains($normalizedTarget, $normalized)) {
+                $valueToken = extractSeasonToken($value);
+                if ($targetToken === '' && $valueToken === '') {
+                    return $candidate;
+                }
+                if ($targetToken !== '' && $valueToken !== '' && mb_strtolower($targetToken, 'UTF-8') === mb_strtolower($valueToken, 'UTF-8')) {
+                    return $candidate;
+                }
             }
         }
     }
