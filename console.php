@@ -338,7 +338,8 @@ if (!($_SESSION['authenticated'] ?? false) || !($_SESSION['entry_valid'] ?? fals
       const result = Object.entries(data.summary.affected || {}).map(([label, count]) => `${label}：已清理 ${count} 条记录。`).join('<br>');
       document.getElementById('cleanup-result').innerHTML = result || '暂无清理结果。';
       const namesByDb = data.summary.names || {};
-      const allNames = Object.values(namesByDb).flat().filter(Boolean);
+      const namesFlat = data.summary.names_flat || [];
+      const allNames = namesFlat.length ? namesFlat : Object.values(namesByDb).flat().filter(Boolean);
       if (allNames.length) {
         const uniqueNames = [...new Set(allNames)];
         const list = uniqueNames.map(name => `

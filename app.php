@@ -460,6 +460,7 @@ function cleanupWeekday(array $dbs, array $keywords): array
     $summary = [
         'affected' => [],
         'names' => [],
+        'names_flat' => [],
         'errors' => [],
     ];
 
@@ -487,7 +488,13 @@ function cleanupWeekday(array $dbs, array $keywords): array
             $stmt = $pdo->prepare($sql);
             $stmt->execute($params);
             $summary['affected'][$label] = $stmt->rowCount();
-            $summary['names'][$label] = $names ?: [];
+            $names = $names ?: [];
+            $summary['names'][$label] = $names;
+            foreach ($names as $name) {
+                if (!in_array($name, $summary['names_flat'], true)) {
+                    $summary['names_flat'][] = $name;
+                }
+            }
         } catch (Throwable $e) {
             $summary['errors'][] = $label . '：' . $e->getMessage();
         }
