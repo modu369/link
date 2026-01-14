@@ -2,7 +2,19 @@
 require __DIR__ . '/init.php';
 require __DIR__ . '/layout.php';
 
+$page = max(1, (int) ($_GET['page'] ?? 1));
+$perPage = 50;
 $data = $selectedSite ? $tracker->getAudienceData($siteId, $range) : null;
+$audienceRows = [
+    ['label' => '新访客', 'ips' => (int) ($data['new_vs_returning']['new_ips'] ?? 0)],
+    ['label' => '回访访客', 'ips' => (int) ($data['new_vs_returning']['returning_ips'] ?? 0)],
+];
+$totalRows = count($audienceRows);
+$totalPages = max(1, (int) ceil($totalRows / $perPage));
+if ($page > $totalPages) {
+    $page = $totalPages;
+}
+$audiencePage = array_slice($audienceRows, ($page - 1) * $perPage, $perPage);
 
 render_head('访客画像 - 统计后台');
 render_topbar($branding);
@@ -25,19 +37,25 @@ render_topbar($branding);
 
             <section class="card">
                 <div class="section-title"><h3>新老访客分布</h3><span class="muted">按 IP 计</span></div>
-                <table>
-                    <thead><tr><th>类型</th><th>IP</th></tr></thead>
-                    <tbody>
-                        <tr><td>新访客</td><td><?= (int) $data['new_vs_returning']['new_ips'] ?></td></tr>
-                        <tr><td>回访访客</td><td><?= (int) $data['new_vs_returning']['returning_ips'] ?></td></tr>
-                    </tbody>
-                </table>
-                <div style="margin-top:14px; display:flex; justify-content:center;">
+                <div style="margin-bottom:14px; display:flex; justify-content:center;">
                     <div style="max-width:400px; width:100%; text-align:center;">
                         <div class="muted" style="margin-bottom:6px;">IP 占比</div>
                         <canvas id="audiencePie" height="220"></canvas>
                     </div>
                 </div>
+                <table>
+                    <thead><tr><th>类型</th><th>IP</th></tr></thead>
+                    <tbody>
+                        <?php if (empty($audiencePage)): ?>
+                            <tr><td colspan="2" class="muted">暂无数据</td></tr>
+                        <?php else: ?>
+                            <?php foreach ($audiencePage as $row): ?>
+                                <tr><td><?= htmlspecialchars($row['label'], ENT_QUOTES, 'UTF-8') ?></td><td><?= (int) $row['ips'] ?></td></tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+                <?php render_pagination($page, $totalPages, '/audience.php', ['site' => (int) $siteId, 'range' => $range]); ?>
             </section>
             <script>
                 (function(){

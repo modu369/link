@@ -2,7 +2,16 @@
 require __DIR__ . '/init.php';
 require __DIR__ . '/layout.php';
 
+$page = max(1, (int) ($_GET['page'] ?? 1));
+$perPage = 50;
 $data = $selectedSite ? $tracker->getIspData($siteId, $range) : null;
+$isps = $data['isps'] ?? [];
+$totalIsps = count($isps);
+$totalPages = max(1, (int) ceil($totalIsps / $perPage));
+if ($page > $totalPages) {
+    $page = $totalPages;
+}
+$ispPage = array_slice($isps, ($page - 1) * $perPage, $perPage);
 
 render_head('运营商分布 - 统计后台');
 render_topbar($branding);
@@ -24,14 +33,20 @@ render_topbar($branding);
             </section>
 
             <section class="card">
-                <div class="section-title"><h3>运营商列表</h3><span class="muted">前 50</span></div>
+                <div class="section-title"><h3>运营商列表</h3><span class="muted">每页 <?= $perPage ?> 条</span></div>
+                <div style="margin-bottom:14px; display:flex; justify-content:center;">
+                    <div style="max-width:400px; width:100%; text-align:center;">
+                        <div class="muted" style="margin-bottom:6px;">IP 占比（前 8 项）</div>
+                        <canvas id="ispPie" height="220"></canvas>
+                    </div>
+                </div>
                 <table>
                     <thead><tr><th>运营商</th><th>IP</th></tr></thead>
                     <tbody>
-                    <?php if (empty($data['isps'])): ?>
+                    <?php if (empty($ispPage)): ?>
                         <tr><td colspan="2" class="muted">暂无数据</td></tr>
                     <?php else: ?>
-                        <?php foreach ($data['isps'] as $row): ?>
+                        <?php foreach ($ispPage as $row): ?>
                             <tr>
                                 <td><?= htmlspecialchars($row['isp'], ENT_QUOTES, 'UTF-8') ?></td>
                                 <td><?= (int) $row['ips'] ?></td>
@@ -40,12 +55,7 @@ render_topbar($branding);
                     <?php endif; ?>
                     </tbody>
                 </table>
-                <div style="margin-top:14px; display:flex; justify-content:center;">
-                    <div style="max-width:400px; width:100%; text-align:center;">
-                        <div class="muted" style="margin-bottom:6px;">IP 占比（前 8 项）</div>
-                        <canvas id="ispPie" height="220"></canvas>
-                    </div>
-                </div>
+                <?php render_pagination($page, $totalPages, '/isp.php', ['site' => (int) $siteId, 'range' => $range]); ?>
             </section>
             <script>
                 (function(){
