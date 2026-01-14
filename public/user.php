@@ -29,7 +29,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'update_retention') {
         $days = (int) ($_POST['days'] ?? 0);
         $hour = (int) ($_POST['cleanup_hour'] ?? 3);
-        $retention = $tracker->updateRetentionSettings($days, $hour);
+        $pageviewsDays = (int) ($_POST['pageviews_days'] ?? 0);
+        $retention = $tracker->updateRetentionSettings($days, $hour, $pageviewsDays);
         $message = '数据保留策略已更新';
     }
 
@@ -49,8 +50,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'manual_cleanup') {
         $days = (int) ($_POST['cleanup_days'] ?? 0);
+        $pageviewsDays = (int) ($_POST['cleanup_pageviews_days'] ?? 0);
         if ($days > 0) {
-            $tracker->manualCleanup($days);
+            $tracker->manualCleanup($days, $pageviewsDays > 0 ? $pageviewsDays : null);
             $message = "已清理 {$days} 天前的数据";
         } else {
             $error = '请输入需要清理的天数';
@@ -138,6 +140,10 @@ render_topbar($branding);
                 <input type="number" name="days" min="0" value="<?= (int) ($retention['days'] ?? 0) ?>" required>
             </div>
             <div class="form-control" style="margin:0;">
+                <label>Pageviews 保留天数</label>
+                <input type="number" name="pageviews_days" min="0" value="<?= (int) ($retention['pageviews_days'] ?? 0) ?>" required>
+            </div>
+            <div class="form-control" style="margin:0;">
                 <label>自动清理执行小时（0-23）</label>
                 <input type="number" name="cleanup_hour" min="0" max="23" value="<?= (int) ($retention['cleanup_hour'] ?? 3) ?>" required>
             </div>
@@ -147,9 +153,10 @@ render_topbar($branding);
             <input type="hidden" name="action" value="manual_cleanup">
             <label style="font-weight:600;">手动清理</label>
             <input type="number" name="cleanup_days" min="1" placeholder="清理多少天前" style="padding:10px 12px;border-radius:8px;border:1px solid #e2e8f0;">
+            <input type="number" name="cleanup_pageviews_days" min="0" placeholder="Pageviews 清理天数（可选）" style="padding:10px 12px;border-radius:8px;border:1px solid #e2e8f0;">
             <button type="submit" class="ghost">立即清理</button>
         </form>
-        <p class="muted" style="margin-top:10px;">建议在业务低峰通过计划任务调用本页或 CLI 清理，避免高峰 IO；表已按站点/时间索引优化，清理会自动走索引。</p>
+        <p class="muted" style="margin-top:10px;">自动与手动清理会同步删除 pageview_rollups、pageview_dimension_rollups、pageview_page_rollups、pageview_entry_rollups 与 site_ip_audience 中超期数据；pageviews 可设置独立保留天数，并按批次删除以降低大表锁定时间。建议在业务低峰通过计划任务调用本页或 CLI 清理，避免高峰 IO。</p>
     </section>
 </div>
 <?php render_footer(); ?>
