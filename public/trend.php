@@ -10,12 +10,12 @@ render_head('趋势分析 - 统计后台');
 render_topbar($branding);
 ?>
 <style>
-    .trend-metrics { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px; }
-    .trend-card { background:#fff; border:1px solid var(--border); border-radius:12px; padding:12px; box-shadow:0 10px 28px rgba(22,144,255,0.1); display:flex; gap:10px; align-items:center; }
-    .trend-icon { width:44px; height:44px; border-radius:12px; background:#deedfb; display:grid; place-items:center; color:#1690ff; font-weight:800; }
-    .trend-info { display:flex; flex-direction:column; gap:2px; }
-    .trend-info .label { color:var(--muted); font-size:13px; }
-    .trend-info .val { font-size:20px; font-weight:800; }
+    .trend-metrics { display:flex; flex-wrap:wrap; gap:12px; align-items:stretch; }
+    .trend-card { background:#fff; border:1px solid var(--border); border-radius:12px; padding:12px; box-shadow:0 10px 28px rgba(22,144,255,0.1); display:flex; gap:10px; align-items:center; flex:0 1 auto; min-width:180px; }
+    .trend-icon { width:44px; height:44px; border-radius:12px; background:#deedfb; display:grid; place-items:center; color:#1690ff; font-weight:800; flex-shrink:0; }
+    .trend-info { display:flex; flex-direction:column; gap:4px; min-width:0; }
+    .trend-info .label { color:var(--muted); font-size:12px; font-weight:400; word-break:break-word; }
+    .trend-info .val { font-size:12px; font-weight:400; word-break:break-word; }
     .trend-canvas { width:100%; height:320px; }
 </style>
 <div class="data-layout">
