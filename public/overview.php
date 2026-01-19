@@ -9,6 +9,8 @@ $topReferrers = $data ? array_slice($data['top_referrers'], 0, 20) : [];
 $topPages = $data ? array_slice($data['top_pages'], 0, 20) : [];
 $entryPages = $data ? array_slice($data['entry_pages'], 0, 20) : [];
 $regions = $data ? array_slice($data['regions'], 0, 20) : [];
+$countries = $data ? array_slice($data['country_map'] ?? [], 0, 20) : [];
+$yesterdayTotals = $data['yesterday_totals'] ?? null;
 
 render_head('总览 - 统计后台');
 render_topbar($branding);
@@ -19,12 +21,13 @@ render_topbar($branding);
     .hero-title { display: flex; align-items: center; gap: 12px; }
     .hero-dot { width: 42px; height: 42px; border-radius: 12px; background: linear-gradient(135deg, #1690ff, #73c1ff); display: grid; place-items: center; color: #fff; font-size: 18px; font-weight: 700; }
     .hero-meta { color: var(--muted); font-size: 13px; }
-    .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
-    .metric-tile { background: linear-gradient(135deg, #deedfb 0%, #f7fbff 100%); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: grid; grid-template-columns: 48px 1fr; gap: 10px; align-items: center; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); }
-    .metric-icon { width: 48px; height: 48px; border-radius: 12px; background: #fff; display: grid; place-items: center; color: #1690ff; font-size: 22px; box-shadow: 0 10px 22px rgba(22,144,255,0.16); }
-    .metric-info { display: flex; flex-direction: column; gap: 2px; }
-    .metric-info .label { color: var(--muted); font-size: 13px; }
-    .metric-info .val { font-size: 22px; font-weight: 800; color: #0f172a; }
+    .metric-grid { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; }
+    .metric-tile { background: linear-gradient(135deg, #deedfb 0%, #f7fbff 100%); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: inline-flex; align-items: center; gap: 10px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); flex: 0 1 auto; min-width: 180px; max-width: 100%; }
+    .metric-icon { width: 48px; height: 48px; border-radius: 12px; background: #fff; display: grid; place-items: center; color: #1690ff; font-size: 22px; box-shadow: 0 10px 22px rgba(22,144,255,0.16); flex-shrink: 0; }
+    .metric-icon.yesterday { background: linear-gradient(135deg, #ffe6c7 0%, #fff6e9 100%); color: #d97706; box-shadow: 0 10px 22px rgba(217, 119, 6, 0.16); }
+    .metric-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .metric-info .label { color: var(--muted); font-size: 12px; font-weight: 400; word-break: break-word; }
+    .metric-info .val { font-size: 12px; font-weight: 400; color: #0f172a; word-break: break-word; }
     .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; align-items: stretch; }
     .pill-tag { background: #deedfb; color: #1690ff; padding: 4px 10px; border-radius: 999px; font-weight: 700; border: 1px solid var(--border); }
     .chart-wrap { position: relative; width: 100%; }
@@ -71,6 +74,11 @@ render_topbar($branding);
                     <div class="metric-tile"><div class="metric-icon">🔮</div><div class="metric-info"><div class="label">预计今日 PV</div><div class="val"><?= $data['predictions']['views']?></div></div></div>
                     <div class="metric-tile"><div class="metric-icon">🔮</div><div class="metric-info"><div class="label">预计今日 UV</div><div class="val"><?= $data['predictions']['uniques'] ?></div></div></div>
                     <div class="metric-tile"><div class="metric-icon">🔮</div><div class="metric-info"><div class="label">预计今日 IP</div><div class="val"><?= $data['predictions']['ips'] ?></div></div></div>
+                    <?php if ($range === 'today' && $yesterdayTotals): ?>
+                        <div class="metric-tile"><div class="metric-icon yesterday">📈</div><div class="metric-info"><div class="label">昨日 PV</div><div class="val"><?= $yesterdayTotals['views'] ?? 0 ?></div></div></div>
+                        <div class="metric-tile"><div class="metric-icon yesterday">👥</div><div class="metric-info"><div class="label">昨日 UV</div><div class="val"><?= $yesterdayTotals['uniques'] ?? 0 ?></div></div></div>
+                        <div class="metric-tile"><div class="metric-icon yesterday">🌐</div><div class="metric-info"><div class="label">昨日 IP</div><div class="val"><?= $yesterdayTotals['ip_count'] ?? 0 ?></div></div></div>
+                    <?php endif; ?>
                 </div>
             </section>
 
@@ -161,6 +169,30 @@ render_topbar($branding);
                                     <td><?= (int) $row['ips'] ?></td>
                                 </tr>
                             <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section class="card">
+                    <div class="section-title">
+                        <h3>国家分布</h3>
+                        <a class="filter-btn" href="/region.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>国家</th><th>IP</th></tr></thead>
+                            <tbody>
+                            <?php if (empty($countries)): ?>
+                                <tr><td colspan="2" class="muted">暂无国家数据</td></tr>
+                            <?php else: ?>
+                                <?php foreach ($countries as $row): ?>
+                                    <tr>
+                                        <td><?= htmlspecialchars($row['country'], ENT_QUOTES, 'UTF-8') ?></td>
+                                        <td><?= (int) $row['ips'] ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
                             </tbody>
                         </table>
                     </div>

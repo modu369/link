@@ -1,15 +1,41 @@
 <?php
 require_once __DIR__ . '/IpResolver.php';
+require_once __DIR__ . '/AsnResolver.php';
 
 class Tracker
 {
     private int $retentionDays = 0;
+    private int $pageviewRetentionDays = 0;
     private int $cleanupHour = 3;
     private array $adminDefaults = ['user' => 'admin', 'pass' => 'admin123'];
-    private array $retentionDefaults = ['days' => 0, 'cleanup_hour' => 3];
+    private array $retentionDefaults = ['days' => 0, 'pageviews_days' => 0, 'cleanup_hour' => 3];
     private string $defaultLoginEntry = 'admin';
     private string $ipdbPath = '';
     private IpResolver $ipResolver;
+    private string $asnDbPath = '';
+    private string $asnDbPathV4 = '';
+    private string $asnDbPathV6 = '';
+    private string $asnDbUrl = '';
+    private string $asnDbUrlV4 = '';
+    private string $asnDbUrlV6 = '';
+    private int $asnDbRefreshHours = 168;
+    private AsnResolver $asnResolver;
+    private int $asnNextRefreshAt = 0;
+    private bool $hasIpHashColumn = false;
+    private bool $hasGeoColumns = false;
+    private bool $rollupOnly = true;
+    private string $ingestMode = 'direct';
+    private string $ingestQueueKey = 'tracker:ingest:pageviews';
+    private string $ingestProcessingKey = 'tracker:ingest:pageviews:processing';
+    private int $ingestMaxQueueLength = 100000;
+    private bool $ingestAutoDrain = true;
+    private int $ingestAutoDrainEvery = 20;
+    private int $ingestAutoDrainBatch = 50;
+    private int $ingestStalledAfter = 300;
+    private array $ingestFilterDefaults = ['ip_filters' => '', 'keyword_filters' => '', 'asn_filters' => '', 'ua_filters' => ''];
+    private array $ingestFilters = ['ip_filters' => '', 'keyword_filters' => '', 'asn_filters' => '', 'ua_filters' => ''];
+    private int $proxyCleanupInterval = 600;
+    private int $proxyCleanupBatch = 10;
 
     public function __construct(
         private PDO $db,
@@ -20,17 +46,57 @@ class Tracker
         $this->retentionDefaults = $this->options['retention'] ?? $this->retentionDefaults;
         $this->defaultLoginEntry = trim($this->options['security']['login_entry'] ?? $this->defaultLoginEntry) ?: $this->defaultLoginEntry;
         $this->retentionDays = max(0, (int) ($this->retentionDefaults['days'] ?? 0));
+        $this->pageviewRetentionDays = max(0, (int) ($this->retentionDefaults['pageviews_days'] ?? 0));
         $this->cleanupHour = min(23, max(0, (int) ($this->retentionDefaults['cleanup_hour'] ?? 3)));
+        $this->rollupOnly = (bool) ($this->options['rollup_only'] ?? $this->rollupOnly);
         $this->ipdbPath = $this->options['ipdb']['path'] ?? (__DIR__ . '/../data/qqwry.ipdb');
+        $asn = $this->options['asn'] ?? [];
+        $this->asnDbPath = $asn['path'] ?? (__DIR__ . '/../data/asn.ipdb');
+        $this->asnDbPathV4 = $asn['path_v4'] ?? $this->asnDbPath;
+        $this->asnDbPathV6 = $asn['path_v6'] ?? ($asn['path_v4'] ?? '');
+        $this->asnDbUrl = trim((string) ($asn['url'] ?? ''));
+        $this->asnDbUrlV4 = trim((string) ($asn['url_v4'] ?? $this->asnDbUrl));
+        $this->asnDbUrlV6 = trim((string) ($asn['url_v6'] ?? ''));
+        $this->asnDbRefreshHours = max(1, (int) ($asn['refresh_hours'] ?? $this->asnDbRefreshHours));
+        $ingest = $this->options['ingest'] ?? [];
+        $this->ingestMode = strtolower($ingest['mode'] ?? $this->ingestMode);
+        $this->ingestQueueKey = $ingest['queue_key'] ?? $this->ingestQueueKey;
+        $this->ingestProcessingKey = $ingest['processing_key'] ?? $this->ingestProcessingKey;
+        $this->ingestMaxQueueLength = max(0, (int) ($ingest['max_queue_length'] ?? $this->ingestMaxQueueLength));
+        $this->ingestAutoDrain = (bool) ($ingest['auto_drain'] ?? $this->ingestAutoDrain);
+        $this->ingestAutoDrainEvery = max(1, (int) ($ingest['auto_drain_every'] ?? $this->ingestAutoDrainEvery));
+        $this->ingestAutoDrainBatch = max(1, (int) ($ingest['auto_drain_batch'] ?? $this->ingestAutoDrainBatch));
+        $this->ingestStalledAfter = max(30, (int) ($ingest['stalled_after'] ?? $this->ingestStalledAfter));
         $this->ensureIpDbExists();
+        $this->ensureAsnDbExists();
         $this->ipResolver = new IpResolver($this->ipdbPath);
+        $this->asnResolver = new AsnResolver($this->asnDbPath, $this->asnDbPathV4, $this->asnDbPathV6);
 
         $this->ensureSiteDomainSchema();
         $this->ensurePageviewSchema();
+        $this->ensureRollupSchema();
         $this->ensureShareSchema();
         $this->ensureSettingsSchema();
         $this->hydrateRetention();
+        $this->hydrateIngestFilters();
         $this->maybeCleanupRetention();
+        $this->maybeCleanupProxyHistory();
+    }
+
+    private function cacheAggregate(string $key, int $ttlSeconds, callable $builder): array
+    {
+        $cached = $this->redis->get($key);
+        if ($cached !== false) {
+            $decoded = json_decode($cached, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        }
+
+        $result = $builder();
+        $this->redis->setex($key, $ttlSeconds, json_encode($result));
+
+        return $result;
     }
 
     public function createSite(string $name, string $domain): array
@@ -152,76 +218,2124 @@ class Tracker
 
     public function recordPageview(string $trackingId, array $payload): void
     {
+        if ($this->ingestMode === 'queue') {
+            $this->enqueuePageview($trackingId, $payload);
+            $this->autoDrainQueue();
+
+            return;
+        }
+
+        $this->processPageview($trackingId, $payload);
+    }
+
+    private function processPageview(string $trackingId, array $payload): void
+    {
         $site = $this->getSiteByTrackingId($trackingId);
         if (!$site) {
             return;
         }
 
         $parsedUrl = $this->parseUrl($payload['path'] ?? null, $site['domain'] ?? null);
-        $path = $parsedUrl['path'];
-        $host = $parsedUrl['host'];
-        $canonicalHost = $parsedUrl['canonical'];
+        $path = $this->limitText($parsedUrl['path'] ?? '/', 2048, '/');
+        $host = $this->limitText($parsedUrl['host'] ?? '', 255);
+        $canonicalHost = $this->limitText($parsedUrl['canonical'] ?? '', 255);
         $allowedDomains = $this->getAllSiteDomains((int) $site['id']);
-        if ($canonicalHost && !empty($allowedDomains) && !in_array($canonicalHost, $allowedDomains, true)) {
-            return;
+
+        $referrer = $this->limitText($payload['referrer'] ?? '', 2048);
+        $referrerHost = $this->referrerHost($referrer);
+        $observedHost = $canonicalHost ?: $this->canonicalHost($referrerHost);
+
+        if (!empty($allowedDomains)) {
+            if (!$observedHost || !in_array($observedHost, $allowedDomains, true)) {
+                return;
+            }
+            // ensure stored canonical host reflects the validated domain
+            $canonicalHost = $this->limitText($observedHost, 255, $canonicalHost);
         }
-        $ip = $payload['ip'] ?? '';
+        $ip = $this->sanitizeIp($payload['ip'] ?? null);
         $ipHash = $ip ? hash('sha256', $ip) : null;
-        $uniqueKey = sprintf('unique:%s:%s', $site['id'], date('Y-m-d'));
+        $geo = $ip ? $this->resolveIpMeta($ip) : [];
+        $countryName = $this->limitText($geo['country_name'] ?? '', 128);
+        $regionName = $this->limitText($geo['region_name'] ?? '', 128);
+        $cityName = $this->limitText($geo['city_name'] ?? '', 128);
+        $ispName = $this->limitText($geo['isp_domain'] ?? '', 128);
+        $countryCode = $this->limitText($geo['country_code'] ?? '', 16);
+        $audienceLabel = 'returning';
+        $uvToday = false;
         $isUnique = false;
 
-        $sessionId = $payload['session_id'] ?? ($ipHash ?: bin2hex(random_bytes(8)));
+        $sessionId = $this->limitText($payload['session_id'] ?? ($ipHash ?: bin2hex(random_bytes(8))), 64);
+        $fingerprint = $this->limitText($payload['fingerprint'] ?? '', 128);
+        if ($fingerprint === '') {
+            $fingerprint = $sessionId;
+        }
         $duration = max(0, (int) ($payload['duration'] ?? 0));
         $pageCount = max(1, (int) ($payload['page_count'] ?? 1));
-        $userAgent = $payload['user_agent'] ?? '';
+        $userAgent = $this->limitText($payload['user_agent'] ?? '', 1024);
         $isBot = $this->isBot($userAgent);
         $isMobile = $this->isMobile($userAgent);
-        $keyword = $this->extractKeyword($payload['referrer'] ?? '');
-        $ipMeta = $this->resolveIpMeta($ip);
-        $countryName = $ipMeta['country_name'] ?? '未知';
-        $regionName = $ipMeta['region_name'] ?? '未知';
-        $cityName = $ipMeta['city_name'] ?? '';
-        $ispName = $ipMeta['isp_domain'] ?? '未知运营商';
-        $countryCode = $ipMeta['country_code'] ?? '';
-        $continentCode = $ipMeta['continent_code'] ?? '';
+        $keyword = $this->limitText($this->extractKeyword($referrer) ?? '', 255);
+        $asnMeta = $ip ? $this->resolveAsnMeta($ip) : [];
 
-        if ($ipHash) {
-            $isUnique = (bool) $this->redis->sAdd($uniqueKey, $ipHash);
-            $this->redis->expire($uniqueKey, 172800);
+        if ($ip && $this->isBlockedProxyIp($ip)) {
+            return;
+        }
+
+        if ($this->isProxySuspicious($sessionId, $fingerprint, $userAgent, $duration, $pageCount, $ip, $asnMeta, $cityName, $regionName, $countryName)) {
+            return;
+        }
+
+        if ($this->shouldFilterIngest($ip, $keyword, $path, $referrer, $userAgent)) {
+            return;
+        }
+
+        if (!$isBot && $ipHash) {
+            [$uvToday, $audienceLabel] = $this->markIpAudienceState((int) $site['id'], $ipHash);
+            $isUnique = $uvToday;
         }
 
         $statement = $this->db->prepare(
-            'INSERT INTO pageviews (site_id, host, canonical_host, path, referrer, user_agent, ip_address, ip_hash, session_id, duration_seconds, page_count, keyword, is_mobile, is_bot, is_unique, country_name, region_name, city_name, isp_domain, country_code, continent_code, occurred_at) VALUES
-            (:site_id, :host, :canonical_host, :path, :referrer, :user_agent, :ip_address, :ip_hash, :session_id, :duration_seconds, :page_count, :keyword, :is_mobile, :is_bot, :is_unique, :country_name, :region_name, :city_name, :isp_domain, :country_code, :continent_code, NOW())'
+            'INSERT INTO pageviews (site_id, host, canonical_host, path, referrer, user_agent, ip_address, ip_hash, session_id, duration_seconds, page_count, keyword, is_mobile, is_bot, is_unique, country_name, region_name, city_name, isp_domain, country_code, occurred_at) VALUES
+            (:site_id, :host, :canonical_host, :path, :referrer, :user_agent, :ip_address, :ip_hash, :session_id, :duration_seconds, :page_count, :keyword, :is_mobile, :is_bot, :is_unique, :country_name, :region_name, :city_name, :isp_domain, :country_code, NOW())'
         );
         $statement->execute([
             ':site_id' => $site['id'],
             ':host' => $host,
             ':canonical_host' => $canonicalHost,
             ':path' => $path,
-            ':referrer' => $payload['referrer'] ?? null,
+            ':referrer' => $referrer ?: null,
             ':user_agent' => $userAgent,
             ':ip_address' => $ip,
             ':ip_hash' => $ipHash,
             ':session_id' => $sessionId,
             ':duration_seconds' => $duration,
             ':page_count' => $pageCount,
-            ':keyword' => $keyword,
+            ':keyword' => $keyword ?: null,
             ':is_mobile' => $isMobile ? 1 : 0,
             ':is_bot' => $isBot ? 1 : 0,
             ':is_unique' => $isUnique ? 1 : 0,
-            ':country_name' => $countryName,
-            ':region_name' => $regionName,
-            ':city_name' => $cityName,
-            ':isp_domain' => $ispName,
-            ':country_code' => $countryCode,
-            ':continent_code' => $continentCode,
+            ':country_name' => $countryName ?: null,
+            ':region_name' => $regionName ?: null,
+            ':city_name' => $cityName ?: null,
+            ':isp_domain' => $ispName ?: null,
+            ':country_code' => $countryCode ?: null,
         ]);
+
+        if ($isBot) {
+            return;
+        }
+
+        $now = new DateTimeImmutable('now');
+        $browser = $this->detectBrowser($userAgent);
+        $engine = $this->detectSearchEngine($referrer, $userAgent);
+        $referrerHost = $this->referrerHost($referrer);
+        $entryPath = $this->captureEntryPath((int) $site['id'], $sessionId, $path);
+
+        // Rollup aggregation is handled by async workers for large-scale accuracy and lower write load.
+    }
+
+    private function enqueuePageview(string $trackingId, array $payload): void
+    {
+        $record = [
+            'tracking_id' => $trackingId,
+            'payload' => $payload,
+            'received_at' => time(),
+        ];
+
+        $this->redis->lPush($this->ingestQueueKey, json_encode($record));
+
+        if ($this->ingestMaxQueueLength > 0) {
+            $this->redis->lTrim($this->ingestQueueKey, 0, $this->ingestMaxQueueLength - 1);
+        }
+    }
+
+    private function autoDrainQueue(): void
+    {
+        if (!$this->ingestAutoDrain || $this->ingestAutoDrainEvery <= 0) {
+            return;
+        }
+
+        $counterKey = $this->ingestQueueKey . ':autodrain';
+        $count = (int) $this->redis->incr($counterKey);
+        if ($count === 1) {
+            $this->redis->expire($counterKey, 60);
+        }
+
+        if ($count % $this->ingestAutoDrainEvery !== 0) {
+            return;
+        }
+
+        $this->drainIngestQueue($this->ingestAutoDrainBatch);
+    }
+
+    private function limitText(?string $value, int $max, string $fallback = ''): string
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return $fallback;
+        }
+
+        if (function_exists('mb_substr')) {
+            return mb_substr($value, 0, $max, 'UTF-8');
+        }
+
+        return substr($value, 0, $max);
+    }
+
+    private function shouldFilterIngest(?string $ip, string $keyword, string $path, string $referrer, string $userAgent): bool
+    {
+        $ipFilters = $this->ingestFilters['ip_filters'] ?? '';
+        $keywordFilters = $this->ingestFilters['keyword_filters'] ?? '';
+        $asnFilters = $this->ingestFilters['asn_filters'] ?? '';
+        $uaFilters = $this->ingestFilters['ua_filters'] ?? '';
+
+        if ($ip && $ipFilters !== '' && $this->ipMatchesFilters($ip, $ipFilters)) {
+            return true;
+        }
+
+        if ($ip && $this->isBlockedProxyIp($ip)) {
+            return true;
+        }
+
+        if ($keywordFilters !== '' && $this->keywordMatchesFilters($keyword, $path, $referrer, $keywordFilters)) {
+            return true;
+        }
+
+        if ($uaFilters !== '' && $this->uaMatchesFilters($userAgent, $uaFilters)) {
+            return true;
+        }
+
+        if ($ip && $asnFilters !== '') {
+            $asn = $this->resolveAsnMeta($ip);
+            if ($this->asnMatchesFilters($asn['number'] ?? '', $asn['name'] ?? '', $asnFilters)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function ipMatchesFilters(string $ip, string $filters): bool
+    {
+        $entries = $this->splitFilterList($filters);
+        if (!$entries) {
+            return false;
+        }
+
+        $ipLong = ip2long($ip);
+        foreach ($entries as $entry) {
+            if ($entry === '') {
+                continue;
+            }
+
+            if (str_contains($entry, '/')) {
+                [$base, $bits] = array_pad(explode('/', $entry, 2), 2, '');
+                $baseLong = ip2long($base);
+                $bits = (int) $bits;
+                if ($baseLong === false || $bits <= 0 || $bits > 32 || $ipLong === false) {
+                    continue;
+                }
+                $mask = -1 << (32 - $bits);
+                if (($ipLong & $mask) === ($baseLong & $mask)) {
+                    return true;
+                }
+                continue;
+            }
+
+            if (str_contains($entry, '-')) {
+                [$start, $end] = array_pad(explode('-', $entry, 2), 2, '');
+                $startLong = ip2long($start);
+                $endLong = ip2long($end);
+                if ($startLong !== false && $endLong !== false && $ipLong !== false) {
+                    if ($ipLong >= $startLong && $ipLong <= $endLong) {
+                        return true;
+                    }
+                }
+                continue;
+            }
+
+            if (str_contains($entry, '*')) {
+                $prefix = rtrim(str_replace('*', '', $entry));
+                if ($prefix !== '' && str_starts_with($ip, $prefix)) {
+                    return true;
+                }
+                continue;
+            }
+
+            if (str_ends_with($entry, '.')) {
+                if (str_starts_with($ip, $entry)) {
+                    return true;
+                }
+                continue;
+            }
+
+            if ($ip === $entry) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function keywordMatchesFilters(string $keyword, string $path, string $referrer, string $filters): bool
+    {
+        $entries = $this->splitFilterList($filters);
+        if (!$entries) {
+            return false;
+        }
+
+        foreach ($entries as $entry) {
+            if ($entry === '') {
+                continue;
+            }
+            $match = function (string $haystack) use ($entry): bool {
+                if ($haystack === '') {
+                    return false;
+                }
+                if (function_exists('mb_stripos')) {
+                    return mb_stripos($haystack, $entry) !== false;
+                }
+                return stripos($haystack, $entry) !== false;
+            };
+
+            if ($match($keyword)) {
+                return true;
+            }
+            if ($match($path)) {
+                return true;
+            }
+            if ($match($referrer)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function uaMatchesFilters(string $userAgent, string $filters): bool
+    {
+        $entries = $this->splitFilterList($filters);
+        if (!$entries) {
+            return false;
+        }
+
+        $ua = strtolower($userAgent);
+        if ($ua === '') {
+            return false;
+        }
+
+        foreach ($entries as $entry) {
+            $needle = strtolower($entry);
+            if ($needle === '') {
+                continue;
+            }
+
+            if (function_exists('mb_stripos')) {
+                if (mb_stripos($ua, $needle) !== false) {
+                    return true;
+                }
+                continue;
+            }
+
+            if (stripos($ua, $needle) !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isProxySuspicious(
+        string $sessionId,
+        string $fingerprint,
+        string $userAgent,
+        int $duration,
+        int $pageCount,
+        ?string $ip,
+        array $asnMeta,
+        string $city,
+        string $region,
+        string $country
+    ): bool {
+        if (!$ip) {
+            return false;
+        }
+
+        $uid = $fingerprint !== '' ? $fingerprint : $sessionId;
+        if ($uid === '') {
+            return false;
+        }
+
+        try {
+            $blockedKey = "proxy:blocked_uid:{$uid}";
+            if ($this->redis->get($blockedKey)) {
+                $this->rememberBlockedProxyIp($ip);
+                return true;
+            }
+        } catch (Throwable $e) {
+            // ignore
+        }
+
+        $nowMs = (int) round(microtime(true) * 1000);
+        $profileKey = "proxy:risk:{$uid}";
+        $sessionKey = $sessionId !== '' ? "proxy:session:{$sessionId}" : '';
+
+        $asnValue = trim((string) ($asnMeta['number'] ?? $asnMeta['name'] ?? ''));
+        $cityValue = trim($city);
+        $regionValue = trim($region);
+        $countryValue = trim($country);
+        $ipChanged = true;
+        $score = 0;
+        $lastTs = 0;
+        $ipChangeCount = 0;
+        $requestCount = 0;
+        $windowStart = 0;
+        $goodScore = 0;
+
+        try {
+            $profile = $this->redis->hGetAll($profileKey);
+            $score = (int) ($profile['score'] ?? 0);
+            $lastIp = (string) ($profile['last_ip'] ?? '');
+            $lastAsn = (string) ($profile['last_asn'] ?? '');
+            $lastCity = (string) ($profile['last_city'] ?? '');
+            $lastRegion = (string) ($profile['last_region'] ?? '');
+            $lastCountry = (string) ($profile['last_country'] ?? '');
+            $lastTs = (int) ($profile['last_ts'] ?? 0);
+            $ipChangeCount = (int) ($profile['ip_change_count'] ?? 0);
+            $requestCount = (int) ($profile['request_count'] ?? 0);
+            $windowStart = (int) ($profile['window_start'] ?? 0);
+            $goodScore = (int) ($profile['good_score'] ?? 0);
+
+            if ($windowStart <= 0 || ($nowMs - $windowStart) > 60000) {
+                $windowStart = $nowMs;
+                $ipChangeCount = 0;
+                $requestCount = 0;
+            }
+
+            $requestCount += 1;
+            $ipChanged = $lastIp !== '' && $lastIp !== $ip;
+
+            $gapMs = $lastTs > 0 ? ($nowMs - $lastTs) : 0;
+            $deduct = 0;
+            if ($duration >= 2 && $duration <= 60) {
+                $deduct += 2;
+            }
+            if ($pageCount > 2) {
+                $deduct += 3;
+            }
+            if ($gapMs > 180000) {
+                $deduct += 5;
+            }
+
+            if ($ipChanged) {
+                $ipChangeCount += 1;
+                $geoSameRegion = $regionValue !== '' && $regionValue === $lastRegion;
+                $geoSameCity = $cityValue !== '' && $cityValue === $lastCity;
+                $geoSameCountry = $countryValue !== '' && $countryValue === $lastCountry;
+
+                $geoCross = (!$geoSameCountry && $countryValue !== '' && $lastCountry !== '')
+                    || (!$geoSameRegion && $regionValue !== '' && $lastRegion !== '');
+
+                if ($geoCross) {
+                    $score += 20;
+                } elseif ($asnValue !== '' && $lastAsn !== '' && $asnValue !== $lastAsn) {
+                    $score += 5;
+                } else {
+                    $score += 2;
+                }
+
+                if ($asnValue !== '' && $lastAsn !== '' && $asnValue !== $lastAsn && !$geoSameRegion && !$geoSameCountry) {
+                    $score += 10;
+                }
+
+                if ($lastTs > 0 && ($nowMs - $lastTs) < 500) {
+                    $score += 10;
+                }
+            }
+
+            if ($ipChangeCount > 3 && ($nowMs - $windowStart) <= 60000) {
+                $score += 30;
+            }
+
+            $secondKey = "proxy:req:{$uid}:" . (int) floor($nowMs / 1000);
+            $secondCount = (int) $this->redis->incr($secondKey);
+            if ($secondCount === 1) {
+                $this->redis->expire($secondKey, 2);
+            }
+            if ($secondCount > 5) {
+                $score += 15;
+            }
+
+            if ($sessionKey) {
+                $sessionProfile = $this->redis->hGetAll($sessionKey);
+                $lastUa = (string) ($sessionProfile['ua'] ?? '');
+                $lastFp = (string) ($sessionProfile['fp'] ?? '');
+                if (($lastUa && $lastUa !== $userAgent) || ($lastFp && $lastFp !== $fingerprint && $fingerprint !== '')) {
+                    $score = 100;
+                }
+                $this->redis->hMSet($sessionKey, [
+                    'ua' => $userAgent,
+                    'fp' => $fingerprint,
+                    'ts' => $nowMs,
+                ]);
+                $this->redis->expire($sessionKey, 1800);
+            }
+
+            if ($score < 0) {
+                $score = 0;
+            }
+            if ($score > 100) {
+                $score = 100;
+            }
+
+            if ($deduct > 0) {
+                $remaining = max(0, 20 - $goodScore);
+                if ($remaining > 0) {
+                    $applied = min($deduct, $remaining);
+                    $score = max(0, $score - $applied);
+                    $goodScore += $applied;
+                }
+            }
+
+            $this->redis->hMSet($profileKey, [
+                'score' => $score,
+                'last_ip' => $ip,
+                'last_asn' => $asnValue,
+                'last_city' => $cityValue,
+                'last_region' => $regionValue,
+                'last_country' => $countryValue,
+                'last_ts' => $nowMs,
+                'ip_change_count' => $ipChangeCount,
+                'request_count' => $requestCount,
+                'window_start' => $windowStart,
+                'good_score' => $goodScore,
+            ]);
+            $this->redis->expire($profileKey, 1800);
+
+            if ($score >= 60) {
+                $this->rememberBlockedProxyIp($ip);
+                $this->redis->setex($blockedKey, 14400, '1');
+                return true;
+            }
+        } catch (Throwable $e) {
+            return false;
+        }
+
+        return false;
+    }
+
+    private function isBlockedProxyIp(string $ip): bool
+    {
+        try {
+            return (bool) $this->redis->zScore('proxy:blocked_ips', $ip);
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+
+    private function rememberBlockedProxyIp(string $ip, ?int $now = null): void
+    {
+        $now = $now ?? time();
+        try {
+            $key = 'proxy:blocked_ips';
+            $this->redis->zAdd($key, $now, $ip);
+            $this->redis->zRemRangeByScore($key, 0, $now - 14400);
+            $this->queueProxyCleanup($ip, $now);
+        } catch (Throwable $e) {
+            // ignore
+        }
+    }
+
+    private function queueProxyCleanup(string $ip, int $now): void
+    {
+        try {
+            $key = 'proxy:cleanup_queue';
+            $this->redis->zAdd($key, $now, $ip);
+            $this->redis->zRemRangeByScore($key, 0, $now - 14400);
+        } catch (Throwable $e) {
+            // ignore
+        }
+    }
+
+    private function maybeCleanupProxyHistory(): void
+    {
+        if ($this->proxyCleanupBatch <= 0) {
+            return;
+        }
+
+        $now = time();
+        $lastKey = 'proxy:cleanup:last';
+        $last = (int) ($this->redis->get($lastKey) ?: 0);
+        if ($last > 0 && ($now - $last) < $this->proxyCleanupInterval) {
+            return;
+        }
+
+        $lockKey = 'proxy:cleanup:lock';
+        if (!$this->redis->setnx($lockKey, '1')) {
+            return;
+        }
+        $this->redis->expire($lockKey, 60);
+        $this->redis->setex($lastKey, $this->proxyCleanupInterval, (string) $now);
+
+        $this->cleanupProxyHistory($this->proxyCleanupBatch);
+    }
+
+    private function cleanupProxyHistory(int $batch): void
+    {
+        $batch = max(1, $batch);
+        $queueKey = 'proxy:cleanup_queue';
+
+        try {
+            $targets = $this->redis->zRange($queueKey, 0, $batch - 1, true);
+        } catch (Throwable $e) {
+            return;
+        }
+
+        if (empty($targets)) {
+            return;
+        }
+
+        foreach ($targets as $ip => $detectedAt) {
+            $this->cleanupProxyIpData((string) $ip);
+            try {
+                $this->redis->zRem($queueKey, (string) $ip);
+            } catch (Throwable $e) {
+                // ignore
+            }
+        }
+    }
+
+    private function cleanupProxyIpData(string $ip): void
+    {
+        $ip = trim($ip);
+        if ($ip === '') {
+            return;
+        }
+
+        $statement = $this->db->prepare(
+            'SELECT site_id, MIN(occurred_at) as min_ts, MAX(occurred_at) as max_ts
+             FROM pageviews
+             WHERE ip_address = :ip
+             GROUP BY site_id'
+        );
+        $statement->execute([':ip' => $ip]);
+        $rows = $statement->fetchAll();
+        if (empty($rows)) {
+            return;
+        }
+
+        $this->deleteBatched(
+            'DELETE FROM pageviews WHERE ip_address = :ip LIMIT :batch',
+            [':ip' => $ip],
+            50000
+        );
+
+        $ipHash = hash('sha256', $ip);
+        foreach ($rows as $row) {
+            $siteId = (int) ($row['site_id'] ?? 0);
+            if ($siteId <= 0) {
+                continue;
+            }
+
+            $minTs = $row['min_ts'] ? new DateTimeImmutable($row['min_ts']) : null;
+            $maxTs = $row['max_ts'] ? new DateTimeImmutable($row['max_ts']) : null;
+            if (!$minTs || !$maxTs) {
+                continue;
+            }
+
+            $startBucket = $minTs->setTime((int) $minTs->format('H'), 0, 0);
+            $endBucket = $maxTs->setTime((int) $maxTs->format('H'), 0, 0)->modify('+1 hour');
+
+            $deleteAudience = $this->db->prepare(
+                'DELETE FROM site_ip_audience WHERE site_id = :site_id AND ip_hash = :ip_hash LIMIT 1'
+            );
+            $deleteAudience->execute([
+                ':site_id' => $siteId,
+                ':ip_hash' => $ipHash,
+            ]);
+
+            $this->rebuildRollupRange($siteId, $startBucket, $endBucket);
+        }
+    }
+
+    private function rebuildRollupRange(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): void
+    {
+        $current = $start;
+        while ($current < $end) {
+            $bucketStart = $current;
+            $bucketEnd = $bucketStart->modify('+1 hour');
+            $this->rebuildRollupBucket($siteId, $bucketStart, $bucketEnd);
+            $current = $bucketEnd;
+        }
+    }
+
+    private function rebuildRollupBucket(int $siteId, DateTimeImmutable $bucketStart, DateTimeImmutable $bucketEnd): void
+    {
+        $bucketKey = $bucketStart->format('Y-m-d H:i:s');
+        $start = $bucketStart->format('Y-m-d H:i:s');
+        $end = $bucketEnd->format('Y-m-d H:i:s');
+        $dayStart = $bucketStart->setTime(0, 0, 0);
+        $dayEnd = $dayStart->modify('+1 day');
+        $dayStartKey = $dayStart->format('Y-m-d H:i:s');
+        $dayEndKey = $dayEnd->format('Y-m-d H:i:s');
+
+        $this->db->beginTransaction();
+        try {
+            $this->db->prepare('DELETE FROM pageview_rollups WHERE site_id = ? AND bucket_start = ?')
+                ->execute([$siteId, $bucketKey]);
+            $this->db->prepare('DELETE FROM pageview_dimension_rollups WHERE site_id = ? AND bucket_start = ?')
+                ->execute([$siteId, $bucketKey]);
+            $this->db->prepare('DELETE FROM pageview_page_rollups WHERE site_id = ? AND bucket_start = ?')
+                ->execute([$siteId, $bucketKey]);
+            $this->db->prepare('DELETE FROM pageview_entry_rollups WHERE site_id = ? AND bucket_start = ?')
+                ->execute([$siteId, $bucketKey]);
+            $this->db->prepare('DELETE FROM pageview_bot_logs WHERE site_id = ? AND bucket_start = ?')
+                ->execute([$siteId, $bucketKey]);
+
+            $totalsStmt = $this->db->prepare(
+                "SELECT COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ips
+                 FROM pageviews
+                 WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?"
+            );
+            $totalsStmt->execute([$siteId, $start, $end]);
+            $totals = $totalsStmt->fetch() ?: [];
+
+            $sessionStmt = $this->db->prepare(
+                "SELECT COUNT(*) as sessions, SUM(duration_seconds) as duration_sum, SUM(page_count) as page_sum, SUM(bounce) as bounce_count
+                 FROM (
+                    SELECT MAX(duration_seconds) as duration_seconds,
+                           MAX(page_count) as page_count,
+                           CASE WHEN MAX(page_count) <= 1 THEN 1 ELSE 0 END as bounce
+                    FROM pageviews
+                    WHERE site_id = ? AND is_bot = 0 AND session_id IS NOT NULL
+                      AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY session_id
+                 ) t"
+            );
+            $sessionStmt->execute([$siteId, $start, $end]);
+            $sessions = $sessionStmt->fetch() ?: [];
+
+            $insertRollup = $this->db->prepare(
+                'INSERT INTO pageview_rollups (site_id, bucket_start, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            );
+            $insertRollup->execute([
+                $siteId,
+                $bucketKey,
+                (int) ($totals['views'] ?? 0),
+                (int) ($totals['uniques'] ?? 0),
+                (int) ($totals['ips'] ?? 0),
+                (int) ($sessions['sessions'] ?? 0),
+                (int) ($sessions['duration_sum'] ?? 0),
+                (int) ($sessions['page_sum'] ?? 0),
+                (int) ($sessions['bounce_count'] ?? 0),
+            ]);
+
+            $dimensionInserts = [
+                'host' => "SELECT LEFT(COALESCE(canonical_host, '未知域名'), 255) as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY dimension_value",
+                'host_device' => "SELECT LEFT(CONCAT(COALESCE(canonical_host, '未知域名'), '|', IF(is_mobile = 1, 'mobile', 'desktop')), 255) as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY dimension_value",
+                'device' => "SELECT IF(is_mobile = 1, 'mobile', 'desktop') as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY dimension_value",
+                'browser' => "SELECT LEFT(" . $this->browserCase('p') . ", 255) as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY dimension_value",
+                'referrer_host' => "SELECT dimension_value, pv, uv, ips, sessions, duration_sum, page_sum, bounce_count
+                    FROM (
+                        SELECT LEFT(" . $this->referrerHostExpr('p') . ", 255) as dimension_value,
+                            SUM(p.page_count) as pv,
+                            SUM(p.is_unique) as uv,
+                            COUNT(DISTINCT p.ip_hash) as ips,
+                            COUNT(*) as sessions,
+                            SUM(p.duration_seconds) as duration_sum,
+                            SUM(p.page_count) as page_sum,
+                            SUM(CASE WHEN p.page_count <= 1 THEN 1 ELSE 0 END) as bounce_count
+                        FROM (
+                            SELECT MIN(id) as first_id, session_id
+                            FROM pageviews
+                            WHERE site_id = ? AND is_bot = 0 AND session_id IS NOT NULL
+                              AND occurred_at >= ? AND occurred_at < ?
+                            GROUP BY session_id
+                        ) s
+                        JOIN pageviews p ON p.id = s.first_id
+                        GROUP BY dimension_value
+                        ORDER BY ips DESC
+                        LIMIT 500
+                    ) t",
+                'search_engine' => "SELECT LEFT(" . $this->searchEngineCase('p') . ", 255) as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY dimension_value",
+                'keyword_engine' => "SELECT LEFT(CONCAT(COALESCE(keyword,''), '|', " . $this->searchEngineCase('p') . ", '|', COALESCE(canonical_host, host, s.domain, ''), COALESCE(NULLIF(path,''), '/')), 255) as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p
+                    JOIN sites s ON s.id = p.site_id
+                    WHERE p.site_id = ? AND p.is_bot = 0 AND keyword IS NOT NULL AND keyword != '' AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY dimension_value",
+                'audience' => "SELECT LEFT(CASE WHEN a.first_seen >= ? AND a.first_seen < ? THEN 'new' ELSE 'returning' END, 255) as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT p.ip_hash) as ips
+                    FROM pageviews p
+                    LEFT JOIN site_ip_audience a ON a.site_id = p.site_id AND a.ip_hash = p.ip_hash
+                    WHERE p.site_id = ? AND p.is_bot = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
+                    GROUP BY dimension_value",
+            ];
+
+            foreach ($dimensionInserts as $dimension => $sql) {
+                $useSessionMetrics = $dimension === 'referrer_host';
+                $insert = $this->db->prepare(
+                    'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+                     SELECT ?, ?, ?, dimension_value, pv, uv, ips, ' .
+                    ($useSessionMetrics ? 'sessions, duration_sum, page_sum, bounce_count' : '0, 0, 0, 0') .
+                    ' FROM (' . $sql . ') t'
+                );
+                if ($dimension === 'audience') {
+                    $params = [$dayStartKey, $dayEndKey, $siteId, $start, $end];
+                } else {
+                    $params = [$siteId, $start, $end];
+                }
+                $insert->execute(array_merge([$siteId, $bucketKey, $dimension], $params));
+            }
+
+            $geoStmt = $this->db->prepare(
+                "SELECT ip_address, ip_hash, COUNT(*) as pv, SUM(is_unique) as uv
+                 FROM pageviews
+                 WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?
+                   AND ip_address IS NOT NULL AND ip_address != ''
+                 GROUP BY ip_hash, ip_address"
+            );
+            $geoStmt->execute([$siteId, $start, $end]);
+            $geoRows = $geoStmt->fetchAll();
+
+            $regionAgg = [];
+            $countryAgg = [];
+            $ispAgg = [];
+
+            foreach ($geoRows as $row) {
+                $meta = $this->ipResolver->resolve($row['ip_address'] ?? '');
+                $country = trim($meta['country_name'] ?? '');
+                $region = trim($meta['region_name'] ?? '');
+                $isp = trim($meta['isp_domain'] ?? '');
+
+                $regionKey = $this->regionLabel($country, $region);
+                $countryKey = $country !== '' ? $country : '未知';
+                $ispKey = $isp !== '' ? $isp : '未知运营商';
+
+                $pv = (int) ($row['pv'] ?? 0);
+                $uv = (int) ($row['uv'] ?? 0);
+                $ips = 1;
+
+                $regionAgg[$regionKey]['pv'] = ($regionAgg[$regionKey]['pv'] ?? 0) + $pv;
+                $regionAgg[$regionKey]['uv'] = ($regionAgg[$regionKey]['uv'] ?? 0) + $uv;
+                $regionAgg[$regionKey]['ips'] = ($regionAgg[$regionKey]['ips'] ?? 0) + $ips;
+
+                $countryAgg[$countryKey]['pv'] = ($countryAgg[$countryKey]['pv'] ?? 0) + $pv;
+                $countryAgg[$countryKey]['uv'] = ($countryAgg[$countryKey]['uv'] ?? 0) + $uv;
+                $countryAgg[$countryKey]['ips'] = ($countryAgg[$countryKey]['ips'] ?? 0) + $ips;
+
+                $ispAgg[$ispKey]['pv'] = ($ispAgg[$ispKey]['pv'] ?? 0) + $pv;
+                $ispAgg[$ispKey]['uv'] = ($ispAgg[$ispKey]['uv'] ?? 0) + $uv;
+                $ispAgg[$ispKey]['ips'] = ($ispAgg[$ispKey]['ips'] ?? 0) + $ips;
+            }
+
+            $geoInsert = $this->db->prepare(
+                'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)'
+            );
+
+            foreach ($regionAgg as $label => $data) {
+                $geoInsert->execute([
+                    $siteId,
+                    $bucketKey,
+                    'region',
+                    mb_substr($label, 0, 255),
+                    $data['pv'],
+                    $data['uv'],
+                    $data['ips'],
+                ]);
+            }
+
+            foreach ($countryAgg as $label => $data) {
+                $geoInsert->execute([
+                    $siteId,
+                    $bucketKey,
+                    'country',
+                    mb_substr($label, 0, 255),
+                    $data['pv'],
+                    $data['uv'],
+                    $data['ips'],
+                ]);
+            }
+
+            foreach ($ispAgg as $label => $data) {
+                $geoInsert->execute([
+                    $siteId,
+                    $bucketKey,
+                    'isp',
+                    mb_substr($label, 0, 255),
+                    $data['pv'],
+                    $data['uv'],
+                    $data['ips'],
+                ]);
+            }
+
+            $pageStmt = $this->db->prepare(
+                "INSERT INTO pageview_page_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+                 SELECT ?, ?, path, pv, uv, ips, 0, 0, 0, 0
+                 FROM (
+                    SELECT LEFT(COALESCE(path,'/'), 512) as path,
+                        COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p
+                    WHERE site_id = ? AND is_bot = 0 AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY path
+                    ORDER BY ips DESC
+                    LIMIT 500
+                 ) t"
+            );
+            $pageStmt->execute([$siteId, $bucketKey, $siteId, $start, $end]);
+
+            $entryStmt = $this->db->prepare(
+                "INSERT INTO pageview_entry_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+                 SELECT ?, ?, path, pv, uv, ips, session_count, duration_sum, page_sum, bounce_count
+                 FROM (
+                    SELECT LEFT(entry.path, 512) as path,
+                        COUNT(*) as pv, SUM(entry.is_unique) as uv, COUNT(DISTINCT entry.ip_hash) as ips,
+                        COUNT(*) as session_count,
+                        SUM(entry.duration_seconds) as duration_sum,
+                        SUM(entry.page_count) as page_sum,
+                        SUM(CASE WHEN entry.page_count <= 1 THEN 1 ELSE 0 END) as bounce_count
+                    FROM (
+                        SELECT MIN(id) as first_id, session_id
+                        FROM pageviews
+                        WHERE site_id = ? AND is_bot = 0 AND session_id IS NOT NULL
+                          AND occurred_at >= ? AND occurred_at < ?
+                        GROUP BY session_id
+                    ) s
+                    JOIN pageviews entry ON entry.id = s.first_id
+                    GROUP BY entry.path
+                    ORDER BY ips DESC
+                    LIMIT 500
+                 ) t"
+            );
+            $entryStmt->execute([$siteId, $bucketKey, $siteId, $start, $end]);
+
+            $botStmt = $this->db->prepare(
+                "INSERT INTO pageview_bot_logs (site_id, bucket_start, occurred_at, path, referrer, user_agent, ip_address, domain, engine)
+                 SELECT ?, ?, p.occurred_at,
+                    LEFT(COALESCE(p.path,'/'), 512) as path,
+                    p.referrer,
+                    LEFT(p.user_agent, 1024) as user_agent,
+                    p.ip_address,
+                    TRIM(LEADING '/' FROM COALESCE(p.canonical_host, p.host, '')) as domain,
+                    " . $this->searchEngineCase('p') . " as engine
+                 FROM pageviews p
+                 WHERE p.site_id = ? AND p.is_bot = 1 AND p.occurred_at >= ? AND p.occurred_at < ?"
+            );
+            $botStmt->execute([$siteId, $bucketKey, $siteId, $start, $end]);
+
+            $this->db->commit();
+        } catch (Throwable $e) {
+            $this->db->rollBack();
+        }
+    }
+
+    private function referrerHostExpr(string $alias): string
+    {
+        return "COALESCE(NULLIF(SUBSTRING_INDEX(SUBSTRING_INDEX({$alias}.referrer, '/', 3), '//', -1), ''), '直接访问')";
+    }
+
+    public function getBlockedProxyIps(int $limit = 200, int $offset = 0): array
+    {
+        $limit = max(1, $limit);
+        $offset = max(0, $offset);
+        try {
+            $key = 'proxy:blocked_ips';
+            $rows = $this->redis->zRevRange($key, $offset, $offset + $limit - 1, true);
+            $results = [];
+            foreach ($rows as $ip => $score) {
+                $results[] = [
+                    'ip' => (string) $ip,
+                    'detected_at' => date('Y-m-d H:i:s', (int) $score),
+                ];
+            }
+            return $results;
+        } catch (Throwable $e) {
+            return [];
+        }
+    }
+
+    public function getBlockedProxyIpCount(): int
+    {
+        try {
+            return (int) $this->redis->zCard('proxy:blocked_ips');
+        } catch (Throwable $e) {
+            return 0;
+        }
+    }
+
+    private function splitFilterList(string $filters): array
+    {
+        $raw = preg_split('/[\r\n,;]+/', $filters);
+        $clean = [];
+        foreach ($raw as $entry) {
+            $entry = trim($entry);
+            if ($entry === '') {
+                continue;
+            }
+            $clean[] = $entry;
+        }
+
+        return $clean;
+    }
+
+    private function asnMatchesFilters(string $asnNumber, string $asnName, string $filters): bool
+    {
+        $entries = $this->splitFilterList($filters);
+        if (!$entries) {
+            return false;
+        }
+
+        $normalizedNumber = preg_replace('/[^0-9]/', '', $asnNumber);
+        $normalizedName = strtolower($asnName);
+
+        foreach ($entries as $entry) {
+            $entry = trim($entry);
+            if ($entry === '') {
+                continue;
+            }
+
+            $normalizedEntryNumber = preg_replace('/[^0-9]/', '', $entry);
+            if ($normalizedEntryNumber !== '' && $normalizedNumber !== '' && $normalizedEntryNumber === $normalizedNumber) {
+                return true;
+            }
+
+            if ($normalizedName !== '' && stripos($normalizedName, $entry) !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function drainIngestQueue(int $maxBatch = 500): int
+    {
+        $processed = 0;
+
+        $this->recoverStalledIngestQueue();
+
+        while ($processed < $maxBatch) {
+            $raw = $this->redis->rPopLPush($this->ingestQueueKey, $this->ingestProcessingKey);
+
+            if ($raw === false || $raw === null) {
+                break;
+            }
+
+            $decoded = json_decode($raw, true);
+            if (!is_array($decoded) || empty($decoded['tracking_id']) || !isset($decoded['payload']) || !is_array($decoded['payload'])) {
+                $this->redis->lRem($this->ingestProcessingKey, $raw, 1);
+                continue;
+            }
+
+            try {
+                $this->processPageview($decoded['tracking_id'], $decoded['payload']);
+                $this->redis->lRem($this->ingestProcessingKey, $raw, 1);
+                $processed++;
+            } catch (Throwable $e) {
+                // Leave the record in processing list for recovery retry.
+            }
+        }
+
+        return $processed;
+    }
+
+    private function recoverStalledIngestQueue(): void
+    {
+        if ($this->ingestStalledAfter <= 0) {
+            return;
+        }
+
+        $len = (int) $this->redis->lLen($this->ingestProcessingKey);
+        if ($len <= 0) {
+            return;
+        }
+
+        $cutoff = time() - $this->ingestStalledAfter;
+        for ($i = 0; $i < $len; $i++) {
+            $raw = $this->redis->rPop($this->ingestProcessingKey);
+            if ($raw === false || $raw === null) {
+                break;
+            }
+
+            $decoded = json_decode($raw, true);
+            $receivedAt = is_array($decoded) ? (int) ($decoded['received_at'] ?? 0) : 0;
+            if ($receivedAt > 0 && $receivedAt > $cutoff) {
+                $this->redis->lPush($this->ingestProcessingKey, $raw);
+                continue;
+            }
+
+            $this->redis->lPush($this->ingestQueueKey, $raw);
+        }
+    }
+
+    private function updateRollups(
+        int $siteId,
+        DateTimeImmutable $occurredAt,
+        int $duration,
+        int $pageCount,
+        bool $isUnique,
+        bool $uvToday,
+        ?string $sessionId,
+        array $dimensions = []
+    ): void
+    {
+        $bucketStart = $occurredAt->setTime((int) $occurredAt->format('H'), 0, 0);
+        $bucketKey = $bucketStart->format('Y-m-d H:i:s');
+
+        $sessionIncrement = 0;
+        $bounceIncrement = 0;
+        $durationIncrement = 0;
+        $pageIncrement = 0;
+
+        if ($sessionId) {
+            $sessionKey = sprintf('rollup:session:%d:%s', $siteId, $bucketStart->format('YmdH'));
+            $isFirstSession = (bool) $this->redis->sAdd($sessionKey, $sessionId);
+            $this->redis->expire($sessionKey, 172800);
+
+            if ($isFirstSession) {
+                $sessionIncrement = 1;
+                $durationIncrement = $duration;
+                $pageIncrement = $pageCount;
+                $bounceIncrement = ($pageCount <= 1) ? 1 : 0;
+            }
+        }
+
+        $uvIncrement = $uvToday ? 1 : 0;
+        $ipIncrement = $uvIncrement;
+
+        $rollup = $this->db->prepare(
+            'INSERT INTO pageview_rollups (site_id, bucket_start, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+             VALUES (:site_id, :bucket_start, 1, :uv, :ip_count, :session_count, :duration_sum, :page_sum, :bounce_count)
+             ON DUPLICATE KEY UPDATE
+                pv = pv + 1,
+                uv = uv + VALUES(uv),
+                ip_count = ip_count + VALUES(ip_count),
+                session_count = session_count + VALUES(session_count),
+                duration_sum = duration_sum + VALUES(duration_sum),
+                page_sum = page_sum + VALUES(page_sum),
+                bounce_count = bounce_count + VALUES(bounce_count)'
+        );
+
+        $rollup->execute([
+            ':site_id' => $siteId,
+            ':bucket_start' => $bucketKey,
+            ':uv' => $uvIncrement,
+            ':ip_count' => $ipIncrement,
+            ':session_count' => $sessionIncrement,
+            ':duration_sum' => $durationIncrement,
+            ':page_sum' => $pageIncrement,
+            ':bounce_count' => $bounceIncrement,
+        ]);
+
+        $this->updateDimensionRollups(
+            $siteId,
+            $bucketKey,
+            $uvIncrement,
+            $ipIncrement,
+            $sessionIncrement,
+            $durationIncrement,
+            $pageIncrement,
+            $bounceIncrement,
+            $dimensions
+        );
+    }
+
+    private function rollupRangeBounds(string $range): array
+    {
+        $now = new DateTimeImmutable('now');
+        $ranges = [
+            'today' => $now->setTime(0, 0),
+            'yesterday' => $now->modify('-1 day')->setTime(0, 0),
+            '7d' => $now->modify('-6 day')->setTime(0, 0),
+            '30d' => $now->modify('-29 day')->setTime(0, 0),
+            'all' => new DateTimeImmutable('1970-01-01 00:00:00'),
+        ];
+
+        $start = $ranges[$range] ?? $ranges['today'];
+        $end = ($range === 'yesterday') ? $now->setTime(0, 0) : $now;
+
+        return [$start, $end];
+    }
+
+    private function rollupCoverageBounds(int $siteId): array
+    {
+        $statement = $this->db->prepare('SELECT MIN(bucket_start) as first_bucket, MAX(bucket_start) as last_bucket FROM pageview_rollups WHERE site_id = :site_id');
+        $statement->execute([':site_id' => $siteId]);
+        $row = $statement->fetch() ?: [];
+
+        $start = !empty($row['first_bucket']) ? new DateTimeImmutable($row['first_bucket']) : null;
+        $end = !empty($row['last_bucket']) ? (new DateTimeImmutable($row['last_bucket']))->modify('+1 hour') : null;
+
+        return [$start, $end];
+    }
+
+    private function rollupSpanForRange(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): ?array
+    {
+        [$coverageStart, $coverageEnd] = $this->rollupCoverageBounds($siteId);
+        if (!$coverageStart || !$coverageEnd) {
+            return null;
+        }
+
+        $windowStart = max($start, $coverageStart);
+        $windowEnd = min($end, $coverageEnd);
+
+        if ($windowStart >= $windowEnd) {
+            return null;
+        }
+
+        $statement = $this->db->prepare(
+            'SELECT MIN(bucket_start) as first_bucket, MAX(bucket_start) as last_bucket, COUNT(DISTINCT bucket_start) as buckets
+             FROM pageview_rollups
+             WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end'
+        );
+
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $windowStart->format('Y-m-d H:i:s'),
+            ':end' => $windowEnd->format('Y-m-d H:i:s'),
+        ]);
+
+        $row = $statement->fetch() ?: [];
+        $bucketCount = (int) ($row['buckets'] ?? 0);
+        if ($bucketCount === 0 || empty($row['last_bucket'])) {
+            return null;
+        }
+
+        $lastBucket = new DateTimeImmutable($row['last_bucket']);
+        $firstBucket = !empty($row['first_bucket']) ? new DateTimeImmutable($row['first_bucket']) : $lastBucket;
+        $contiguousStart = $lastBucket->modify('-' . ($bucketCount - 1) . ' hour');
+        $spanStart = max($windowStart, $firstBucket, $contiguousStart);
+        $spanEnd = min($windowEnd, $lastBucket->modify('+1 hour'));
+
+        if ($spanStart >= $spanEnd) {
+            return null;
+        }
+
+        return [
+            'start' => $spanStart,
+            'end' => $spanEnd,
+        ];
+    }
+
+    private function rollupCoverageStart(int $siteId): ?DateTimeImmutable
+    {
+        [$start] = $this->rollupCoverageBounds($siteId);
+
+        return $start;
+    }
+
+    private function rollupsCoverRange(int $siteId, DateTimeImmutable $start, ?DateTimeImmutable $end = null): bool
+    {
+        $windowEnd = $end ?? $start;
+        $span = $this->rollupSpanForRange($siteId, $start, $windowEnd);
+
+        if (!$span) {
+            return false;
+        }
+
+        return $span['start'] <= $start && $span['end'] >= $windowEnd;
+    }
+
+    private function rollupsCoverRangeForSites(array $siteIds, DateTimeImmutable $start, DateTimeImmutable $end): bool
+    {
+        foreach ($siteIds as $siteId) {
+            if (!$this->rollupsCoverRange((int) $siteId, $start, $end)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function aggregateRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        $span = $this->rollupSpanForRange($siteId, $start, $end);
+
+        if (!$span) {
+            [$coverageStart, $coverageEnd] = $this->rollupCoverageBounds($siteId);
+            return [
+                'has_data' => false,
+                'coverage_start' => $coverageStart,
+                'coverage_end' => $coverageEnd,
+                'views' => 0,
+                'uniques' => 0,
+                'ip_count' => 0,
+                'session_count' => 0,
+                'duration_sum' => 0,
+                'page_sum' => 0,
+                'bounce_count' => 0,
+            ];
+        }
+
+        $statement = $this->db->prepare(
+            'SELECT SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ip_count, SUM(session_count) as session_count,
+                SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count
+             FROM pageview_rollups
+             WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end'
+        );
+
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $span['start']->format('Y-m-d H:i:s'),
+            ':end' => $span['end']->format('Y-m-d H:i:s'),
+        ]);
+
+        $row = $statement->fetch() ?: [];
+
+        return [
+            'has_data' => true,
+            'coverage_start' => $span['start'],
+            'coverage_end' => $span['end'],
+            'views' => (int) ($row['views'] ?? 0),
+            'uniques' => (int) ($row['uniques'] ?? 0),
+            'ip_count' => (int) ($row['ip_count'] ?? 0),
+            'session_count' => (int) ($row['session_count'] ?? 0),
+            'duration_sum' => (int) ($row['duration_sum'] ?? 0),
+            'page_sum' => (int) ($row['page_sum'] ?? 0),
+            'bounce_count' => (int) ($row['bounce_count'] ?? 0),
+        ];
+    }
+
+    private function rollupWindowComplete(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): bool
+    {
+        $expectedBuckets = (int) ceil(($end->getTimestamp() - $start->getTimestamp()) / 3600);
+        if ($expectedBuckets <= 0) {
+            return false;
+        }
+
+        $statement = $this->db->prepare(
+            'SELECT COUNT(DISTINCT bucket_start) as buckets
+             FROM pageview_rollups
+             WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end'
+        );
+
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        $row = $statement->fetch() ?: [];
+
+        return ((int) ($row['buckets'] ?? 0)) >= $expectedBuckets;
+    }
+
+    private function aggregateRawWindow(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        if ($this->rollupOnly) {
+            return [
+                'has_data' => false,
+                'coverage_start' => $start,
+                'views' => 0,
+                'uniques' => 0,
+                'ip_count' => 0,
+                'session_count' => 0,
+                'duration_sum' => 0,
+                'page_sum' => 0,
+                'bounce_count' => 0,
+            ];
+        }
+
+        $ipExpr = $this->ipHashExpr('pageviews');
+
+        $totalsStmt = $this->db->prepare(
+            "SELECT COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT {$ipExpr}) as ip_count
+             FROM pageviews
+             WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end"
+        );
+        $totalsStmt->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        $totals = $totalsStmt->fetch() ?: [];
+
+        $sessionStmt = $this->db->prepare(
+            'SELECT COUNT(*) as session_count, SUM(duration_seconds) as duration_sum, SUM(page_count) as page_sum, SUM(bounce) as bounce_count
+             FROM (
+                SELECT COALESCE(MAX(duration_seconds), 0) as duration_seconds,
+                       COALESCE(MAX(page_count), 0) as page_count,
+                       CASE WHEN MAX(page_count) <= 1 THEN 1 ELSE 0 END as bounce
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL AND occurred_at >= :start AND occurred_at < :end
+                GROUP BY session_id
+             ) t'
+        );
+        $sessionStmt->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        $sessions = $sessionStmt->fetch() ?: [];
+
+        return [
+            'has_data' => true,
+            'coverage_start' => $start,
+            'views' => (int) ($totals['views'] ?? 0),
+            'uniques' => (int) ($totals['uniques'] ?? 0),
+            'ip_count' => (int) ($totals['ip_count'] ?? 0),
+            'session_count' => (int) ($sessions['session_count'] ?? 0),
+            'duration_sum' => (int) ($sessions['duration_sum'] ?? 0),
+            'page_sum' => (int) ($sessions['page_sum'] ?? 0),
+            'bounce_count' => (int) ($sessions['bounce_count'] ?? 0),
+        ];
+    }
+
+    private function combineTotals(array ...$segments): array
+    {
+        $result = [
+            'has_data' => false,
+            'views' => 0,
+            'uniques' => 0,
+            'ip_count' => 0,
+            'session_count' => 0,
+            'duration_sum' => 0,
+            'page_sum' => 0,
+            'bounce_count' => 0,
+        ];
+
+        foreach ($segments as $segment) {
+            foreach (['views', 'uniques', 'ip_count', 'session_count', 'duration_sum', 'page_sum', 'bounce_count'] as $key) {
+                $result[$key] += (int) ($segment[$key] ?? 0);
+            }
+
+            if (!empty($segment['has_data']) || (($segment['views'] ?? 0) + ($segment['session_count'] ?? 0) > 0)) {
+                $result['has_data'] = true;
+            }
+        }
+
+        return $result;
+    }
+
+    private function aggregateTotalsWithRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        $rollups = $this->aggregateRollups($siteId, $start, $end);
+
+        if (!$rollups['has_data']) {
+            return [
+                'has_data' => false,
+                'views' => 0,
+                'uniques' => 0,
+                'ip_count' => 0,
+                'session_count' => 0,
+                'duration_sum' => 0,
+                'page_sum' => 0,
+                'bounce_count' => 0,
+            ];
+        }
+
+        return $rollups;
+    }
+
+    private function uncoveredRanges(?array $span, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        if (!$span) {
+            return [[$start, $end]];
+        }
+
+        $ranges = [];
+
+        if ($start < $span['start']) {
+            $ranges[] = [$start, $span['start']];
+        }
+
+        if ($span['end'] < $end) {
+            $ranges[] = [$span['end'], $end];
+        }
+
+        return $ranges;
+    }
+
+    private function mergeDimensionRows(string $key, array ...$rowSets): array
+    {
+        $numeric = ['views', 'ips', 'uniques', 'sessions', 'duration_sum', 'page_sum', 'bounce_count'];
+        $merged = [];
+
+        foreach ($rowSets as $rows) {
+            foreach ($rows as $row) {
+                if (!isset($row[$key])) {
+                    continue;
+                }
+
+                $label = $row[$key];
+                if (!array_key_exists($label, $merged)) {
+                    $merged[$label] = [$key => $label];
+                }
+
+                foreach ($numeric as $field) {
+                    $merged[$label][$field] = ($merged[$label][$field] ?? 0) + (float) ($row[$field] ?? 0);
+                }
+            }
+        }
+
+        return array_values(array_map(function ($row) {
+            $sessions = (float) ($row['sessions'] ?? 0);
+            if ($sessions > 0) {
+                $row['avg_pages'] = ($row['page_sum'] ?? 0) / $sessions;
+                $row['avg_duration'] = ($row['duration_sum'] ?? 0) / $sessions;
+                $row['bounce_rate'] = ($row['bounce_count'] ?? 0) / $sessions;
+            }
+
+            return $row;
+        }, $merged));
+    }
+
+    private function normalizePathRows(array $rows): array
+    {
+        return array_map(function ($row) {
+            return [
+                'path' => $row['dimension_value'] ?? $row['path'] ?? '/',
+                'views' => (int) ($row['views'] ?? 0),
+                'ips' => (int) ($row['ips'] ?? 0),
+            ];
+        }, $rows);
+    }
+
+    private function normalizeEntryRows(array $rows): array
+    {
+        return array_map(function ($row) {
+            $sessions = (int) ($row['sessions'] ?? ($row['views'] ?? 0));
+            $avgPages = (float) ($row['avg_pages'] ?? 0);
+            $avgDuration = (float) ($row['avg_duration'] ?? 0);
+            $bounceRate = (float) ($row['bounce_rate'] ?? 0);
+
+            $pageSum = $row['page_sum'] ?? ($sessions * $avgPages);
+            $durationSum = $row['duration_sum'] ?? ($sessions * $avgDuration);
+            $bounceCount = $row['bounce_count'] ?? ($sessions * $bounceRate);
+
+            return [
+                'path' => $row['dimension_value'] ?? $row['path'] ?? '/',
+                'sessions' => $sessions,
+                'views' => (int) ($row['views'] ?? 0),
+                'ips' => (int) ($row['ips'] ?? 0),
+                'uniques' => (int) ($row['uniques'] ?? 0),
+                'page_sum' => $pageSum,
+                'duration_sum' => $durationSum,
+                'bounce_count' => $bounceCount,
+                'avg_pages' => $avgPages,
+                'avg_duration' => $avgDuration,
+                'bounce_rate' => $bounceRate,
+            ];
+        }, $rows);
+    }
+
+    private function updateDimensionRollups(
+        int $siteId,
+        string $bucketKey,
+        int $uvIncrement,
+        int $ipIncrement,
+        int $sessionIncrement,
+        int $durationIncrement,
+        int $pageIncrement,
+        int $bounceIncrement,
+        array $dimensions
+    ): void {
+        $entries = [];
+
+        $path = $this->limitText($dimensions['path'] ?? '/', 512, '/');
+        $keyword = $this->limitText($dimensions['keyword'] ?? '', 255);
+        $engine = $this->limitText($dimensions['engine'] ?? '', 64);
+        $referrerHost = $this->limitText($dimensions['referrer_host'] ?? '', 255);
+        $browser = $this->limitText($dimensions['browser'] ?? '', 64);
+        $isp = $this->limitText($dimensions['isp'] ?? '', 128);
+        $isMobile = (bool) ($dimensions['is_mobile'] ?? false);
+        $isUnique = (bool) ($dimensions['is_unique'] ?? false);
+        $canonicalHost = $this->limitText($dimensions['canonical_host'] ?? '', 255, '未知域名');
+        $audienceLabel = $this->limitText($dimensions['audience_label'] ?? 'returning', 64, 'returning');
+
+        if ($keyword !== '') {
+            $entries[] = ['keyword', $keyword];
+            if ($engine !== '') {
+                $entries[] = ['keyword_engine', $this->limitText($this->dimensionKey([$keyword, $engine, $path]), 255)];
+            }
+        }
+
+        if ($engine !== '' && $engine !== '其他') {
+            $entries[] = ['search_engine', $engine];
+        }
+
+        if ($referrerHost !== '') {
+            $entries[] = ['referrer_host', $referrerHost];
+        }
+
+        if ($canonicalHost !== '') {
+            $entries[] = ['host', $canonicalHost];
+            $entries[] = [
+                'host_device',
+                $this->limitText($this->dimensionKey([$canonicalHost, $isMobile ? 'mobile' : 'desktop']), 255)
+            ];
+        }
+
+        if (!empty($dimensions['entry_path'])) {
+            $this->upsertEntryRollup(
+                $siteId,
+                $bucketKey,
+                $this->limitText($dimensions['entry_path'], 512, '/'),
+                $uvIncrement,
+                $ipIncrement,
+                $sessionIncrement,
+                $durationIncrement,
+                $pageIncrement,
+                $bounceIncrement,
+                $isUnique
+            );
+        }
+
+        $this->upsertPageRollup(
+            $siteId,
+            $bucketKey,
+            $path,
+            $uvIncrement,
+            $ipIncrement,
+            $sessionIncrement,
+            $durationIncrement,
+            $pageIncrement,
+            $bounceIncrement,
+            $isUnique
+        );
+
+        $entries[] = ['device', $isMobile ? 'mobile' : 'desktop'];
+
+        if ($browser !== '') {
+            $entries[] = ['browser', $browser];
+        }
+
+        if (!empty($dimensions['region'])) {
+            $regionLabel = $this->regionLabel(
+                $dimensions['region']['country'] ?? '',
+                $dimensions['region']['region'] ?? ''
+            );
+            $entries[] = ['region', $this->limitText($regionLabel, 255, '未知')];
+            $country = $this->limitText($dimensions['region']['country'] ?? '', 128, '未知');
+            $entries[] = ['country', $country];
+        }
+
+        if ($isp !== '') {
+            $entries[] = ['isp', $isp];
+        }
+
+        $entries[] = ['audience', $audienceLabel];
+
+        foreach ($entries as [$dimension, $value]) {
+            $this->upsertDimensionRollup(
+                $siteId,
+                $bucketKey,
+                $dimension,
+                $value,
+                $uvIncrement,
+                $ipIncrement,
+                $sessionIncrement,
+                $durationIncrement,
+                $pageIncrement,
+                $bounceIncrement,
+                $isUnique
+            );
+        }
+    }
+
+    private function upsertDimensionRollup(
+        int $siteId,
+        string $bucketKey,
+        string $dimension,
+        string $value,
+        int $uvIncrement,
+        int $ipIncrement,
+        int $sessionIncrement,
+        int $durationIncrement,
+        int $pageIncrement,
+        int $bounceIncrement,
+        bool $isUnique
+    ): void {
+        $value = $this->limitText($value, 255);
+
+        $stmt = $this->db->prepare(
+            'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+             VALUES (:site_id, :bucket_start, :dimension_type, :dimension_value, 1, :uv, :ip_count, :session_count, :duration_sum, :page_sum, :bounce_count)
+             ON DUPLICATE KEY UPDATE
+                pv = pv + 1,
+                uv = uv + VALUES(uv),
+                ip_count = ip_count + VALUES(ip_count),
+                session_count = session_count + VALUES(session_count),
+                duration_sum = duration_sum + VALUES(duration_sum),
+                page_sum = page_sum + VALUES(page_sum),
+                bounce_count = bounce_count + VALUES(bounce_count)'
+        );
+
+        $stmt->execute([
+            ':site_id' => $siteId,
+            ':bucket_start' => $bucketKey,
+            ':dimension_type' => $dimension,
+            ':dimension_value' => $value,
+            ':uv' => $isUnique ? 1 : 0,
+            ':ip_count' => $isUnique ? 1 : 0,
+            ':session_count' => $sessionIncrement,
+            ':duration_sum' => $durationIncrement,
+            ':page_sum' => $pageIncrement,
+            ':bounce_count' => $bounceIncrement,
+        ]);
+    }
+
+    private function upsertPageRollup(
+        int $siteId,
+        string $bucketKey,
+        string $path,
+        int $uvIncrement,
+        int $ipIncrement,
+        int $sessionIncrement,
+        int $durationIncrement,
+        int $pageIncrement,
+        int $bounceIncrement,
+        bool $isUnique
+    ): void {
+        $path = $this->limitText($path ?: '/', 512, '/');
+
+        $stmt = $this->db->prepare(
+            'INSERT INTO pageview_page_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+             VALUES (:site_id, :bucket_start, :path, 1, :uv, :ip_count, :session_count, :duration_sum, :page_sum, :bounce_count)
+             ON DUPLICATE KEY UPDATE
+                pv = pv + 1,
+                uv = uv + VALUES(uv),
+                ip_count = ip_count + VALUES(ip_count),
+                session_count = session_count + VALUES(session_count),
+                duration_sum = duration_sum + VALUES(duration_sum),
+                page_sum = page_sum + VALUES(page_sum),
+                bounce_count = bounce_count + VALUES(bounce_count)'
+        );
+
+        $stmt->execute([
+            ':site_id' => $siteId,
+            ':bucket_start' => $bucketKey,
+            ':path' => $path,
+            ':uv' => $isUnique ? 1 : 0,
+            ':ip_count' => $ipIncrement,
+            ':session_count' => $sessionIncrement,
+            ':duration_sum' => $durationIncrement,
+            ':page_sum' => $pageIncrement,
+            ':bounce_count' => $bounceIncrement,
+        ]);
+    }
+
+    private function upsertEntryRollup(
+        int $siteId,
+        string $bucketKey,
+        string $path,
+        int $uvIncrement,
+        int $ipIncrement,
+        int $sessionIncrement,
+        int $durationIncrement,
+        int $pageIncrement,
+        int $bounceIncrement,
+        bool $isUnique
+    ): void {
+        $path = $this->limitText($path ?: '/', 512, '/');
+
+        $stmt = $this->db->prepare(
+            'INSERT INTO pageview_entry_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+             VALUES (:site_id, :bucket_start, :path, 1, :uv, :ip_count, :session_count, :duration_sum, :page_sum, :bounce_count)
+             ON DUPLICATE KEY UPDATE
+                pv = pv + 1,
+                uv = uv + VALUES(uv),
+                ip_count = ip_count + VALUES(ip_count),
+                session_count = session_count + VALUES(session_count),
+                duration_sum = duration_sum + VALUES(duration_sum),
+                page_sum = page_sum + VALUES(page_sum),
+                bounce_count = bounce_count + VALUES(bounce_count)'
+        );
+
+        $stmt->execute([
+            ':site_id' => $siteId,
+            ':bucket_start' => $bucketKey,
+            ':path' => $path,
+            ':uv' => $isUnique ? 1 : 0,
+            ':ip_count' => $ipIncrement,
+            ':session_count' => $sessionIncrement,
+            ':duration_sum' => $durationIncrement,
+            ':page_sum' => $pageIncrement,
+            ':bounce_count' => $bounceIncrement,
+        ]);
+    }
+
+    private function aggregateDimensionRollups(int $siteId, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
+    {
+        $span = $this->rollupSpanForRange($siteId, $start, $end);
+        if (!$span) {
+            return [];
+        }
+
+        $statement = $this->db->prepare(
+            'SELECT dimension_value, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ips, SUM(session_count) as sessions, SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count
+             FROM pageview_dimension_rollups
+             WHERE site_id = :site_id AND dimension_type = :dimension AND bucket_start >= :start AND bucket_start < :end
+             GROUP BY dimension_value
+             ORDER BY views DESC
+             LIMIT :limit'
+        );
+
+        $statement->bindValue(':site_id', $siteId, PDO::PARAM_INT);
+        $statement->bindValue(':dimension', $dimension, PDO::PARAM_STR);
+        $statement->bindValue(':start', $start->format('Y-m-d H:i:s'), PDO::PARAM_STR);
+        $statement->bindValue(':end', $end->format('Y-m-d H:i:s'), PDO::PARAM_STR);
+        $statement->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $statement->execute();
+
+        $rows = $statement->fetchAll();
+
+        return $this->recalcRollupIps([$siteId], $dimension, $span['start'], $span['end'], $rows);
+    }
+
+    private function aggregatePageRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
+    {
+        $span = $this->rollupSpanForRange($siteId, $start, $end);
+        if (!$span) {
+            return [];
+        }
+
+        $statement = $this->db->prepare(
+            'SELECT path as dimension_value, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ips, SUM(session_count) as sessions, SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count
+             FROM pageview_page_rollups
+             WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end
+             GROUP BY path
+             ORDER BY ips DESC
+             LIMIT :limit'
+        );
+
+        $statement->bindValue(':site_id', $siteId, PDO::PARAM_INT);
+        $statement->bindValue(':start', $start->format('Y-m-d H:i:s'), PDO::PARAM_STR);
+        $statement->bindValue(':end', $end->format('Y-m-d H:i:s'), PDO::PARAM_STR);
+        $statement->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $statement->execute();
+
+        $rows = $statement->fetchAll();
+
+        $span = $span ?? ['start' => $start, 'end' => $end];
+
+        return $this->recalcRollupIps([$siteId], 'page_path', $span['start'], $span['end'], $rows);
+    }
+
+    private function aggregateEntryRollups(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
+    {
+        $span = $this->rollupSpanForRange($siteId, $start, $end);
+        if (!$span) {
+            return [];
+        }
+
+        $statement = $this->db->prepare(
+            'SELECT path as dimension_value, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ips, SUM(session_count) as sessions, SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count
+             FROM pageview_entry_rollups
+             WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end
+             GROUP BY path
+             ORDER BY ips DESC
+             LIMIT :limit'
+        );
+
+        $statement->bindValue(':site_id', $siteId, PDO::PARAM_INT);
+        $statement->bindValue(':start', $start->format('Y-m-d H:i:s'), PDO::PARAM_STR);
+        $statement->bindValue(':end', $end->format('Y-m-d H:i:s'), PDO::PARAM_STR);
+        $statement->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $statement->execute();
+
+        $rows = $statement->fetchAll();
+
+        $span = $span ?? ['start' => $start, 'end' => $end];
+
+        return $this->recalcEntryRollupIps($siteId, $span['start'], $span['end'], $rows);
+    }
+
+    private function aggregateDimensionRollupsForSites(array $siteIds, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
+    {
+        if (empty($siteIds)) {
+            return [];
+        }
+
+        $placeholders = [];
+        $bindings = [
+            ':dimension' => $dimension,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+            ':limit' => $limit,
+        ];
+
+        foreach (array_values($siteIds) as $idx => $siteId) {
+            $ph = ':sid' . $idx;
+            $placeholders[] = $ph;
+            $bindings[$ph] = (int) $siteId;
+        }
+
+        $sql = sprintf(
+            'SELECT dimension_value, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ips, SUM(session_count) as sessions, SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count
+             FROM pageview_dimension_rollups
+             WHERE site_id IN (%s) AND dimension_type = :dimension AND bucket_start >= :start AND bucket_start < :end
+             GROUP BY dimension_value
+             ORDER BY views DESC
+             LIMIT :limit',
+            implode(',', $placeholders)
+        );
+
+        $statement = $this->db->prepare($sql);
+        foreach ($bindings as $key => $value) {
+            $paramType = (str_starts_with($key, ':sid') || $key === ':limit') ? PDO::PARAM_INT : PDO::PARAM_STR;
+            $statement->bindValue($key, $value, $paramType);
+        }
+
+        $statement->execute();
+
+        $rows = $statement->fetchAll();
+
+        return $this->recalcRollupIps($siteIds, $dimension, $start, $end, $rows);
+    }
+
+    private function recalcRollupIps(?array $siteIds, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, array $rows): array
+    {
+        return array_map(function ($row) {
+            $row['ips'] = (int) ($row['ips'] ?? ($row['ip_count'] ?? 0));
+            $row['uniques'] = (int) ($row['uniques'] ?? ($row['uv'] ?? 0));
+
+            return $row;
+        }, $rows);
+    }
+
+    private function recalcEntryRollupIps(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, array $rows): array
+    {
+        return array_map(function ($row) {
+            $row['ips'] = (int) ($row['ips'] ?? ($row['ip_count'] ?? 0));
+            $row['uniques'] = (int) ($row['uniques'] ?? ($row['uv'] ?? 0));
+
+            return $row;
+        }, $rows);
+    }
+
+    private function markIpAudienceState(int $siteId, string $ipHash): array
+    {
+        $stmt = $this->db->prepare(
+            'INSERT INTO site_ip_audience (site_id, ip_hash, first_seen, last_seen_date)
+             VALUES (:site_id, :ip_hash, NOW(), CURRENT_DATE())
+             ON DUPLICATE KEY UPDATE last_seen_date = VALUES(last_seen_date)'
+        );
+
+        $stmt->execute([
+            ':site_id' => $siteId,
+            ':ip_hash' => $ipHash,
+        ]);
+
+        $affected = (int) $stmt->rowCount();
+        $uvToday = $affected > 0;
+        $audienceLabel = ($affected === 1) ? 'new' : 'returning';
+
+        return [$uvToday, $audienceLabel];
+    }
+
+    private function detectBrowser(string $userAgent): string
+    {
+        $ua = strtolower($userAgent);
+        return match (true) {
+            str_contains($ua, 'micromessenger') => 'WeChat',
+            (bool) preg_match('/bytedancewebview|aweme/', $ua) => 'Douyin',
+            str_contains($ua, 'baiduboxapp') => 'Baidu',
+            (bool) preg_match('/mqqbrowser|qqbrowser/', $ua) => 'QQ',
+            str_contains($ua, 'ucbrowser') => 'UC',
+            str_contains($ua, 'quark') => 'Quark',
+            str_contains($ua, 'xiaomi') || str_contains($ua, 'miuibrowser') => 'Mi',
+            str_contains($ua, 'huawei') => 'Huawei',
+            str_contains($ua, 'vivobrowser') => 'Vivo',
+            str_contains($ua, 'heytapbrowser') || str_contains($ua, 'oppobrowser') => 'OPPO',
+            (bool) preg_match('/edg(a|ios)/', $ua) => 'Edge',
+            (bool) preg_match('/chrome|crios/', $ua) => 'Chrome',
+            (bool) preg_match('/firefox|fxios/', $ua) => 'Firefox',
+            (bool) preg_match('/safari/', $ua) && !(bool) preg_match('/chrome|crios|edg/', $ua) => 'Safari',
+            (bool) preg_match('/360se|360ee/', $ua) => '360',
+            (bool) preg_match('/msie|trident/', $ua) => 'IE',
+            default => '其他浏览器',
+        };
+    }
+
+    private function browserCase(string $alias = ''): string
+    {
+        $prefix = $alias ? $alias . '.' : '';
+
+        return "CASE
+            WHEN LOWER({$prefix}user_agent) REGEXP 'micromessenger' THEN 'WeChat'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'bytedancewebview|aweme' THEN 'Douyin'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'baiduboxapp' THEN 'Baidu'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'mqqbrowser|qqbrowser' THEN 'QQ'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'ucbrowser' THEN 'UC'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'quark' THEN 'Quark'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'xiaomi|miuibrowser' THEN 'Mi'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'huawei' THEN 'Huawei'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'vivobrowser' THEN 'Vivo'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'heytapbrowser|oppobrowser' THEN 'OPPO'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'edg(a|ios)' THEN 'Edge'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'chrome|crios' THEN 'Chrome'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'firefox|fxios' THEN 'Firefox'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'safari' AND LOWER({$prefix}user_agent) NOT REGEXP 'chrome|crios|edg' THEN 'Safari'
+            WHEN LOWER({$prefix}user_agent) REGEXP '360se|360ee' THEN '360'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'msie|trident' THEN 'IE'
+            ELSE '其他浏览器'
+        END";
+    }
+
+    private function detectSearchEngine(string $referrer, string $userAgent): string
+    {
+        $ref = strtolower($referrer);
+        $ua = strtolower($userAgent);
+
+        return match (true) {
+            str_contains($ref, 'baidu.com') || str_contains($ua, 'baiduspider') => '百度',
+            str_contains($ref, 'google') || str_contains($ua, 'googlebot') => '谷歌',
+            str_contains($ref, 'bing.com') || str_contains($ua, 'bingbot') => '必应',
+            str_contains($ref, 'so.com') || str_contains($ua, '360spider') => '360',
+            str_contains($ref, 'toutiao.com') || str_contains($ua, 'bytedance') => '头条',
+            str_contains($ref, 'sogou.com') || str_contains($ua, 'sogou') => '搜狗',
+            str_contains($ref, 'sm.cn') || str_contains($ua, 'yisouspider') => '神马',
+            str_contains($ref, 'quark.cn') => '夸克',
+            default => '其他',
+        };
+    }
+
+    private function referrerHost(?string $referrer): ?string
+    {
+        if (!$referrer) {
+            return null;
+        }
+
+        $host = parse_url($referrer, PHP_URL_HOST) ?: '';
+        return $host ? strtolower($host) : null;
+    }
+
+    private function captureEntryPath(int $siteId, ?string $sessionId, string $path): ?string
+    {
+        if (!$sessionId) {
+            return null;
+        }
+
+        $key = sprintf('entry:first:%d:%s', $siteId, $sessionId);
+        if ($this->redis->setnx($key, $path ?: '/')) {
+            $this->redis->expire($key, 172800);
+            return $path ?: '/';
+        }
+
+        return null;
+    }
+
+    private function regionLabel(string $country, string $region): string
+    {
+        $country = trim($country);
+        $region = trim($region);
+
+        if ($country === '' || $country === '未知' || $country === '保留地址') {
+            return '未知';
+        }
+
+        if (str_starts_with($country, '中国')) {
+            return $region !== '' ? $region : '未知';
+        }
+
+        return $country;
+    }
+
+    private function dimensionKey(array $parts): string
+    {
+        return implode('|', array_map(fn ($p) => str_replace('|', '/', (string) $p), $parts));
+    }
+
+    private function rollupSummaryStats(array $rollupTotals): array
+    {
+        $sessions = max(0, (int) ($rollupTotals['session_count'] ?? 0));
+        $views = (int) ($rollupTotals['views'] ?? 0);
+        $uniques = (int) ($rollupTotals['uniques'] ?? 0);
+        $ips = (int) ($rollupTotals['ip_count'] ?? 0);
+        $durationSum = (int) ($rollupTotals['duration_sum'] ?? 0);
+        $pageSum = (int) ($rollupTotals['page_sum'] ?? 0);
+        $bounceCount = (int) ($rollupTotals['bounce_count'] ?? 0);
+
+        return [
+            'ips' => $ips,
+            'views' => $views,
+            'uv' => $uniques,
+            'new' => $uniques,
+            'sessions' => $sessions,
+            'avg_pages' => $sessions > 0 ? round($pageSum / $sessions, 2) : 0,
+            'avg_duration' => $sessions > 0 ? ($durationSum / $sessions) : 0,
+            'bounce_rate' => $sessions > 0 ? ($bounceCount / $sessions) : 0,
+        ];
+    }
+
+    private function getRollupDailyStats(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        if (!$this->rollupsCoverRange($siteId, $start, $end)) {
+            return [];
+        }
+
+        $statement = $this->db->prepare(
+            "SELECT DATE(bucket_start) as day, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ip_count
+             FROM pageview_rollups
+             WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end
+             GROUP BY day
+             ORDER BY day ASC"
+        );
+
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        return $statement->fetchAll();
+    }
+
+    private function getRollupHourlyStats(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, bool $allowPartial = false): array
+    {
+        if (!$allowPartial && !$this->rollupsCoverRange($siteId, $start, $end)) {
+            return [];
+        }
+
+        $statement = $this->db->prepare(
+            "SELECT bucket_start as hour, pv as views, uv as uniques, ip_count as ips
+             FROM pageview_rollups
+             WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end
+             ORDER BY bucket_start ASC"
+        );
+
+        $statement->execute([
+            ':site_id' => $siteId,
+            ':start' => $start->format('Y-m-d H:i:s'),
+            ':end' => $end->format('Y-m-d H:i:s'),
+        ]);
+
+        return $statement->fetchAll();
+    }
+
+    private function ensureRollupCoverage(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): void
+    {
+        $span = $this->rollupSpanForRange($siteId, $start, $end);
+        if (!$span || $span['start'] > $start || $span['end'] < $end) {
+            $this->rebuildRollupRange($siteId, $start, $end);
+        }
     }
 
     public function getOverview(int $siteId, string $range = 'today'): array
     {
-        return [
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $this->ensureRollupCoverage($siteId, $start, $end);
+
+        $overview = [
             'totals' => $this->getTotals($siteId, $range),
             'daily' => $this->getDailyStats($siteId, $range),
             'hourly' => $this->getHourlyStats($siteId, $range),
@@ -237,26 +2351,20 @@ class Tracker
             'top_pages' => $this->getTopPages($siteId, $range, 10),
             'entry_pages' => $this->getEntryPages($siteId, $range, 15),
         ];
-    }
 
-    public function getContentData(int $siteId, string $range = 'today', array $filters = []): array
-    {
-        $active = $this->getActiveSessions($siteId);
-        $details = $this->getVisitDetails($siteId, $filters);
-        $total = $this->getVisitDetailCount($siteId, $filters);
-
-        if (array_sum($active) === 0 && $total > 0) {
-            $active = [
-                5 => $total,
-                15 => $total,
-                30 => $total,
-            ];
+        if ($range === 'today') {
+            $overview['yesterday_totals'] = $this->getTotals($siteId, 'yesterday');
         }
 
+        return $overview;
+    }
+
+    public function getContentData(int $siteId, string $range = 'today', array $filters = [], int $page = 1, int $perPage = 50): array
+    {
         return [
-            'active' => $active,
-            'details' => $details,
-            'total_sessions' => $total,
+            'active' => $this->getActiveSessions($siteId),
+            'details' => $this->getVisitDetails($siteId, $filters, $page, $perPage),
+            'total_sessions' => $this->getVisitDetailCount($siteId, $filters),
         ];
     }
 
@@ -281,10 +2389,17 @@ class Tracker
         ];
     }
 
-    public function getBotData(int $siteId, string $range = 'today'): array
+    public function getBotData(int $siteId, string $range = 'today', ?string $engine = null, int $page = 1, int $perPage = 50): array
     {
+        $page = max(1, $page);
+        $perPage = max(1, $perPage);
+
+        $total = $this->getBotTrafficCount($siteId, $range, $engine);
+
         return [
-            'bot' => $this->getBotTraffic($siteId, $range),
+            'bot' => $this->getBotTraffic($siteId, $range, $engine, $page, $perPage),
+            'total' => $total['total'] ?? 0,
+            'engines' => $this->getBotEngines($siteId, $range),
         ];
     }
 
@@ -304,6 +2419,15 @@ class Tracker
     }
 
     public function getTrendLines(int $siteId, string $range = 'today'): array
+    {
+        $cacheKey = "trend_lines:{$siteId}:{$range}";
+
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            return $this->buildTrendLines($siteId, $range);
+        });
+    }
+
+    private function buildTrendLines(int $siteId, string $range = 'today'): array
     {
         $now = new DateTimeImmutable('now');
         $granularity = 'day';
@@ -438,81 +2562,81 @@ class Tracker
         ];
     }
 
-    private function getTotals(int $siteId, string $range): array
+    public function getTotals(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $cacheKey = "totals:{$siteId}:{$range}";
 
-        $row = $statement->fetch();
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $rollupTotals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
 
-        return [
-            'views' => (int) ($row['views'] ?? 0),
-            'uniques' => (int) ($row['uniques'] ?? 0),
-            'ip_count' => (int) ($row['ip_count'] ?? 0),
-            'averages' => $this->getVisitAverages($siteId, $range),
-            'bounce_rate' => $this->getBounceRate($siteId, $range),
-        ];
+            return [
+                'views' => $rollupTotals['views'],
+                'uniques' => $rollupTotals['uniques'],
+                'ip_count' => $rollupTotals['ip_count'],
+                'averages' => $this->getVisitAverages($siteId, $range, $rollupTotals),
+                'bounce_rate' => $this->getBounceRate($siteId, $range, $rollupTotals),
+            ];
+        });
     }
 
-    private function getDailyStats(int $siteId, string $range): array
+    public function getDailyStats(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range, true);
-        $statement = $this->db->prepare(
-            "SELECT DATE(occurred_at) as day, COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ip_count
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY day
-            ORDER BY day ASC"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $cacheKey = "daily:{$siteId}:{$range}";
 
-        return $statement->fetchAll();
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            return $this->getRollupDailyStats($siteId, $start, $end);
+        });
     }
 
-    private function getTopPages(int $siteId, string $range, int $limit = 50): array
+    public function getTopPages(int $siteId, string $range = 'today', int $limit = 50): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT path, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY path
-            ORDER BY ips DESC
-            LIMIT {$limit}"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $cacheKey = "top_pages:{$siteId}:{$range}:{$limit}";
 
-        return $statement->fetchAll();
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if (!$span) {
+                return [];
+            }
+
+            $rows = $this->normalizePathRows($this->aggregatePageRollups($siteId, $span['start'], $span['end'], $limit * 3));
+
+            usort($rows, fn($a, $b) => ($b['ips'] ?? 0) <=> ($a['ips'] ?? 0));
+
+            return array_slice($rows, 0, $limit);
+        });
     }
 
-    private function getTopReferrers(int $siteId, string $range): array
+    public function getTopReferrers(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $domains = $this->getAllSiteDomains($siteId);
-        $statement = $this->db->prepare(
-            "SELECT referrer, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND referrer IS NOT NULL AND referrer != '' AND is_bot = 0 {$rangeSql}
-            GROUP BY referrer
-            ORDER BY ips DESC
-            LIMIT 50"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $cacheKey = "top_referrers:{$siteId}:{$range}";
 
-        $rows = $statement->fetchAll();
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if (!$span) {
+                return [];
+            }
 
-        if ($domains) {
-            $rows = array_values(array_filter($rows, function ($row) use ($domains) {
-                return !$this->isOwnReferrer($row['referrer'] ?? '', $domains);
-            }));
-        }
+            $rows = $this->aggregateDimensionRollups($siteId, 'referrer_host', $span['start'], $span['end'], 50);
+            $domains = $this->getAllSiteDomains($siteId);
 
-        return $rows;
+            if ($domains) {
+                $rows = array_values(array_filter($rows, function ($row) use ($domains) {
+                    return !$this->isOwnReferrer($row['dimension_value'] ?? '', $domains);
+                }));
+            }
+
+            return array_map(function ($row) {
+                return [
+                    'referrer' => $row['dimension_value'] ?? '',
+                    'views' => (int) ($row['views'] ?? 0),
+                    'ips' => (int) ($row['ips'] ?? 0),
+                ];
+            }, $rows);
+        });
     }
 
     private function getAllSiteDomains(int $siteId): array
@@ -560,70 +2684,42 @@ class Tracker
         return false;
     }
 
-    private function getEntryPages(int $siteId, string $range, int $limit = 20): array
+    public function getEntryPages(int $siteId, string $range, int $limit = 20): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range, true);
-        $statement = $this->db->prepare(
-            "SELECT p.path, COUNT(*) as views, COUNT(DISTINCT p.ip_hash) as ips, SUM(p.is_unique) as uniques,
-                AVG(p.page_count) as avg_pages, AVG(p.duration_seconds) as avg_duration,
-                AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            FROM (
-                SELECT MIN(id) as first_id, session_id
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) s
-            JOIN pageviews p ON p.id = s.first_id
-            GROUP BY p.path
-            ORDER BY ips DESC
-            LIMIT {$limit}"
-        );
+        $cacheKey = "entry_pages:{$siteId}:{$range}:{$limit}";
 
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if (!$span) {
+                return [];
+            }
 
-        return $statement->fetchAll();
+            $rows = $this->normalizeEntryRows(
+                $this->aggregateEntryRollups($siteId, $span['start'], $span['end'], $limit * 3)
+            );
+
+            usort($rows, fn($a, $b) => ($b['ips'] ?? 0) <=> ($a['ips'] ?? 0));
+
+            return array_slice($rows, 0, $limit);
+        });
     }
 
     private function getEntrySummary(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range, true);
-        $base = "FROM (
-                SELECT MIN(id) as first_id, session_id
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) s
-            JOIN pageviews p ON p.id = s.first_id";
+        [$rollupStart, $rollupEnd] = $this->rollupRangeBounds($range);
+        $summary = $this->rollupsCoverRange($siteId, $rollupStart, $rollupEnd)
+            ? $this->rollupSummaryStats($this->aggregateRollups($siteId, $rollupStart, $rollupEnd))
+            : [];
 
-        $summaryStmt = $this->db->prepare(
-            "SELECT COUNT(*) as sessions, COUNT(DISTINCT p.ip_hash) as ips, SUM(p.is_unique) as uniques,
-                SUM(p.page_count) as views, AVG(p.page_count) as avg_pages,
-                AVG(p.duration_seconds) as avg_duration,
-                AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            {$base}"
-        );
-        $summaryStmt->execute(array_merge([':site_id' => $siteId], $params));
-        $summary = $summaryStmt->fetch() ?: [];
-
-        $rowsStmt = $this->db->prepare(
-            "SELECT p.path, COUNT(*) as sessions, COUNT(DISTINCT p.ip_hash) as ips,
-                SUM(p.is_unique) as uniques, SUM(p.page_count) as views,
-                AVG(p.page_count) as avg_pages, AVG(p.duration_seconds) as avg_duration,
-                AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            {$base}
-            GROUP BY p.path
-            ORDER BY ips DESC
-            LIMIT 200"
-        );
-        $rowsStmt->execute($this->filterParams($rowsStmt->queryString, array_merge([':site_id' => $siteId], $params)));
-        $rows = $rowsStmt->fetchAll();
+        $rows = $this->getEntryRollupRows($siteId, $range, 200);
 
         return [
             'summary' => [
                 'ips' => (int) ($summary['ips'] ?? 0),
                 'views' => (int) ($summary['views'] ?? 0),
-                'uv' => (int) ($summary['uniques'] ?? 0),
-                'new' => (int) ($summary['uniques'] ?? 0),
+                'uv' => (int) ($summary['uv'] ?? ($summary['uniques'] ?? 0)),
+                'new' => (int) ($summary['new'] ?? ($summary['uniques'] ?? 0)),
                 'sessions' => (int) ($summary['sessions'] ?? 0),
                 'avg_pages' => round((float) ($summary['avg_pages'] ?? 0), 2),
                 'avg_duration' => (float) ($summary['avg_duration'] ?? 0),
@@ -633,105 +2729,131 @@ class Tracker
         ];
     }
 
+    private function getEntryRollupRows(int $siteId, string $range, int $limit = 200): array
+    {
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $rows = $this->aggregateEntryRollups($siteId, $start, $end, $limit);
+
+        if (empty($rows)) {
+            return [];
+        }
+
+        return array_map(function ($row) {
+            $sessions = (int) ($row['sessions'] ?? 0);
+            $avgPages = $sessions > 0 ? (float) ($row['page_sum'] ?? 0) / $sessions : 0;
+            $avgDuration = $sessions > 0 ? (float) ($row['duration_sum'] ?? 0) / $sessions : 0;
+            $bounceRate = $sessions > 0 ? (float) ($row['bounce_count'] ?? 0) / $sessions : 0;
+
+            return [
+                'path' => $row['dimension_value'] ?? '/',
+                'sessions' => $sessions,
+                'ips' => (int) ($row['ips'] ?? 0),
+                'uniques' => (int) ($row['uniques'] ?? 0),
+                'views' => (int) ($row['views'] ?? 0),
+                'avg_pages' => $avgPages,
+                'avg_duration' => $avgDuration,
+                'bounce_rate' => $bounceRate,
+            ];
+        }, $rows);
+    }
+
     private function getPageSummary(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $baseWhere = "site_id = :site_id AND is_bot = 0 {$rangeSql}";
+        [$rollupStart, $rollupEnd] = $this->rollupRangeBounds($range);
+        $summaryTotals = $this->aggregateTotalsWithRollups($siteId, $rollupStart, $rollupEnd);
+        $summary = $this->rollupSummaryStats($summaryTotals);
 
-        $summaryStmt = $this->db->prepare(
-            "SELECT COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips, SUM(is_unique) as uniques,
-                COUNT(DISTINCT session_id) as sessions,
-                AVG(page_count) as avg_pages, AVG(duration_seconds) as avg_duration,
-                AVG(CASE WHEN page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            FROM pageviews WHERE {$baseWhere}"
-        );
-        $summaryStmt->execute(array_merge([':site_id' => $siteId], $params));
-        $summary = $summaryStmt->fetch() ?: [];
-
-        $rowsStmt = $this->db->prepare(
-            "SELECT COALESCE(path,'/') as path, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
-                SUM(is_unique) as uniques, AVG(page_count) as avg_pages, AVG(duration_seconds) as avg_duration,
-                AVG(CASE WHEN page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            FROM pageviews
-            WHERE {$baseWhere}
-            GROUP BY path
-            ORDER BY ips DESC
-            LIMIT 200"
-        );
-        $rowsStmt->execute(array_merge([':site_id' => $siteId], $params));
+        $rollupRows = $this->getPageRollupRows($siteId, $range, 200);
 
         return [
             'summary' => [
                 'ips' => (int) ($summary['ips'] ?? 0),
                 'views' => (int) ($summary['views'] ?? 0),
-                'uv' => (int) ($summary['uniques'] ?? 0),
-                'new' => (int) ($summary['uniques'] ?? 0),
+                'uv' => (int) ($summary['uv'] ?? ($summary['uniques'] ?? 0)),
+                'new' => (int) ($summary['new'] ?? ($summary['uniques'] ?? 0)),
                 'sessions' => (int) ($summary['sessions'] ?? 0),
                 'avg_pages' => round((float) ($summary['avg_pages'] ?? 0), 2),
                 'avg_duration' => (float) ($summary['avg_duration'] ?? 0),
                 'bounce_rate' => (float) ($summary['bounce_rate'] ?? 0),
             ],
-            'rows' => $rowsStmt->fetchAll(),
+            'rows' => $rollupRows,
         ];
+    }
+
+    private function getPageRollupRows(int $siteId, string $range, int $limit = 200): array
+    {
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $rows = $this->aggregatePageRollups($siteId, $start, $end, $limit);
+
+        if (empty($rows)) {
+            return [];
+        }
+
+        return array_map(function ($row) {
+            $sessions = (int) ($row['sessions'] ?? 0);
+            $avgPages = $sessions > 0 ? (float) ($row['page_sum'] ?? 0) / $sessions : 0;
+            $avgDuration = $sessions > 0 ? (float) ($row['duration_sum'] ?? 0) / $sessions : 0;
+            $bounceRate = $sessions > 0 ? (float) ($row['bounce_count'] ?? 0) / $sessions : 0;
+
+            return [
+                'path' => $row['dimension_value'] ?? '/',
+                'views' => (int) ($row['views'] ?? 0),
+                'ips' => (int) ($row['ips'] ?? 0),
+                'uniques' => (int) ($row['uniques'] ?? 0),
+                'avg_pages' => $avgPages,
+                'avg_duration' => $avgDuration,
+                'bounce_rate' => $bounceRate,
+            ];
+        }, $rows);
     }
 
     private function getReferrerSummary(int $siteId, string $range, array $filters = []): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range, true);
-        $conditions = [
-            'p.is_bot = 0',
-            'p.session_id IS NOT NULL',
-            'p.referrer IS NOT NULL',
-            "p.referrer != ''",
-        ];
-
-        if (!empty($filters['device'])) {
-            if ($filters['device'] === 'desktop') {
-                $conditions[] = 'p.is_mobile = 0';
-            } elseif ($filters['device'] === 'mobile') {
-                $conditions[] = 'p.is_mobile = 1';
-            }
-        }
-
-        if (!empty($filters['visitor'])) {
-            if ($filters['visitor'] === 'new') {
-                $conditions[] = 'p.is_unique = 1';
-            } elseif ($filters['visitor'] === 'return') {
-                $conditions[] = 'p.is_unique = 0';
-            }
-        }
-
-        $base = "FROM (
-                SELECT MIN(id) as first_id, session_id
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) s
-            JOIN pageviews p ON p.id = s.first_id";
-
-        $where = implode(' AND ', $conditions);
         $domains = $this->getAllSiteDomains($siteId);
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $span = $this->rollupSpanForRange($siteId, $start, $end);
+        if (!$span) {
+            return [
+                'summary' => [
+                    'ips' => 0,
+                    'views' => 0,
+                    'uv' => 0,
+                    'new' => 0,
+                    'sessions' => 0,
+                    'avg_pages' => 0,
+                    'avg_duration' => 0,
+                    'bounce_rate' => 0,
+                ],
+                'rows' => [],
+            ];
+        }
 
-        $rowsStmt = $this->db->prepare(
-            "SELECT p.referrer, COUNT(*) as sessions, COUNT(DISTINCT p.ip_hash) as ips,
-                SUM(p.is_unique) as uniques, SUM(p.page_count) as views,
-                AVG(p.page_count) as avg_pages, AVG(p.duration_seconds) as avg_duration,
-                AVG(CASE WHEN p.page_count = 1 THEN 1 ELSE 0 END) as bounce_rate
-            {$base}
-            WHERE {$where}
-            GROUP BY p.referrer
-            ORDER BY ips DESC
-            LIMIT 200"
-        );
-        $rowsStmt->execute($this->filterParams($rowsStmt->queryString, array_merge([':site_id' => $siteId], $params)));
-        $rows = $rowsStmt->fetchAll();
-
+        $rows = $this->aggregateDimensionRollups($siteId, 'referrer_host', $span['start'], $span['end'], 200);
         $filtered = [];
         foreach ($rows as $row) {
-            if ($domains && $this->isOwnReferrer($row['referrer'], $domains)) {
+            $referrer = $row['dimension_value'] ?? '';
+            if ($referrer === '' || $referrer === '直接访问') {
                 continue;
             }
-            $filtered[] = $row;
+            if ($domains && $this->isOwnReferrer($referrer, $domains)) {
+                continue;
+            }
+
+            $sessions = (int) ($row['sessions'] ?? 0);
+            $avgPages = $sessions > 0 ? (float) ($row['page_sum'] ?? 0) / $sessions : 0;
+            $avgDuration = $sessions > 0 ? (float) ($row['duration_sum'] ?? 0) / $sessions : 0;
+            $bounceRate = $sessions > 0 ? (float) ($row['bounce_count'] ?? 0) / $sessions : 0;
+
+            $filtered[] = [
+                'referrer' => $referrer,
+                'sessions' => $sessions,
+                'ips' => (int) ($row['ips'] ?? 0),
+                'uniques' => (int) ($row['uniques'] ?? 0),
+                'views' => (int) ($row['views'] ?? 0),
+                'avg_pages' => $avgPages,
+                'avg_duration' => $avgDuration,
+                'bounce_rate' => $bounceRate,
+            ];
         }
 
         $totals = [
@@ -775,6 +2897,10 @@ class Tracker
 
     private function getRecentPageviews(int $siteId, string $range): array
     {
+        if ($this->rollupOnly) {
+            return [];
+        }
+
         [$rangeSql, $params] = $this->rangeClause($range);
         $statement = $this->db->prepare(
             "SELECT path, referrer, user_agent, occurred_at
@@ -879,26 +3005,27 @@ class Tracker
 
         $stmt = $this->db->prepare($sql);
         $filtered = $this->filterParams($sql, $params);
-        foreach ([':site_id', ':start', ':end'] as $required) {
-            if (isset($params[$required])) {
-                $filtered[$required] = $params[$required];
-            }
-        }
+        $filtered[':site_id'] = $siteId;
         $stmt->execute($filtered);
         $row = $stmt->fetch();
 
         return (int)($row['total'] ?? 0);
     }
 
-    private function getVisitDetails(int $siteId, array $filters): array
+    private function getVisitDetails(int $siteId, array $filters, int $page = 1, int $perPage = 50): array
     {
         [$start, $end] = $this->visitFiltersWindow($filters);
+        $page = max(1, $page);
+        $perPage = max(1, $perPage);
+        $offset = ($page - 1) * $perPage;
 
         $conditions = ['1=1'];
         $params = [
             ':site_id' => $siteId,
             ':start' => $start->format('Y-m-d H:i:s'),
             ':end' => $end->format('Y-m-d H:i:s'),
+            ':limit' => $perPage,
+            ':offset' => $offset,
         ];
 
         if (!empty($filters['ip'])) {
@@ -959,15 +3086,11 @@ class Tracker
                 WHERE " . implode(' AND ', $conditions) . "
                 {$engineHaving}
                 ORDER BY p.occurred_at DESC
-                LIMIT 50000";
+                LIMIT :limit OFFSET :offset";
 
         $stmt = $this->db->prepare($sql);
         $filtered = $this->filterParams($sql, $params);
-        foreach ([':site_id', ':start', ':end'] as $required) {
-            if (isset($params[$required])) {
-                $filtered[$required] = $params[$required];
-            }
-        }
+        $filtered[':site_id'] = $siteId;
         $stmt->execute($filtered);
 
         return $stmt->fetchAll();
@@ -975,143 +3098,260 @@ class Tracker
 
     private function getKeywords(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $engineCase = $this->searchEngineCase();
-        $statement = $this->db->prepare(
-            "SELECT keyword, {$engineCase} as engine, COALESCE(path, '/') as path, COUNT(*) as views
-            FROM pageviews
-            WHERE site_id = :site_id AND keyword IS NOT NULL AND keyword != '' AND is_bot = 0 {$rangeSql}
-            GROUP BY keyword, engine, path
-            ORDER BY views DESC
-            LIMIT 500"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $cacheKey = "keywords:{$siteId}:{$range}";
 
-        $rows = $statement->fetchAll();
-        $keywords = [];
-
-        foreach ($rows as $row) {
-            $keyword = $row['keyword'];
-            if (!isset($keywords[$keyword])) {
-                $keywords[$keyword] = [
-                    'keyword' => $keyword,
-                    'views' => 0,
-                    'engines' => [],
-                    'entry' => $row['path'],
-                ];
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if (!$span) {
+                return [];
             }
 
-            $keywords[$keyword]['views'] += (int) $row['views'];
-            $keywords[$keyword]['engines'][] = $row['engine'];
+            $rollup = $this->aggregateDimensionRollups($siteId, 'keyword_engine', $span['start'], $span['end'], 500);
 
-            if ($row['views'] >= $keywords[$keyword]['views']) {
-                $keywords[$keyword]['entry'] = $row['path'];
+            if (!empty($rollup)) {
+                $keywords = [];
+
+                foreach ($rollup as $row) {
+                    [$keyword, $engine, $entry] = array_pad(explode('|', $row['dimension_value'] ?? '', 3), 3, '');
+                    if ($keyword === '') {
+                        continue;
+                    }
+                    $entryLabel = $entry !== '' ? $entry : '/';
+                    if (!isset($keywords[$keyword])) {
+                        $keywords[$keyword] = [
+                            'keyword' => $keyword,
+                            'views' => 0,
+                            'engines' => [],
+                            'entry' => $entryLabel,
+                        ];
+                    }
+
+                    $keywords[$keyword]['views'] += (int) ($row['views'] ?? 0);
+                    $keywords[$keyword]['engines'][] = $engine ?: '其他';
+
+                    if (($row['views'] ?? 0) >= ($keywords[$keyword]['views'] ?? 0)) {
+                        $keywords[$keyword]['entry'] = $entryLabel;
+                    }
+                }
+
+                return array_values(array_map(function ($item) {
+                    $item['engines'] = implode(' / ', array_unique($item['engines']));
+                    return $item;
+                }, $keywords));
             }
-        }
-
-        return array_values(array_map(function ($item) {
-            $item['engines'] = implode(' / ', array_unique($item['engines']));
-            return $item;
-        }, $keywords));
+            return [];
+        });
     }
 
-    private function getBotTraffic(int $siteId, string $range): array
+    private function getBotTraffic(int $siteId, string $range, ?string $engine = null, int $page = 1, int $perPage = 50): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT path, referrer, user_agent, occurred_at
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 1 {$rangeSql}
-            ORDER BY occurred_at DESC
-            LIMIT 200"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $page = max(1, $page);
+        $perPage = max(1, $perPage);
+        $cacheKey = "bots:{$siteId}:{$range}:" . ($engine ?? 'all') . ":{$page}:{$perPage}";
 
-        $rows = $statement->fetchAll();
-        foreach ($rows as &$row) {
-            $row['engine'] = $this->identifySearchEngine($row['user_agent'], $row['referrer']);
-        }
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $engine, $page, $perPage) {
+            [$rangeSql, $params] = $this->rangeClause($range);
+            $engineFilter = '';
 
-        return $rows;
+            if ($engine !== null && $engine !== '' && $engine !== 'all') {
+                $engineFilter = " AND engine = :engine";
+                $params[':engine'] = $engine;
+            }
+
+            $limit = $perPage;
+            $offset = ($page - 1) * $perPage;
+            $params[':limit'] = $limit;
+            $params[':offset'] = $offset;
+
+            $statement = $this->db->prepare(
+                "SELECT path, referrer, user_agent, ip_address,
+                    domain, occurred_at, engine
+                FROM pageview_bot_logs
+                WHERE site_id = :site_id {$rangeSql}{$engineFilter}
+                ORDER BY occurred_at DESC
+                LIMIT :limit OFFSET :offset"
+            );
+            $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+            return $statement->fetchAll();
+        });
     }
 
-    private function getVisitAverages(int $siteId, string $range): array
+    private function getBotTrafficCount(int $siteId, string $range, ?string $engine = null): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $avgDuration = $this->db->prepare(
-            "SELECT AVG(duration_seconds) as avg_duration
-            FROM (
-                SELECT MAX(duration_seconds) as duration_seconds
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) t"
-        );
-        $avgDuration->execute(array_merge([':site_id' => $siteId], $params));
-        $duration = $avgDuration->fetch()['avg_duration'] ?? 0;
+        $cacheKey = "bots_total:{$siteId}:{$range}:" . ($engine ?? 'all');
 
-        $avgPages = $this->db->prepare(
-            "SELECT AVG(pages) as avg_pages
-            FROM (
-                SELECT MAX(page_count) as pages
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) t"
-        );
-        $avgPages->execute(array_merge([':site_id' => $siteId], $params));
-        $pages = $avgPages->fetch()['avg_pages'] ?? 0;
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $engine) {
+            [$rangeSql, $params] = $this->rangeClause($range);
+            $engineFilter = '';
 
+            if ($engine !== null && $engine !== '' && $engine !== 'all') {
+                $engineFilter = " AND engine = :engine";
+                $params[':engine'] = $engine;
+            }
+
+            $statement = $this->db->prepare(
+                "SELECT COUNT(*) FROM pageview_bot_logs
+                WHERE site_id = :site_id {$rangeSql}{$engineFilter}"
+            );
+            $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+            return [
+                'total' => (int) $statement->fetchColumn(),
+            ];
+        });
+    }
+
+    private function getBotEngines(int $siteId, string $range): array
+    {
+        $cacheKey = "bot_engines:{$siteId}:{$range}";
+
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$rangeSql, $params] = $this->rangeClause($range);
+            $statement = $this->db->prepare(
+                "SELECT engine, COUNT(*) as total
+                FROM pageview_bot_logs
+                WHERE site_id = :site_id {$rangeSql}
+                GROUP BY engine
+                ORDER BY total DESC"
+            );
+
+            $statement->execute(array_merge([':site_id' => $siteId], $params));
+
+            return $statement->fetchAll();
+        });
+    }
+
+    private function getVisitAverages(int $siteId, string $range, array $rollupTotals = []): array
+    {
+        if (!empty($rollupTotals['has_data']) && ($rollupTotals['session_count'] ?? 0) > 0) {
+            $sessions = max(1, (int) $rollupTotals['session_count']);
+
+            return [
+                'duration' => round(((float) ($rollupTotals['duration_sum'] ?? 0)) / $sessions, 2),
+                'pages' => round(((float) ($rollupTotals['page_sum'] ?? 0)) / $sessions, 2),
+            ];
+        }
         return [
-            'duration' => round((float) $duration, 2),
-            'pages' => round((float) $pages, 2),
+            'duration' => 0.0,
+            'pages' => 0.0,
         ];
     }
 
-    private function getBounceRate(int $siteId, string $range): float
+    private function getBounceRate(int $siteId, string $range, array $rollupTotals = []): float
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT AVG(bounce) as rate FROM (
-                SELECT CASE WHEN MAX(page_count) = 1 THEN 1 ELSE 0 END as bounce
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 AND session_id IS NOT NULL {$rangeSql}
-                GROUP BY session_id
-            ) t"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        if (!empty($rollupTotals['has_data']) && ($rollupTotals['session_count'] ?? 0) > 0) {
+            $sessions = max(1, (int) $rollupTotals['session_count']);
+            $bounces = (float) ($rollupTotals['bounce_count'] ?? 0);
 
-        return (float) ($statement->fetch()['rate'] ?? 0.0);
+            return $bounces / $sessions;
+        }
+        return 0.0;
     }
 
-    private function getPredictions(int $siteId): array
+    public function getPredictions(int $siteId): array
     {
-        $statement = $this->db->prepare(
-            'SELECT DATE(occurred_at) as day, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips, SUM(is_unique) as uniques
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 AND occurred_at < CURDATE()
-            GROUP BY day
-            ORDER BY day DESC
-            LIMIT 30'
-        );
-        $statement->execute([':site_id' => $siteId]);
-        $rows = $statement->fetchAll();
+        $now = new DateTimeImmutable('now');
+        $minuteBucket = (int) floor($now->getTimestamp() / 300); // 5 分钟粒度缓存
+        $cacheKey = "predictions:{$siteId}:{$minuteBucket}";
+
+        $cached = $this->redis->get($cacheKey);
+        if ($cached) {
+            return json_decode($cached, true);
+        }
+
+        $todayStart = $now->setTime(0, 0, 0);
+        $yesterdayStart = $todayStart->sub(new DateInterval('P1D'));
+        $yesterdaySameTime = $yesterdayStart->setTime((int) $now->format('H'), (int) $now->format('i'), (int) $now->format('s'));
+
+        $today = $this->getRangeStats($siteId, $todayStart, $now);
+        $yesterdayFull = $this->getRangeStats($siteId, $yesterdayStart, $todayStart);
+        $yesterdayPace = $this->getRangeStats($siteId, $yesterdayStart, $yesterdaySameTime);
+        $averages = $this->getHistoricalAverages($siteId, 30);
+
+        $predictions = [
+            'views' => $this->projectDayMetric($today['views'], $yesterdayFull['views'], $yesterdayPace['views'], $averages['views']),
+            'uniques' => $this->projectDayMetric($today['uniques'], $yesterdayFull['uniques'], $yesterdayPace['uniques'], $averages['uniques']),
+            'ips' => $this->projectDayMetric($today['ips'], $yesterdayFull['ips'], $yesterdayPace['ips'], $averages['ips']),
+        ];
+
+        $this->redis->setex($cacheKey, 300, json_encode($predictions));
+
+        return $predictions;
+    }
+
+    private function getHistoricalAverages(int $siteId, int $days): array
+    {
+        $todayStart = (new DateTimeImmutable('today'))->setTime(0, 0, 0);
+        $historyStart = $todayStart->modify("-{$days} days");
+
+        if ($this->rollupsCoverRange($siteId, $historyStart, $todayStart)) {
+            $stmt = $this->db->prepare(
+                'SELECT DATE(bucket_start) as day, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ips
+                 FROM pageview_rollups
+                 WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end
+                 GROUP BY day
+                 ORDER BY day DESC'
+            );
+
+            $stmt->execute([
+                ':site_id' => $siteId,
+                ':start' => $historyStart->format('Y-m-d H:i:s'),
+                ':end' => $todayStart->format('Y-m-d H:i:s'),
+            ]);
+
+            $rows = $stmt->fetchAll();
+        } else {
+            $statement = $this->db->prepare(
+                'SELECT DATE(occurred_at) as day, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips, SUM(is_unique) as uniques
+                FROM pageviews
+                WHERE site_id = :site_id AND is_bot = 0 AND occurred_at < CURDATE()
+                GROUP BY day
+                ORDER BY day DESC
+                LIMIT :limit'
+            );
+            $statement->bindValue(':site_id', $siteId, PDO::PARAM_INT);
+            $statement->bindValue(':limit', $days, PDO::PARAM_INT);
+            $statement->execute();
+            $rows = $statement->fetchAll();
+        }
 
         if (empty($rows)) {
             return ['views' => 0, 'uniques' => 0, 'ips' => 0];
         }
 
-        $views = array_column($rows, 'views');
-        $uniques = array_column($rows, 'uniques');
-        $ips = array_column($rows, 'ips');
-
-        $denominator = max(count($rows), 1);
+        $denominator = max(min(count($rows), $days), 1);
 
         return [
-            'views' => (int) round(array_sum($views) / $denominator),
-            'uniques' => (int) round(array_sum($uniques) / $denominator),
-            'ips' => (int) round(array_sum($ips) / $denominator),
+            'views' => (int) round(array_sum(array_column($rows, 'views')) / $denominator),
+            'uniques' => (int) round(array_sum(array_column($rows, 'uniques')) / $denominator),
+            'ips' => (int) round(array_sum(array_column($rows, 'ips')) / $denominator),
         ];
+    }
+
+    private function getRangeStats(int $siteId, DateTimeInterface $start, DateTimeInterface $end): array
+    {
+        $totals = $this->aggregateTotalsWithRollups(
+            $siteId,
+            new DateTimeImmutable($start->format('Y-m-d H:i:s')),
+            new DateTimeImmutable($end->format('Y-m-d H:i:s'))
+        );
+
+        return [
+            'views' => (int) ($totals['views'] ?? 0),
+            'ips' => (int) ($totals['ip_count'] ?? 0),
+            'uniques' => (int) ($totals['uniques'] ?? 0),
+        ];
+    }
+
+    private function projectDayMetric(int $today, int $yesterdayFull, int $yesterdayPartial, int $average): int
+    {
+        $baseline = $yesterdayFull > 0 ? $yesterdayFull : ($average > 0 ? $average : $today);
+        $pace = $yesterdayPartial > 0 ? max(0.1, $today / $yesterdayPartial) : 1.0;
+        $estimate = (int) round($baseline * $pace);
+
+        return max($today, $estimate);
     }
 
     private function isBot(string $userAgent): bool
@@ -1122,11 +3362,11 @@ class Tracker
 
         $ua = strtolower($userAgent);
         $bots = [
-            'bot', 'spider', 'monitor', 'crawler', 'postman', 'curl/', 'bingpreview/', 'wget/',
+            'bot', 'spider', 'monitor', 'crawler', 'postman', 'curl/', 'wget/',
             'windowspowershell/', 'python-', 'httpclient/', 'go-http-client/', 'libwww-perl',
             'feedburner/', 'headless', 'cloudflare', 'gocolly/', 'scrapy/', 'zgrab/',
             'phantomjs', 'axios', 'apachebench', 'wkhtmltopdf',
-            'baiduspider', 'googlebot', 'bingbot', '360spider', 'bytespider', 'sogouspider', 'sogou web spider',
+            'baiduspider', 'googlebot', 'bingbot', 'bingpreview', '360spider', 'bytespider', 'sogouspider', 'sogou web spider',
             'yisouspider'
         ];
 
@@ -1197,6 +3437,54 @@ class Tracker
         ];
     }
 
+    private function sanitizeIp(?string $ip): string
+    {
+        if ($ip === null) {
+            return '';
+        }
+
+        $parts = preg_split('/\s*,\s*/', $ip) ?: [];
+        foreach ($parts as $candidate) {
+            $trimmed = trim($candidate);
+            if ($trimmed === '') {
+                continue;
+            }
+
+            if (filter_var($trimmed, FILTER_VALIDATE_IP)) {
+                return $trimmed;
+            }
+        }
+
+        $fallback = trim($parts[0] ?? '');
+
+        return $fallback === '' ? '' : substr($fallback, 0, 45);
+    }
+
+    private function ipHashExpr(string $alias = 'p'): string
+    {
+        $alias = trim($alias);
+
+        if ($this->hasIpHashColumn) {
+            return sprintf(
+                'COALESCE(%1$s.ip_hash, SHA2(COALESCE(%1$s.ip_address, ""), 256))',
+                $alias
+            );
+        }
+
+        return sprintf('SHA2(COALESCE(%s.ip_address, ""), 256)', $alias);
+    }
+
+    private function replaceIpHash(string $sql, string $alias = 'p'): string
+    {
+        $expr = $this->ipHashExpr($alias);
+
+        return preg_replace_callback(
+            '/\b' . preg_quote($alias, '/') . '\.ip_hash\b|\bip_hash\b/',
+            fn() => $expr,
+            $sql
+        );
+    }
+
     private function resolveIpMeta(?string $ip): array
     {
         if (!$ip) {
@@ -1240,6 +3528,51 @@ class Tracker
         return $sanitized;
     }
 
+    private function resolveAsnMeta(?string $ip): array
+    {
+        if (!$ip) {
+            return [];
+        }
+
+        $this->maybeRefreshAsnDb();
+
+        $cacheKey = 'asnmeta:' . $ip;
+        $cached = $this->redis->get($cacheKey);
+        if ($cached) {
+            $decoded = json_decode($cached, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+            $this->redis->del($cacheKey);
+        }
+
+        $asn = $this->asnResolver->resolve($ip);
+        if (!$asn) {
+            return [];
+        }
+
+        $sanitized = [
+            'number' => trim((string) ($asn['number'] ?? '')),
+            'name' => trim((string) ($asn['name'] ?? '')),
+        ];
+
+        $this->redis->setex($cacheKey, 604800, json_encode($sanitized, JSON_UNESCAPED_UNICODE));
+
+        return $sanitized;
+    }
+
+    private function maybeRefreshAsnDb(): void
+    {
+        $now = time();
+        if ($this->asnNextRefreshAt > $now) {
+            return;
+        }
+
+        $this->ensureAsnDbExists();
+        $this->asnResolver->refreshIfUpdated();
+        $this->asnNextRefreshAt = $now + 3600;
+    }
+
     private function isValidGeo($meta): bool
     {
         if (!is_array($meta)) {
@@ -1268,8 +3601,58 @@ class Tracker
         );
     }
 
+    private function ensureHashPartitioned(string $table, int $partitions = 64): void
+    {
+        $method = null;
+        $probe = $this->db->prepare(
+            'SELECT PARTITION_METHOD FROM information_schema.PARTITIONS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table LIMIT 1'
+        );
+        $probe->execute([':table' => $table]);
+        $method = $probe->fetchColumn();
+
+        if ($method === 'HASH') {
+            return;
+        }
+
+        try {
+            $quoted = str_replace('`', '``', $table);
+            $this->db->exec("ALTER TABLE `{$quoted}` PARTITION BY HASH (site_id) PARTITIONS {$partitions}");
+        } catch (PDOException $e) {
+            // If partitioning is unsupported or privileges are missing, continue with the non-partitioned table.
+        }
+    }
+
     private function ensurePageviewSchema(): void
     {
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS pageviews (
+                id BIGINT UNSIGNED AUTO_INCREMENT,
+                site_id INT UNSIGNED NOT NULL,
+                host VARCHAR(255),
+                canonical_host VARCHAR(255),
+                path VARCHAR(2048) NOT NULL,
+                referrer VARCHAR(2048),
+                user_agent VARCHAR(1024),
+                ip_address VARCHAR(45),
+                ip_hash CHAR(64),
+                session_id VARCHAR(64),
+                duration_seconds INT DEFAULT 0,
+                page_count INT DEFAULT 1,
+                keyword VARCHAR(255),
+                is_mobile TINYINT(1) DEFAULT 0,
+                is_bot TINYINT(1) DEFAULT 0,
+                is_unique TINYINT(1) DEFAULT 0,
+                occurred_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (id, site_id),
+                INDEX idx_site_time (site_id, occurred_at),
+                INDEX idx_site_bot (site_id, is_bot, occurred_at),
+                INDEX idx_site_mobile (site_id, is_mobile, occurred_at),
+                INDEX idx_site_host (site_id, canonical_host, occurred_at),
+                INDEX idx_site_ip (site_id, ip_hash, occurred_at),
+                INDEX idx_site_session (site_id, session_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+
         $columnExists = function (string $column): bool {
             $query = $this->db->prepare(
                 "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pageviews' AND COLUMN_NAME = :column"
@@ -1301,6 +3684,9 @@ class Tracker
 
         $ensureColumn('host', 'VARCHAR(255)', 'AFTER site_id');
         $ensureColumn('canonical_host', 'VARCHAR(255)', $columnExists('host') ? 'AFTER host' : 'AFTER site_id');
+        $ensureColumn('path', 'VARCHAR(2048)');
+        $ensureColumn('referrer', 'VARCHAR(2048)');
+        $ensureColumn('user_agent', 'VARCHAR(1024)');
         $ensureColumn('session_id', 'VARCHAR(64)');
         $ensureColumn('duration_seconds', 'INT DEFAULT 0');
         $ensureColumn('page_count', 'INT DEFAULT 1');
@@ -1308,22 +3694,166 @@ class Tracker
         $ensureColumn('is_mobile', 'TINYINT(1) DEFAULT 0');
         $ensureColumn('is_bot', 'TINYINT(1) DEFAULT 0');
         $ensureColumn('is_unique', 'TINYINT(1) DEFAULT 0');
-        $ensureColumn('occurred_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
-        $ensureColumn('ip_address', 'VARCHAR(45)');
         $ensureColumn('country_name', 'VARCHAR(128)');
         $ensureColumn('region_name', 'VARCHAR(128)');
         $ensureColumn('city_name', 'VARCHAR(128)');
         $ensureColumn('isp_domain', 'VARCHAR(128)');
-        $ensureColumn('country_code', 'VARCHAR(8)');
-        $ensureColumn('continent_code', 'VARCHAR(8)');
+        $ensureColumn('country_code', 'VARCHAR(16)');
+        $ensureColumn('occurred_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
+        $ensureColumn('ip_address', 'VARCHAR(45)');
+        $ensureColumn('ip_hash', 'CHAR(64)');
 
         $ensureIndex('idx_site_host', 'site_id, canonical_host, occurred_at');
         $ensureIndex('idx_site_mobile', 'site_id, is_mobile, occurred_at');
         $ensureIndex('idx_site_ip', 'site_id, ip_hash, occurred_at');
         $ensureIndex('idx_site_ref', 'site_id, referrer(120), occurred_at');
-        $ensureIndex('idx_site_country', 'site_id, country_name, occurred_at');
-        $ensureIndex('idx_site_region', 'site_id, region_name, occurred_at');
-        $ensureIndex('idx_site_isp', 'site_id, isp_domain, occurred_at');
+
+        $this->hasIpHashColumn = $columnExists('ip_hash');
+        $this->hasGeoColumns = $columnExists('region_name') && $columnExists('city_name');
+
+        // If the column is missing (or inaccessible), attempt to add it and gracefully fall back.
+        if (!$this->hasIpHashColumn) {
+            try {
+                $this->db->exec('ALTER TABLE pageviews ADD COLUMN ip_hash CHAR(64)');
+                $this->hasIpHashColumn = $columnExists('ip_hash');
+            } catch (PDOException $inner) {
+                $this->hasIpHashColumn = false;
+            }
+        }
+
+        if ($this->hasIpHashColumn) {
+            $needsBackfill = $this->db->query(
+                "SELECT 1 FROM pageviews WHERE (ip_hash IS NULL OR ip_hash = '') LIMIT 1"
+            )->fetchColumn();
+
+            if ($needsBackfill !== false) {
+                $this->db->exec(
+                    "UPDATE pageviews SET ip_hash = SHA2(COALESCE(ip_address, ''), 256)
+                    WHERE (ip_hash IS NULL OR ip_hash = '') LIMIT 50000"
+                );
+            }
+        }
+
+        if ($this->hasGeoColumns) {
+            $geoBackfill = $this->db->query(
+                "SELECT 1 FROM pageviews WHERE (region_name IS NULL OR region_name = '') AND ip_address IS NOT NULL AND ip_address != '' LIMIT 1"
+            )->fetchColumn();
+            if ($geoBackfill !== false) {
+                $rows = $this->db->query(
+                    "SELECT id, ip_address FROM pageviews
+                     WHERE (region_name IS NULL OR region_name = '') AND ip_address IS NOT NULL AND ip_address != ''
+                     ORDER BY id DESC LIMIT 2000"
+                )->fetchAll();
+                foreach ($rows as $row) {
+                    $meta = $this->resolveIpMeta($row['ip_address'] ?? '');
+                    $stmt = $this->db->prepare(
+                        'UPDATE pageviews
+                         SET country_name = :country, region_name = :region, city_name = :city, isp_domain = :isp, country_code = :code
+                         WHERE id = :id'
+                    );
+                    $stmt->execute([
+                        ':country' => $meta['country_name'] ?? null,
+                        ':region' => $meta['region_name'] ?? null,
+                        ':city' => $meta['city_name'] ?? null,
+                        ':isp' => $meta['isp_domain'] ?? null,
+                        ':code' => $meta['country_code'] ?? null,
+                        ':id' => $row['id'],
+                    ]);
+                }
+            }
+        }
+
+        $this->ensureHashPartitioned('pageviews');
+
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS site_ip_audience (
+                site_id INT UNSIGNED NOT NULL,
+                ip_hash CHAR(64) NOT NULL,
+                first_seen DATETIME NOT NULL,
+                last_seen_date DATE NOT NULL,
+                PRIMARY KEY (site_id, ip_hash),
+                INDEX idx_last_seen_date (last_seen_date)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+
+        $this->ensureHashPartitioned('site_ip_audience');
+    }
+
+    private function ensureRollupSchema(): void
+    {
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS pageview_rollups (
+                site_id INT UNSIGNED NOT NULL,
+                bucket_start DATETIME NOT NULL,
+                pv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                uv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                ip_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                session_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                duration_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                PRIMARY KEY (site_id, bucket_start),
+                INDEX idx_bucket_time (bucket_start)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS pageview_dimension_rollups (
+                site_id INT UNSIGNED NOT NULL,
+                bucket_start DATETIME NOT NULL,
+                dimension_type VARCHAR(64) NOT NULL,
+                dimension_value VARCHAR(255) NOT NULL,
+                pv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                uv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                ip_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                session_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                duration_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                PRIMARY KEY (site_id, bucket_start, dimension_type, dimension_value),
+                INDEX idx_dimension_type (dimension_type, dimension_value),
+                INDEX idx_dimension_time (bucket_start)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS pageview_page_rollups (
+                site_id INT UNSIGNED NOT NULL,
+                bucket_start DATETIME NOT NULL,
+                path VARCHAR(512) NOT NULL,
+                pv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                uv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                ip_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                session_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                duration_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                PRIMARY KEY (site_id, bucket_start, path),
+                INDEX idx_page_time (bucket_start)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+
+        $this->db->exec(
+            "CREATE TABLE IF NOT EXISTS pageview_entry_rollups (
+                site_id INT UNSIGNED NOT NULL,
+                bucket_start DATETIME NOT NULL,
+                path VARCHAR(512) NOT NULL,
+                pv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                uv BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                ip_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                session_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                duration_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                PRIMARY KEY (site_id, bucket_start, path),
+                INDEX idx_entry_time (bucket_start)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        );
+
+        $this->ensureHashPartitioned('pageview_rollups');
+        $this->ensureHashPartitioned('pageview_dimension_rollups');
+        $this->ensureHashPartitioned('pageview_page_rollups');
+        $this->ensureHashPartitioned('pageview_entry_rollups');
     }
 
     private function ensureIpDbExists(): void
@@ -1346,6 +3876,50 @@ class Tracker
         } catch (\Throwable $e) {
             // ignore download failure; resolver will fallback
         }
+    }
+
+    private function ensureAsnDbExists(): void
+    {
+        $paths = array_filter([$this->asnDbPath, $this->asnDbPathV4, $this->asnDbPathV6]);
+        foreach ($paths as $path) {
+            $dir = dirname($path);
+            if (!is_dir($dir)) {
+                @mkdir($dir, 0777, true);
+            }
+        }
+
+        $refreshSeconds = max(1, $this->asnDbRefreshHours) * 3600;
+        $downloads = [
+            [$this->asnDbUrl, $this->asnDbPath],
+            [$this->asnDbUrlV4, $this->asnDbPathV4],
+            [$this->asnDbUrlV6, $this->asnDbPathV6],
+        ];
+
+        foreach ($downloads as [$url, $path]) {
+            if (!$url || !$path) {
+                continue;
+            }
+
+            if (is_file($path) && (time() - (int) filemtime($path)) < $refreshSeconds) {
+                continue;
+            }
+
+            $this->downloadAsnDbAsync($url, $path);
+        }
+    }
+
+    private function downloadAsnDbAsync(string $url, string $path): void
+    {
+        $tmp = $path . '.tmp';
+        $urlEscaped = escapeshellarg($url);
+        $tmpEscaped = escapeshellarg($tmp);
+        $pathEscaped = escapeshellarg($path);
+        if (str_ends_with($url, '.gz') && str_ends_with($path, '.tsv')) {
+            $cmd = "(curl -fsSL {$urlEscaped} | gzip -dc > {$tmpEscaped} && mv {$tmpEscaped} {$pathEscaped}) > /dev/null 2>&1 &";
+        } else {
+            $cmd = "(curl -fsSL {$urlEscaped} -o {$tmpEscaped} && mv {$tmpEscaped} {$pathEscaped}) > /dev/null 2>&1 &";
+        }
+        @shell_exec($cmd);
     }
 
     private function ensureShareSchema(): void
@@ -1384,8 +3958,13 @@ class Tracker
         if (!$this->getSetting('retention')) {
             $this->setSetting('retention', [
                 'days' => (int) ($this->retentionDefaults['days'] ?? 0),
+                'pageviews_days' => (int) ($this->retentionDefaults['pageviews_days'] ?? 0),
                 'cleanup_hour' => (int) ($this->retentionDefaults['cleanup_hour'] ?? 3),
             ]);
+        }
+
+        if (!$this->getSetting('ingest_filters')) {
+            $this->setSetting('ingest_filters', $this->ingestFilterDefaults);
         }
     }
 
@@ -1393,24 +3972,61 @@ class Tracker
     {
         $retention = $this->getRetentionSettings($this->retentionDefaults);
         $this->retentionDays = max(0, (int) ($retention['days'] ?? 0));
+        $this->pageviewRetentionDays = max(0, (int) ($retention['pageviews_days'] ?? 0));
         $this->cleanupHour = min(23, max(0, (int) ($retention['cleanup_hour'] ?? 3)));
+    }
+
+    private function hydrateIngestFilters(): void
+    {
+        $filters = $this->getIngestFilters($this->ingestFilterDefaults);
+        $this->ingestFilters = [
+            'ip_filters' => trim((string) ($filters['ip_filters'] ?? '')),
+            'keyword_filters' => trim((string) ($filters['keyword_filters'] ?? '')),
+            'asn_filters' => trim((string) ($filters['asn_filters'] ?? '')),
+            'ua_filters' => trim((string) ($filters['ua_filters'] ?? '')),
+        ];
     }
 
     private function getMobileBreakdown(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT COALESCE(canonical_host, '未知域名') as domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
-                SUM(is_mobile) as mobile_views, COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY canonical_host
-            ORDER BY views DESC
-            LIMIT 100"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $cacheKey = "mobile_breakdown:{$siteId}:{$range}";
 
-        $rows = $statement->fetchAll();
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if ($span) {
+                $hosts = $this->aggregateDimensionRollups($siteId, 'host', $span['start'], $span['end'], 200);
+                $hostDevices = $this->aggregateDimensionRollups($siteId, 'host_device', $span['start'], $span['end'], 400);
+
+                if (!empty($hosts)) {
+                    return $this->formatHostDeviceBreakdown($hosts, $hostDevices);
+                }
+            }
+            return [[
+                'domain' => '汇总',
+                'views' => 0,
+                'ips' => 0,
+                'mobile_views' => 0,
+                'mobile_ips' => 0,
+            ]];
+        });
+    }
+
+    private function formatHostDeviceBreakdown(array $hosts, array $hostDevices): array
+    {
+        $deviceMap = [];
+
+        foreach ($hostDevices as $deviceRow) {
+            [$hostValue, $device] = array_pad(explode('|', $deviceRow['dimension_value'] ?? '', 2), 2, '');
+            if ($device !== 'mobile') {
+                continue;
+            }
+
+            $deviceMap[$hostValue]['views'] = ($deviceMap[$hostValue]['views'] ?? 0) + (int) ($deviceRow['views'] ?? 0);
+            $deviceMap[$hostValue]['ips'] = ($deviceMap[$hostValue]['ips'] ?? 0) + (int) ($deviceRow['ips'] ?? 0);
+        }
+
+        $rows = [];
         $totals = [
             'domain' => '汇总',
             'views' => 0,
@@ -1419,11 +4035,25 @@ class Tracker
             'mobile_ips' => 0,
         ];
 
-        foreach ($rows as $row) {
-            $totals['views'] += (int) $row['views'];
-            $totals['ips'] += (int) $row['ips'];
-            $totals['mobile_views'] += (int) $row['mobile_views'];
-            $totals['mobile_ips'] += (int) $row['mobile_ips'];
+        foreach ($hosts as $row) {
+            $domain = $row['dimension_value'] ?? '未知域名';
+            $views = (int) ($row['views'] ?? 0);
+            $ips = (int) ($row['ips'] ?? 0);
+            $mobileViews = (int) ($deviceMap[$domain]['views'] ?? 0);
+            $mobileIps = (int) ($deviceMap[$domain]['ips'] ?? 0);
+
+            $rows[] = [
+                'domain' => $domain,
+                'views' => $views,
+                'ips' => $ips,
+                'mobile_views' => $mobileViews,
+                'mobile_ips' => $mobileIps,
+            ];
+
+            $totals['views'] += $views;
+            $totals['ips'] += $ips;
+            $totals['mobile_views'] += $mobileViews;
+            $totals['mobile_ips'] += $mobileIps;
         }
 
         return array_merge([$totals], $rows);
@@ -1490,210 +4120,259 @@ class Tracker
 
     private function getSearchEngines(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $engineCase = $this->searchEngineCase();
-        $statement = $this->db->prepare(
-            "SELECT engine, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM (
-                SELECT {$engineCase} as engine, ip_hash
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            ) t
-            GROUP BY engine
-            HAVING engine != '其他'
-            ORDER BY ips DESC"
-        );
+        $cacheKey = "search_engines:{$siteId}:{$range}";
 
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if (!$span) {
+                return [];
+            }
 
-        return $statement->fetchAll();
+            $rollup = $this->aggregateDimensionRollups($siteId, 'search_engine', $span['start'], $span['end'], 50);
+
+            if (!empty($rollup)) {
+                $mapped = [];
+
+                foreach ($rollup as $row) {
+                    $engine = $row['dimension_value'] ?? '其他';
+
+                    if ($engine === '其他') {
+                        continue;
+                    }
+
+                    $mapped[] = [
+                        'engine' => $engine,
+                        'views' => (int) ($row['views'] ?? 0),
+                        'ips' => (int) ($row['ips'] ?? 0),
+                    ];
+                }
+
+                return $mapped;
+            }
+            return [];
+        });
     }
 
     private function getExternalLinks(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $site = $this->getSite($siteId);
-        $domain = $site['domain'] ?? '';
+        $cacheKey = "external_links:{$siteId}:{$range}";
 
-        $statement = $this->db->prepare(
-            "SELECT host, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM (
-                SELECT COALESCE(NULLIF(SUBSTRING_INDEX(SUBSTRING_INDEX(referrer, '/', 3), '//', -1), ''), '直接访问') as host, ip_hash
-                FROM pageviews
-                WHERE site_id = :site_id AND referrer IS NOT NULL AND referrer != '' AND is_bot = 0 {$rangeSql}
-            ) t
-            WHERE host != '直接访问'
-            GROUP BY host
-            ORDER BY ips DESC
-            LIMIT 200"
-        );
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $site = $this->getSite($siteId);
+            $domain = $site['domain'] ?? '';
+            $blocked = ['baidu', 'google', 'bing.', 'sm.cn', 'quark.cn', 'so.com', 'sogou', 'bytedance', 'toutiao'];
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if (!$span) {
+                return [];
+            }
 
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
-        $rows = $statement->fetchAll();
+            $rollup = $this->aggregateDimensionRollups($siteId, 'referrer_host', $span['start'], $span['end'], 200);
+            $filtered = [];
 
-        $blocked = ['baidu', 'google', 'bing.', 'sm.cn', 'quark.cn', 'so.com', 'sogou', 'bytedance', 'toutiao'];
-        $filtered = [];
-        foreach ($rows as $row) {
-            $host = strtolower($row['host'] ?? '');
-            $skip = false;
-            foreach ($blocked as $needle) {
-                if (str_contains($host, $needle)) {
-                    $skip = true;
-                    break;
+            if (!empty($rollup)) {
+                foreach ($rollup as $row) {
+                    $host = strtolower($row['dimension_value'] ?? '');
+                    if ($host === '' || $host === '直接访问') {
+                        continue;
+                    }
+
+                    $skip = false;
+                    foreach ($blocked as $needle) {
+                        if (str_contains($host, $needle)) {
+                            $skip = true;
+                            break;
+                        }
+                    }
+
+                    if ($domain && (str_ends_with($host, $domain) || str_ends_with($host, 'www.' . ltrim($domain, '.')))) {
+                        $skip = true;
+                    }
+
+                    if (!$skip) {
+                        $filtered[] = [
+                            'host' => $host,
+                            'views' => (int) ($row['views'] ?? 0),
+                            'ips' => (int) ($row['ips'] ?? 0),
+                        ];
+                    }
+                }
+
+                return $filtered;
+            }
+            return [];
+        });
+    }
+
+    public function getDeviceBreakdown(int $siteId, string $range): array
+    {
+        $cacheKey = "devices:{$siteId}:{$range}";
+
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $desktopViews = 0;
+            $mobileViews = 0;
+            $mobileIps = 0;
+            $totalIps = 0;
+
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if ($span) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'device', $span['start'], $span['end'], 2);
+                $lookup = [];
+                foreach ($rollup as $row) {
+                    $lookup[$row['dimension_value'] ?? ''] = $row;
+                }
+
+                $mobileViews = (int) ($lookup['mobile']['views'] ?? 0);
+                $mobileIps = (int) ($lookup['mobile']['ips'] ?? 0);
+                $desktopViews = (int) ($lookup['desktop']['views'] ?? 0);
+
+                $totals = $this->aggregateTotalsWithRollups($siteId, $span['start'], $span['end']);
+                $totalIps = (int) ($totals['ip_count'] ?? 0);
+            }
+
+            $desktopIps = max(0, $totalIps - $mobileIps);
+
+            return [
+                'desktop' => [
+                    'views' => $desktopViews,
+                    'ips' => $desktopIps,
+                ],
+                'mobile' => [
+                    'views' => $mobileViews,
+                    'ips' => $mobileIps,
+                ],
+            ];
+        });
+    }
+
+    public function getBrowserBreakdown(int $siteId, string $range, int $limit = 10): array
+    {
+        $cacheKey = "browsers:{$siteId}:{$range}:{$limit}";
+
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if ($span) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'browser', $span['start'], $span['end'], $limit);
+
+                if (!empty($rollup)) {
+                    return array_map(fn ($row) => [
+                        'browser' => $row['dimension_value'],
+                        'views' => (int) ($row['views'] ?? 0),
+                        'ips' => (int) ($row['ips'] ?? 0),
+                    ], $rollup);
                 }
             }
-            if ($domain && (str_ends_with($host, $domain) || str_ends_with($host, 'www.' . ltrim($domain, '.')))) {
-                $skip = true;
+            return [];
+        });
+    }
+
+    public function getRegionStats(int $siteId, string $range, int $limit = 50): array
+    {
+        $cacheKey = "regions:{$siteId}:{$range}:{$limit}";
+
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if ($span) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'region', $span['start'], $span['end'], $limit);
+
+                if (!empty($rollup)) {
+                    return array_map(fn ($row) => [
+                        'region' => $row['dimension_value'],
+                        'views' => (int) ($row['views'] ?? 0),
+                        'ips' => (int) ($row['ips'] ?? 0),
+                    ], $rollup);
+                }
             }
-            if (!$skip) {
-                $filtered[] = $row;
+            return [];
+        });
+    }
+
+    public function getCountryStats(int $siteId, string $range, int $limit = 200): array
+    {
+        $cacheKey = "countries:{$siteId}:{$range}:{$limit}";
+
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if ($span) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'country', $span['start'], $span['end'], $limit);
+
+                if (!empty($rollup)) {
+                    return array_map(fn ($row) => [
+                        'country' => $row['dimension_value'],
+                        'country_code' => '',
+                        'ips' => (int) ($row['ips'] ?? 0),
+                    ], $rollup);
+                }
             }
-        }
 
-        return $filtered;
-    }
-
-    private function getDeviceBreakdown(int $siteId, string $range): array
-    {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT SUM(is_mobile = 0) as desktop_views, SUM(is_mobile = 1) as mobile_views,
-                COUNT(DISTINCT IF(is_mobile = 0, ip_hash, NULL)) as desktop_ips,
-                COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-        $row = $statement->fetch();
-
-        return [
-            'desktop' => [
-                'views' => (int) ($row['desktop_views'] ?? 0),
-                'ips' => (int) ($row['desktop_ips'] ?? 0),
-            ],
-            'mobile' => [
-                'views' => (int) ($row['mobile_views'] ?? 0),
-                'ips' => (int) ($row['mobile_ips'] ?? 0),
-            ],
-        ];
-    }
-
-    private function getBrowserBreakdown(int $siteId, string $range, int $limit = 10): array
-    {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT browser, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips FROM (
-                SELECT CASE
-                    WHEN LOWER(user_agent) REGEXP 'micromessenger' THEN 'WeChat'
-                    WHEN LOWER(user_agent) REGEXP 'bytedancewebview|aweme' THEN 'Douyin'
-                    WHEN LOWER(user_agent) REGEXP 'baiduboxapp' THEN 'Baidu'
-                    WHEN LOWER(user_agent) REGEXP 'edg(a|ios)' THEN 'Edge'
-                    WHEN LOWER(user_agent) REGEXP 'chrome|crios' THEN 'Chrome'
-                    WHEN LOWER(user_agent) REGEXP 'firefox|fxios' THEN 'Firefox'
-                    WHEN LOWER(user_agent) REGEXP 'safari' AND LOWER(user_agent) NOT REGEXP 'chrome|crios|edg' THEN 'Safari'
-                    WHEN LOWER(user_agent) REGEXP 'qqbrowser' THEN 'QQ'
-                    WHEN LOWER(user_agent) REGEXP 'ucbrowser' THEN 'UC'
-                    WHEN LOWER(user_agent) REGEXP 'quark' THEN 'Quark'
-                    WHEN LOWER(user_agent) REGEXP 'miuibrowser' THEN 'Mi'
-                    WHEN LOWER(user_agent) REGEXP 'huaweibrowser' THEN 'Huawei'
-                    WHEN LOWER(user_agent) REGEXP 'vivobrowser' THEN 'Vivo'
-                    WHEN LOWER(user_agent) REGEXP 'heytapbrowser' THEN 'OPPO'
-                    WHEN LOWER(user_agent) REGEXP '360se|360ee' THEN '360'
-                    WHEN LOWER(user_agent) REGEXP 'msie|trident' THEN 'IE'
-                    ELSE '其他浏览器'
-                END as browser,
-                ip_hash
-                FROM pageviews
-                WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            ) t
-            GROUP BY browser
-            ORDER BY views DESC
-            LIMIT {$limit}"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-        return $statement->fetchAll();
-    }
-
-    private function getRegionStats(int $siteId, string $range, int $limit = 50): array
-    {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT
-                CASE
-                    WHEN COALESCE(country_name,'') LIKE '中国%' THEN COALESCE(NULLIF(region_name,''), '未知')
-                    WHEN COALESCE(country_name,'') = '' THEN '未知'
-                    ELSE COALESCE(country_name, '未知')
-                END as region,
-                COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql} AND (COALESCE(country_name,'') LIKE '中国%' OR COALESCE(country_name,'') = '')
-            GROUP BY region
-            ORDER BY ips DESC
-            LIMIT {$limit}"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-        return $statement->fetchAll();
-    }
-
-    private function getCountryStats(int $siteId, string $range, int $limit = 200): array
-    {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT
-                COALESCE(NULLIF(country_name,''), '未知') as country,
-                COALESCE(NULLIF(country_code,''), '') as country_code,
-                COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY country, country_code
-            ORDER BY ips DESC
-            LIMIT {$limit}"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
-
-        return $statement->fetchAll();
+            return [];
+        });
     }
 
     private function getIspStats(int $siteId, string $range, int $limit = 50): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT COALESCE(NULLIF(isp_domain,''), '未知运营商') as isp, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY isp
-            ORDER BY ips DESC
-            LIMIT {$limit}"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $cacheKey = "isp:{$siteId}:{$range}:{$limit}";
 
-        return $statement->fetchAll();
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            if ($span) {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'isp', $span['start'], $span['end'], $limit);
+
+                if (!empty($rollup)) {
+                    return array_map(fn ($row) => [
+                        'isp' => $row['dimension_value'],
+                        'views' => (int) ($row['views'] ?? 0),
+                        'ips' => (int) ($row['ips'] ?? 0),
+                    ], $rollup);
+                }
+            }
+            return [];
+        });
     }
 
-    private function getNewVsReturning(int $siteId, string $range): array
+    public function getNewVsReturning(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $statement = $this->db->prepare(
-            "SELECT 
-                SUM(is_unique) as new_users,
-                COUNT(*) - SUM(is_unique) as returning,
-                COUNT(DISTINCT CASE WHEN is_unique = 1 THEN ip_hash END) as new_ips,
-                COUNT(DISTINCT CASE WHEN is_unique = 0 THEN ip_hash END) as returning_ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
-        $row = $statement->fetch();
+        $cacheKey = "new_vs_returning:{$siteId}:{$range}";
 
-        return [
-            'new' => (int) ($row['new_users'] ?? 0),
-            'returning' => (int) ($row['returning'] ?? 0),
-            'new_ips' => (int) ($row['new_ips'] ?? 0),
-            'returning_ips' => (int) ($row['returning_ips'] ?? 0),
-        ];
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            $span = $this->rollupSpanForRange($siteId, $start, $end);
+            $rows = $span
+                ? $this->aggregateDimensionRollups($siteId, 'audience', $span['start'], $span['end'], 2)
+                : [];
+
+            $newViews = 0;
+            $returningViews = 0;
+            $newIps = 0;
+            $returningIps = 0;
+
+            foreach ($rows as $row) {
+                $value = $row['dimension_value'] ?? '';
+
+                if ($value === 'new') {
+                    $newViews += (int) ($row['views'] ?? 0);
+                    $newIps += (int) ($row['ips'] ?? 0);
+                }
+
+                if ($value === 'returning') {
+                    $returningViews += (int) ($row['views'] ?? 0);
+                    $returningIps += (int) ($row['ips'] ?? 0);
+                }
+            }
+
+            return [
+                'new' => $newViews,
+                'returning' => $returningViews,
+                'new_ips' => $newIps,
+                'returning_ips' => $returningIps,
+            ];
+        });
     }
 
     private function extractKeyword(?string $referrer): ?string
@@ -1764,44 +4443,19 @@ class Tracker
         return null;
     }
 
-    private function getHourlyStats(int $siteId, string $range): array
+    public function getHourlyStats(int $siteId, string $range): array
     {
-        [$rangeSql, $params] = $this->rangeClause($range, false, true);
-        $statement = $this->db->prepare(
-            "SELECT DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as hour,
-                COUNT(*) as views,
-                SUM(is_unique) as uniques,
-                COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 {$rangeSql}
-            GROUP BY hour
-            ORDER BY hour ASC"
-        );
-        $statement->execute(array_merge([':site_id' => $siteId], $params));
+        $cacheKey = "hourly:{$siteId}:{$range}";
 
-        return $statement->fetchAll();
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+            [$start, $end] = $this->rollupRangeBounds($range);
+            return $this->getRollupHourlyStats($siteId, $start, $end, true);
+        });
     }
 
     private function getHourlyStatsForWindow(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
-        $statement = $this->db->prepare(
-            "SELECT DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as hour,
-                COUNT(*) as views,
-                SUM(is_unique) as uniques,
-                COUNT(DISTINCT ip_hash) as ips
-            FROM pageviews
-            WHERE site_id = :site_id AND is_bot = 0 AND occurred_at >= :start AND occurred_at < :end
-            GROUP BY hour
-            ORDER BY hour ASC"
-        );
-
-        $statement->execute([
-            ':site_id' => $siteId,
-            ':start' => $start->format('Y-m-d H:i:s'),
-            ':end' => $end->format('Y-m-d H:i:s'),
-        ]);
-
-        return $statement->fetchAll();
+        return $this->getRollupHourlyStats($siteId, $start, $end, true);
     }
 
     private function normalizeHourlySeries(array $rows, DateTimeImmutable $dayStart): array
@@ -1975,7 +4629,20 @@ class Tracker
         $stored = $this->getSetting('retention') ?? [];
         $merged = array_merge($fallback, $stored);
         $merged['days'] = max(0, (int) ($merged['days'] ?? 0));
+        $merged['pageviews_days'] = max(0, (int) ($merged['pageviews_days'] ?? 0));
         $merged['cleanup_hour'] = min(23, max(0, (int) ($merged['cleanup_hour'] ?? 3)));
+
+        return $merged;
+    }
+
+    public function getIngestFilters(array $fallback): array
+    {
+        $stored = $this->getSetting('ingest_filters') ?? [];
+        $merged = array_merge($fallback, $stored);
+        $merged['ip_filters'] = trim((string) ($merged['ip_filters'] ?? ''));
+        $merged['keyword_filters'] = trim((string) ($merged['keyword_filters'] ?? ''));
+        $merged['asn_filters'] = trim((string) ($merged['asn_filters'] ?? ''));
+        $merged['ua_filters'] = trim((string) ($merged['ua_filters'] ?? ''));
 
         return $merged;
     }
@@ -2040,10 +4707,11 @@ class Tracker
         return $sanitized;
     }
 
-    public function updateRetentionSettings(int $days, int $hour): array
+    public function updateRetentionSettings(int $days, int $hour, int $pageviewsDays = 0): array
     {
         $payload = [
             'days' => max(0, $days),
+            'pageviews_days' => max(0, $pageviewsDays),
             'cleanup_hour' => min(23, max(0, $hour)),
         ];
         $this->setSetting('retention', $payload);
@@ -2052,14 +4720,102 @@ class Tracker
         return $payload;
     }
 
-    public function manualCleanup(int $days): void
+    public function updateIngestFilters(string $ipFilters, string $keywordFilters): array
     {
-        if ($days <= 0) {
+        $payload = [
+            'ip_filters' => trim($ipFilters),
+            'keyword_filters' => trim($keywordFilters),
+            'asn_filters' => trim((string) ($this->ingestFilters['asn_filters'] ?? '')),
+            'ua_filters' => trim((string) ($this->ingestFilters['ua_filters'] ?? '')),
+        ];
+        $this->setSetting('ingest_filters', $payload);
+        $this->hydrateIngestFilters();
+
+        return $payload;
+    }
+
+    public function updateIngestFiltersWithAsn(string $ipFilters, string $keywordFilters, string $asnFilters, string $uaFilters = ''): array
+    {
+        $payload = [
+            'ip_filters' => trim($ipFilters),
+            'keyword_filters' => trim($keywordFilters),
+            'asn_filters' => trim($asnFilters),
+            'ua_filters' => trim($uaFilters),
+        ];
+        $this->setSetting('ingest_filters', $payload);
+        $this->hydrateIngestFilters();
+
+        return $payload;
+    }
+
+    public function manualCleanup(int $days, ?int $pageviewsDays = null, ?int $batchSize = null): void
+    {
+        $pageviewsDays = $pageviewsDays === null ? $days : max(0, $pageviewsDays);
+        $this->cleanupDataOlderThan($days, $pageviewsDays, $batchSize);
+    }
+
+    private function cleanupDataOlderThan(int $rollupDays, int $pageviewsDays, ?int $batchSize = null): void
+    {
+        if ($rollupDays <= 0 && $pageviewsDays <= 0) {
             return;
         }
 
-        $stmt = $this->db->prepare('DELETE FROM pageviews WHERE occurred_at < DATE_SUB(NOW(), INTERVAL :days DAY)');
-        $stmt->execute([':days' => $days]);
+        $batchSize = $batchSize && $batchSize > 0 ? $batchSize : 50000;
+
+        if ($rollupDays > 0) {
+            $rollupCutoffPoint = (new \DateTimeImmutable('now'))->modify("-{$rollupDays} days");
+            $rollupCutoff = $rollupCutoffPoint->format('Y-m-d H:i:s');
+            $rollupCutoffDate = $rollupCutoffPoint->format('Y-m-d');
+
+            // Rollup tables are small enough to delete in a single pass while still using time indexes.
+            $this->deleteBatched(
+                'DELETE FROM pageview_rollups WHERE bucket_start < :cutoff LIMIT :batch',
+                [':cutoff' => $rollupCutoff],
+                $batchSize
+            );
+
+            $this->deleteBatched(
+                'DELETE FROM pageview_dimension_rollups WHERE bucket_start < :cutoff LIMIT :batch',
+                [':cutoff' => $rollupCutoff],
+                $batchSize
+            );
+
+            $this->deleteBatched(
+                'DELETE FROM pageview_page_rollups WHERE bucket_start < :cutoff LIMIT :batch',
+                [':cutoff' => $rollupCutoff],
+                $batchSize
+            );
+
+            $this->deleteBatched(
+                'DELETE FROM pageview_entry_rollups WHERE bucket_start < :cutoff LIMIT :batch',
+                [':cutoff' => $rollupCutoff],
+                $batchSize
+            );
+
+            $this->deleteBatched(
+                'DELETE FROM pageview_bot_logs WHERE bucket_start < :cutoff LIMIT :batch',
+                [':cutoff' => $rollupCutoff],
+                $batchSize
+            );
+
+            $this->deleteBatched(
+                'DELETE FROM site_ip_audience WHERE last_seen_date < :cutoff_date LIMIT :batch',
+                [':cutoff_date' => $rollupCutoffDate],
+                $batchSize
+            );
+        }
+
+        if ($pageviewsDays > 0) {
+            $pageviewsCutoffPoint = (new \DateTimeImmutable('now'))->modify("-{$pageviewsDays} days");
+            $pageviewsCutoff = $pageviewsCutoffPoint->format('Y-m-d H:i:s');
+
+            // Pageviews can be very large; delete in batches to limit lock time and reduce replication lag.
+            $this->deleteBatched(
+                'DELETE FROM pageviews WHERE occurred_at < :cutoff LIMIT :batch',
+                [':cutoff' => $pageviewsCutoff],
+                $batchSize
+            );
+        }
     }
 
     public function createSharePage(string $name, array $siteIds): array
@@ -2144,46 +4900,35 @@ class Tracker
             return null;
         }
 
-        [$rangeSql, $params] = $this->rangeClause($range);
-        $siteParams = [];
-        $placeholders = [];
-        foreach ($share['site_ids'] as $i => $sid) {
-            $key = ':sid' . $i;
-            $placeholders[] = $key;
-            $siteParams[$key] = (int) $sid;
-        }
+        [$start, $end] = $this->rollupRangeBounds($range);
 
-        $statement = $this->db->prepare(
-            "SELECT COALESCE(canonical_host, '未知域名') as domain, COUNT(*) as views, COUNT(DISTINCT ip_hash) as ips,
-                SUM(is_mobile) as mobile_views, COUNT(DISTINCT IF(is_mobile = 1, ip_hash, NULL)) as mobile_ips
-            FROM pageviews
-            WHERE site_id IN (" . implode(',', $placeholders) . ") AND is_bot = 0 {$rangeSql}
-            GROUP BY canonical_host
-            ORDER BY views DESC"
-        );
-
-        $statement->execute(array_merge($siteParams, $params));
-        $rows = $statement->fetchAll();
-
-        $totals = [
-            'domain' => '汇总',
-            'views' => 0,
-            'ips' => 0,
-            'mobile_views' => 0,
-            'mobile_ips' => 0,
-        ];
-
-        foreach ($rows as $row) {
-            $totals['views'] += (int) $row['views'];
-            $totals['ips'] += (int) $row['ips'];
-            $totals['mobile_views'] += (int) $row['mobile_views'];
-            $totals['mobile_ips'] += (int) $row['mobile_ips'];
+        $rows = $this->getHostDeviceRollupRowsForSites($share['site_ids'], $start, $end);
+        if (empty($rows)) {
+            $rows = [[
+                'domain' => '汇总',
+                'views' => 0,
+                'ips' => 0,
+                'mobile_views' => 0,
+                'mobile_ips' => 0,
+            ]];
         }
 
         return [
             'share' => $share,
-            'rows' => array_merge([$totals], $rows),
+            'rows' => $rows,
         ];
+    }
+
+    private function getHostDeviceRollupRowsForSites(array $siteIds, DateTimeImmutable $start, DateTimeImmutable $end): array
+    {
+        $hosts = $this->aggregateDimensionRollupsForSites($siteIds, 'host', $start, $end, 500);
+        if (empty($hosts)) {
+            return [];
+        }
+
+        $hostDevices = $this->aggregateDimensionRollupsForSites($siteIds, 'host_device', $start, $end, 1000);
+
+        return $this->formatHostDeviceBreakdown($hosts, $hostDevices);
     }
 
     public function deleteSite(int $siteId): void
@@ -2216,7 +4961,7 @@ class Tracker
 
     private function maybeCleanupRetention(): void
     {
-        if ($this->retentionDays <= 0) {
+        if ($this->retentionDays <= 0 && $this->pageviewRetentionDays <= 0) {
             return;
         }
 
@@ -2228,8 +4973,7 @@ class Tracker
 
         if ($this->redis->setnx($key, '1')) {
             $this->redis->expire($key, 86400);
-            $stmt = $this->db->prepare('DELETE FROM pageviews WHERE occurred_at < DATE_SUB(NOW(), INTERVAL :days DAY)');
-            $stmt->execute([':days' => $this->retentionDays]);
+            $this->cleanupDataOlderThan($this->retentionDays, $this->pageviewRetentionDays);
         }
     }
 
@@ -2247,5 +4991,19 @@ class Tracker
             }
         }
         return $filtered;
+    }
+
+    private function deleteBatched(string $sql, array $params, int $batchSize): void
+    {
+        $statement = $this->db->prepare($sql);
+        foreach ($params as $key => $value) {
+            $statement->bindValue($key, $value);
+        }
+        $statement->bindValue(':batch', $batchSize, PDO::PARAM_INT);
+
+        do {
+            $statement->execute();
+            $deleted = $statement->rowCount();
+        } while ($deleted === $batchSize);
     }
 }
