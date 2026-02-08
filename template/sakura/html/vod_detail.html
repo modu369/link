@@ -1,0 +1,66 @@
+{include file="public/head"}
+{include file="public/header"}
+
+<section class="section">
+  <div class="container detail-grid">
+    <div class="card">
+      <div class="cover">
+        <img src="{$obj.vod_pic}" alt="{$obj.vod_name}" />
+        <span class="badge">{$obj.vod_remarks}</span>
+      </div>
+    </div>
+    <div class="detail-info">
+      <h1>{$obj.vod_name}</h1>
+      <p class="card-meta">类型：{$obj.vod_class} | 地区：{$obj.vod_area} | 年份：{$obj.vod_year}</p>
+      <p>{$obj.vod_content}</p>
+      <div class="tag-list">
+        <span class="tag">主演：{$obj.vod_actor}</span>
+        <span class="tag">导演：{$obj.vod_director}</span>
+        <span class="tag">更新：{$obj.vod_time|date='Y-m-d'}</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="section-header">
+      <h2 class="section-title">剧集列表</h2>
+      <span class="card-meta">选择线路开始播放</span>
+    </div>
+    {maccms:foreach name="obj.vod_play_list"}
+    <div class="detail-info" style="margin-bottom: 20px;">
+      <h3>{$vo.player_info.show}</h3>
+      <div class="episode-list">
+        {maccms:foreach name="vo.urls"}
+        <a class="episode" href="{$vo2.link}">{$vo2.name}</a>
+        {/maccms:foreach}
+      </div>
+    </div>
+    {/maccms:foreach}
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="section-header">
+      <h2 class="section-title">相关推荐</h2>
+    </div>
+    <div class="card-grid">
+      {maccms:vod num="8" order="desc" by="hits" type="current"}
+      <a class="card" href="{$maccms.vod_link}" title="{$maccms.vod_name}">
+        <div class="cover">
+          <img src="{$maccms.vod_pic}" alt="{$maccms.vod_name}" />
+          <span class="badge">{$maccms.vod_remarks}</span>
+        </div>
+        <div class="card-body">
+          <h3 class="card-title">{$maccms.vod_name}</h3>
+          <div class="card-meta">{$maccms.vod_year} · {$maccms.vod_area}</div>
+        </div>
+      </a>
+      {/maccms:vod}
+    </div>
+  </div>
+</section>
+
+{include file="public/footer"}

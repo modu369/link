@@ -1,0 +1,27 @@
+{include file="public/head"}
+{include file="public/header"}
+
+<section class="section">
+  <div class="container">
+    <div class="section-header">
+      <h1 class="section-title">搜索结果：{$param.wd}</h1>
+      <span class="card-meta">共找到 {$param.total} 条相关内容</span>
+    </div>
+    <div class="card-grid">
+      {maccms:vod num="24" order="desc" by="time" type="search"}
+      <a class="card" href="{$maccms.vod_link}" title="{$maccms.vod_name}">
+        <div class="cover">
+          <img src="{$maccms.vod_pic}" alt="{$maccms.vod_name}" />
+          <span class="badge">{$maccms.vod_remarks}</span>
+        </div>
+        <div class="card-body">
+          <h2 class="card-title">{$maccms.vod_name}</h2>
+          <div class="card-meta">{$maccms.vod_year} · {$maccms.vod_area}</div>
+        </div>
+      </a>
+      {/maccms:vod}
+    </div>
+  </div>
+</section>
+
+{include file="public/footer"}

@@ -1,0 +1,20 @@
+<header class="site-header">
+  <div class="container navbar">
+    <a class="logo" href="{$maccms.path}">
+      <span>樱花动漫</span>
+      <strong>Anime</strong>
+    </a>
+    <nav class="nav-links">
+      <a href="{$maccms.path}">首页</a>
+      {maccms:type num="6" order="asc" by="sort" ids="" flag="vod"}
+      <a href="{$maccms.type_link}">{$maccms.type_name}</a>
+      {/maccms:type}
+    </nav>
+    <form class="search" method="get" action="{$maccms.path}index.php">
+      <input type="hidden" name="m" value="vod" />
+      <input type="hidden" name="a" value="search" />
+      <input type="text" name="wd" placeholder="搜索番剧/角色/制作组" />
+      <button type="submit">搜索</button>
+    </form>
+  </div>
+</header>

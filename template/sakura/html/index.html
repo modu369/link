@@ -1,0 +1,84 @@
+{include file="public/head"}
+{include file="public/header"}
+
+<section class="hero">
+  <div class="container">
+    <div class="hero-card">
+      <h1>樱花动漫 - 追番首选的自适应动漫站</h1>
+      <p>每日更新新番、剧场版、热血、恋爱、奇幻等热门动漫资源，智能SEO结构让内容更容易被百度收录。</p>
+      <div class="tag-list">
+        <span class="tag">最新更新</span>
+        <span class="tag">高清播放</span>
+        <span class="tag">追番日历</span>
+        <span class="tag">多端自适应</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="section-header">
+      <h2 class="section-title">本周热播</h2>
+      <a class="tag" href="{$maccms.path}index.php?m=vod&a=search&wd=热播">查看更多</a>
+    </div>
+    <div class="card-grid">
+      {maccms:vod num="10" order="desc" by="hits_week" type="current"}
+      <a class="card" href="{$maccms.vod_link}" title="{$maccms.vod_name}">
+        <div class="cover">
+          <img src="{$maccms.vod_pic}" alt="{$maccms.vod_name}" />
+          <span class="badge">{$maccms.vod_remarks}</span>
+        </div>
+        <div class="card-body">
+          <h3 class="card-title">{$maccms.vod_name}</h3>
+          <div class="card-meta">{$maccms.vod_year} · {$maccms.vod_area}</div>
+        </div>
+      </a>
+      {/maccms:vod}
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="section-header">
+      <h2 class="section-title">最新更新</h2>
+      <a class="tag" href="{$maccms.path}index.php?m=vod&a=search&wd=新番">追番日历</a>
+    </div>
+    <div class="card-grid">
+      {maccms:vod num="10" order="desc" by="time" type="current"}
+      <a class="card" href="{$maccms.vod_link}" title="{$maccms.vod_name}">
+        <div class="cover">
+          <img src="{$maccms.vod_pic}" alt="{$maccms.vod_name}" />
+          <span class="badge">更新至 {$maccms.vod_remarks}</span>
+        </div>
+        <div class="card-body">
+          <h3 class="card-title">{$maccms.vod_name}</h3>
+          <div class="card-meta">{$maccms.vod_actor}</div>
+        </div>
+      </a>
+      {/maccms:vod}
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="section-header">
+      <h2 class="section-title">分类导航</h2>
+      <span class="card-meta">快速跳转到喜欢的动漫类型</span>
+    </div>
+    <div class="card-grid">
+      {maccms:type num="12" order="asc" by="sort" ids="" flag="vod"}
+      <a class="card" href="{$maccms.type_link}" title="{$maccms.type_name}">
+        <div class="card-body">
+          <h3 class="card-title">{$maccms.type_name}</h3>
+          <div class="card-meta">共 {$maccms.type_total} 部作品</div>
+        </div>
+      </a>
+      {/maccms:type}
+    </div>
+  </div>
+</section>
+
+{include file="public/footer"}

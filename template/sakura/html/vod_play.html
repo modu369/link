@@ -1,0 +1,31 @@
+{include file="public/head"}
+{include file="public/header"}
+
+<section class="section">
+  <div class="container">
+    <div class="section-header">
+      <h1 class="section-title">{$obj.vod_name} - {$obj.vod_play_name}</h1>
+      <span class="card-meta">{$obj.vod_remarks}</span>
+    </div>
+    <div class="detail-info">
+      {$obj.vod_play_player}
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="section-header">
+      <h2 class="section-title">选集播放</h2>
+    </div>
+    <div class="episode-list">
+      {maccms:foreach name="obj.vod_play_list"}
+      {maccms:foreach name="vo.urls"}
+      <a class="episode" href="{$vo2.link}">{$vo2.name}</a>
+      {/maccms:foreach}
+      {/maccms:foreach}
+    </div>
+  </div>
+</section>
+
+{include file="public/footer"}
