@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CF Relay 管理后台</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; background: #f7f8fa; }
+    h1 { margin-bottom: 0.5rem; }
+    .card { background: white; padding: 1.5rem; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); margin-bottom: 1rem; }
+    label { display: block; font-weight: 600; margin-top: 0.75rem; }
+    input, textarea { width: 100%; padding: 0.5rem; border-radius: 6px; border: 1px solid #d1d5db; font-size: 0.95rem; }
+    button { margin-top: 1rem; padding: 0.6rem 1.2rem; border: none; border-radius: 6px; background: #2563eb; color: white; font-weight: 600; cursor: pointer; }
+    button:disabled { background: #9ca3af; cursor: not-allowed; }
+    .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
+    .status { font-size: 0.9rem; color: #374151; margin-top: 0.5rem; }
+  </style>
+</head>
+<body>
+  <h1>Cloudflare Relay 管理后台</h1>
+  <p>配置白名单域名、优选 IP，以及管理员账号。</p>
+
+  <div class="card">
+    <h2>运行状态</h2>
+    <div id="status" class="status">加载中...</div>
+  </div>
+
+  <div class="card">
+    <h2>代理配置</h2>
+    <label>HTTP 监听地址</label>
+    <input id="listenHttp" placeholder=":80" />
+    <label>HTTPS 监听地址</label>
+    <input id="listenHttps" placeholder=":443" />
+    <label>Cloudflare 优选 IP（每行一个，包含端口）</label>
+    <textarea id="upstreams" rows="4" placeholder="104.16.0.1:443"></textarea>
+    <label>允许的域名白名单（每行一个）</label>
+    <textarea id="whitelist" rows="4" placeholder="example.com"></textarea>
+    <label>是否开启 HTTP 代理</label>
+    <input id="enableHttp" type="checkbox" />
+    <button id="saveConfig">保存配置</button>
+  </div>
+
+  <div class="card">
+    <h2>管理员账号</h2>
+    <div class="row">
+      <div>
+        <label>用户名</label>
+        <input id="adminUser" />
+      </div>
+      <div>
+        <label>新密码</label>
+        <input id="adminPass" type="password" />
+      </div>
+    </div>
+    <button id="saveAdmin">更新账号</button>
+  </div>
+
+  <script>
+    async function loadConfig() {
+      const res = await fetch('/admin/config');
+      const data = await res.json();
+      document.getElementById('listenHttp').value = data.listen_http || '';
+      document.getElementById('listenHttps').value = data.listen_https || '';
+      document.getElementById('upstreams').value = (data.cloudflare_upstreams || []).join('\n');
+      document.getElementById('whitelist').value = (data.whitelist_domains || []).join('\n');
+      document.getElementById('adminUser').value = data.admin_user || '';
+      document.getElementById('enableHttp').checked = data.enable_http_proxy;
+    }
+
+    async function loadStatus() {
+      const res = await fetch('/admin/status');
+      const data = await res.json();
+      document.getElementById('status').textContent = `请求数: ${data.requests} | 4xx: ${data.errors_4xx} | 5xx: ${data.errors_5xx} | 平均延迟: ${data.avg_latency_ms}ms`;
+    }
+
+    document.getElementById('saveConfig').addEventListener('click', async () => {
+      const payload = {
+        listen_http: document.getElementById('listenHttp').value.trim(),
+        listen_https: document.getElementById('listenHttps').value.trim(),
+        cloudflare_upstreams: document.getElementById('upstreams').value.split('\n').map(v => v.trim()).filter(Boolean),
+        whitelist_domains: document.getElementById('whitelist').value.split('\n').map(v => v.trim()).filter(Boolean),
+        enable_http_proxy: document.getElementById('enableHttp').checked
+      };
+      await fetch('/admin/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      await loadConfig();
+      await loadStatus();
+    });
+
+    document.getElementById('saveAdmin').addEventListener('click', async () => {
+      const payload = {
+        admin_user: document.getElementById('adminUser').value.trim(),
+        admin_password: document.getElementById('adminPass').value
+      };
+      await fetch('/admin/admin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      document.getElementById('adminPass').value = '';
+    });
+
+    loadConfig();
+    loadStatus();
+    setInterval(loadStatus, 5000);
+  </script>
+</body>
+</html>
