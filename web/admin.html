@@ -22,11 +22,16 @@
 
   <div class="card">
     <h2>运行状态</h2>
+    <div id="mode" class="status">检测模式中...</div>
     <div id="status" class="status">加载中...</div>
   </div>
 
   <div class="card">
     <h2>代理配置</h2>
+    <div id="agentPicker" style="display:none;">
+      <label>选择被控转发服务器</label>
+      <select id="agentSelect"></select>
+    </div>
     <label>HTTP 监听地址</label>
     <input id="listenHttp" placeholder=":80" />
     <label>HTTPS 监听地址</label>
@@ -38,6 +43,25 @@
     <label>是否开启 HTTP 代理</label>
     <input id="enableHttp" type="checkbox" />
     <button id="saveConfig">保存配置</button>
+  </div>
+
+  <div class="card" id="agentCard" style="display:none;">
+    <h2>被控服务器管理（主控模式）</h2>
+    <div class="row">
+      <div>
+        <label>名称</label>
+        <input id="agentName" placeholder="agent-1" />
+      </div>
+      <div>
+        <label>地址</label>
+        <input id="agentAddress" placeholder="http://1.2.3.4:9090" />
+      </div>
+      <div>
+        <label>Token</label>
+        <input id="agentToken" placeholder="token" />
+      </div>
+    </div>
+    <button id="saveAgent">保存被控服务器</button>
   </div>
 
   <div class="card">
@@ -56,7 +80,62 @@
   </div>
 
   <script>
+    let controllerMode = false;
+
+    function setStatus(text) {
+      document.getElementById('status').textContent = text;
+    }
+
+    function setMode(text) {
+      document.getElementById('mode').textContent = text;
+    }
+
+    function getPayload() {
+      return {
+        listen_http: document.getElementById('listenHttp').value.trim(),
+        listen_https: document.getElementById('listenHttps').value.trim(),
+        cloudflare_upstreams: document.getElementById('upstreams').value.split('\n').map(v => v.trim()).filter(Boolean),
+        whitelist_domains: document.getElementById('whitelist').value.split('\n').map(v => v.trim()).filter(Boolean),
+        enable_http_proxy: document.getElementById('enableHttp').checked
+      };
+    }
+
+    async function detectMode() {
+      try {
+        const res = await fetch('/controller/agents');
+        if (res.ok) {
+          controllerMode = true;
+          setMode('主控模式');
+          document.getElementById('agentCard').style.display = 'block';
+          document.getElementById('agentPicker').style.display = 'block';
+          const data = await res.json();
+          renderAgents(data);
+          return;
+        }
+      } catch (err) {
+        // ignore
+      }
+      controllerMode = false;
+      setMode('被控节点模式');
+      document.getElementById('agentCard').style.display = 'none';
+      document.getElementById('agentPicker').style.display = 'none';
+    }
+
+    function renderAgents(data) {
+      const select = document.getElementById('agentSelect');
+      select.innerHTML = '';
+      Object.keys(data || {}).forEach((key) => {
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = key;
+        select.appendChild(opt);
+      });
+    }
+
     async function loadConfig() {
+      if (controllerMode) {
+        return;
+      }
       const res = await fetch('/admin/config');
       const data = await res.json();
       document.getElementById('listenHttp').value = data.listen_http || '';
@@ -68,22 +147,49 @@
     }
 
     async function loadStatus() {
+      if (controllerMode) {
+        setStatus('可从主控向任意被控节点下发配置。');
+        return;
+      }
       const res = await fetch('/admin/status');
       const data = await res.json();
-      document.getElementById('status').textContent = `请求数: ${data.requests} | 4xx: ${data.errors_4xx} | 5xx: ${data.errors_5xx} | 平均延迟: ${data.avg_latency_ms}ms`;
+      setStatus(`请求数: ${data.requests} | 4xx: ${data.errors_4xx} | 5xx: ${data.errors_5xx} | 平均延迟: ${data.avg_latency_ms}ms`);
     }
 
     document.getElementById('saveConfig').addEventListener('click', async () => {
+      const payload = getPayload();
+      if (controllerMode) {
+        const agent = document.getElementById('agentSelect').value;
+        if (!agent) {
+          setStatus('请先选择被控节点');
+          return;
+        }
+        const res = await fetch('/controller/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent, config: payload })
+        });
+        const data = await res.json();
+        setStatus(data.message || '配置完成');
+      } else {
+        const res = await fetch('/admin/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const data = await res.json();
+        setStatus(data.message || '配置完成');
+        await loadConfig();
+      }
+    });
+
+    document.getElementById('saveAgent').addEventListener('click', async () => {
       const payload = {
-        listen_http: document.getElementById('listenHttp').value.trim(),
-        listen_https: document.getElementById('listenHttps').value.trim(),
-        cloudflare_upstreams: document.getElementById('upstreams').value.split('\n').map(v => v.trim()).filter(Boolean),
-        whitelist_domains: document.getElementById('whitelist').value.split('\n').map(v => v.trim()).filter(Boolean),
-        enable_http_proxy: document.getElementById('enableHttp').checked
+        name: document.getElementById('agentName').value.trim(),
+        address: document.getElementById('agentAddress').value.trim(),
+        token: document.getElementById('agentToken').value.trim()
       };
-      await fetch('/admin/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      await loadConfig();
-      await loadStatus();
+      await fetch('/controller/agents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      document.getElementById('agentName').value = '';
+      document.getElementById('agentAddress').value = '';
+      document.getElementById('agentToken').value = '';
+      await detectMode();
     });
 
     document.getElementById('saveAdmin').addEventListener('click', async () => {
@@ -91,13 +197,17 @@
         admin_user: document.getElementById('adminUser').value.trim(),
         admin_password: document.getElementById('adminPass').value
       };
-      await fetch('/admin/admin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const url = controllerMode ? '/controller/admin' : '/admin/admin';
+      await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       document.getElementById('adminPass').value = '';
     });
 
-    loadConfig();
-    loadStatus();
-    setInterval(loadStatus, 5000);
+    (async () => {
+      await detectMode();
+      await loadConfig();
+      await loadStatus();
+      setInterval(loadStatus, 5000);
+    })();
   </script>
 </body>
 </html>

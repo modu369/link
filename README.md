@@ -25,6 +25,29 @@ http://<server_ip>:8080/admin
 
 首次安装请在后台设置管理员密码，并配置白名单域名与 Cloudflare 优选 IP。
 
+## 主控/被控分离部署
+
+### 主控后台（一键安装）
+
+```bash
+MODE=controller sudo ./scripts/install.sh
+```
+
+### 被控转发节点（一键安装）
+
+```bash
+AGENT_TOKEN=your_token MODE=agent sudo ./scripts/install.sh
+```
+
+> 建议通过 SSH 一键部署：
+>
+> ```bash
+> ssh root@<controller_ip> 'git clone <repo> cf-relay && cd cf-relay && MODE=controller ./scripts/install.sh'
+> ssh root@<agent_ip> 'git clone <repo> cf-relay && cd cf-relay && AGENT_TOKEN=your_token MODE=agent ./scripts/install.sh'
+> ```
+
+主控后台登录后，在“被控服务器管理”中录入被控节点地址和 Token，随后可从主控统一下发配置。
+
 ## 卸载
 
 ```bash
@@ -54,5 +77,5 @@ sudo ./scripts/uninstall.sh
 ## 运行方式
 
 ```bash
-cf-relay -config /etc/cf-relay/config.json
+cf-agent -config /etc/cf-relay/config.json
 ```
