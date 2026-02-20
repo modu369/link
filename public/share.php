@@ -9,9 +9,9 @@ $redis = RedisClient::connection($config['redis']);
 $tracker = new Tracker($db, $redis, $config);
 
 $token = $_GET['token'] ?? '';
-$allowedRanges = ['today', 'yesterday', '7d', '30d'];
+$allowedRanges = ['today', 'yesterday', 'day_before', '7d'];
 $range = $_GET['range'] ?? 'today';
-if (!in_array($range, $allowedRanges, true)) {
+if (!in_array($range, $allowedRanges, true) && !str_starts_with($range, 'custom:')) {
     $range = 'today';
 }
 
@@ -47,10 +47,28 @@ $window = $tracker->rangeWindow($range);
             <p class="muted">链接无效或数据暂不可用。</p>
         <?php else: ?>
             <p class="muted" style="margin:6px 0 12px;">时间范围：<?= htmlspecialchars($window['start'], ENT_QUOTES, 'UTF-8') ?> - <?= htmlspecialchars($window['end'], ENT_QUOTES, 'UTF-8') ?></p>
+            <?php
+            $isCustom = str_starts_with($range, 'custom:');
+            $customStart = '';
+            $customEnd = '';
+            if ($isCustom) {
+                $parts = explode(':', $range);
+                $customStart = $parts[1] ?? '';
+                $customEnd = $parts[2] ?? '';
+            }
+            ?>
             <div class="filters">
                 <?php foreach ($allowedRanges as $r): ?>
-                    <a class="filter-btn <?= $range === $r ? 'active' : '' ?>" href="/share.php?token=<?= htmlspecialchars($token, ENT_QUOTES, 'UTF-8') ?>&range=<?= $r ?>"><?= ['today'=>'今日','yesterday'=>'昨日','7d'=>'近7天','30d'=>'近30天'][$r] ?></a>
+                    <a class="filter-btn <?= $range === $r ? 'active' : '' ?>" href="/share.php?token=<?= htmlspecialchars($token, ENT_QUOTES, 'UTF-8') ?>&range=<?= $r ?>"><?= ['today'=>'今日','yesterday'=>'昨日','day_before'=>'前天','7d'=>'近7天'][$r] ?></a>
                 <?php endforeach; ?>
+                <form method="get" action="/share.php" onsubmit="return applyShareRange(this);" style="display:flex; gap:6px; align-items:center;">
+                    <input type="hidden" name="token" value="<?= htmlspecialchars($token, ENT_QUOTES, 'UTF-8') ?>">
+                    <input type="hidden" name="range" value="">
+                    <input type="date" name="start" value="<?= htmlspecialchars($customStart, ENT_QUOTES, 'UTF-8') ?>" required>
+                    <span class="muted">-</span>
+                    <input type="date" name="end" value="<?= htmlspecialchars($customEnd, ENT_QUOTES, 'UTF-8') ?>" required>
+                    <button type="submit" class="filter-btn <?= $isCustom ? 'active' : '' ?>">自定义</button>
+                </form>
             </div>
             <table>
                 <thead>
@@ -73,4 +91,15 @@ $window = $tracker->rangeWindow($range);
     </div>
 </div>
 </body>
+<script>
+    function applyShareRange(form) {
+        var start = form.querySelector('input[name="start"]').value;
+        var end = form.querySelector('input[name="end"]').value;
+        if (!start || !end) {
+            return false;
+        }
+        form.querySelector('input[name="range"]').value = 'custom:' + start + ':' + end;
+        return true;
+    }
+</script>
 </html>

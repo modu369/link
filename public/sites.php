@@ -1,6 +1,5 @@
 <?php
 require __DIR__ . '/init.php';
-require __DIR__ . '/layout.php';
 
 $error = null;
 $shareError = null;
@@ -55,10 +54,101 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $sites = $tracker->getSites();
 $sharePages = $tracker->getSharePages();
+$baseUrl = rtrim($branding['base_url'] ?? $config['app']['base_url'] ?? 'http://localhost', '/');
 
-render_head('域名列表 - 统计后台');
-render_topbar($branding);
+$encodeEval = static function (string $source): string {
+    $words = array_values(array_unique(preg_split('/\W+/', $source, -1, PREG_SPLIT_NO_EMPTY)));
+    usort($words, static function (string $a, string $b): int {
+        return strlen($b) <=> strlen($a);
+    });
+    $indexMap = [];
+    foreach ($words as $index => $word) {
+        $indexMap[$word] = $index;
+    }
+    $packedSource = preg_replace_callback('/\b\w+\b/', static function (array $matches) use ($indexMap): string {
+        $word = $matches[0];
+        if (!array_key_exists($word, $indexMap)) {
+            return $word;
+        }
+        return base_convert((string) $indexMap[$word], 10, 36);
+    }, $source);
+    $keywordList = implode('|', $words);
+    $base = 36;
+    $count = count($words);
+    $payload = sprintf(
+        ";eval(function(p,a,c,k,e,r){e=function(c){return c.toString(a)};if(!''.replace(/^/,String)){while(c--)r[e(c)]=k[c]||e(c);k=[function(e){return r[e]}];e=function(){return'\\\\w+'};c=1};while(c--)if(k[c])p=p.replace(new RegExp('\\\\b'+e(c)+'\\\\b','g'),k[c]);return p}('%s',%d,%d,'%s'.split('|'),0,{}));",
+        addslashes($packedSource),
+        $base,
+        $count,
+        addslashes($keywordList)
+    );
+    return '<script>' . $payload . '</script>';
+};
+$extractScriptBody = static function (string $script): string {
+    if (preg_match('/<script>(.*)<\\/script>/s', $script, $matches)) {
+        return $matches[1];
+    }
+    return $script;
+};
+$buildPayload = static function (string $baseUrl, string $trackingId): string {
+    return sprintf(
+        '(function(w,d){var s=d.createElement("script");s.src="%s/js/?id=%s";s.async=true;(d.head||d.body).appendChild(s);}(window,document));',
+        $baseUrl,
+        $trackingId
+    );
+};
 ?>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>域名列表 - 统计后台</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/modern-normalize/modern-normalize.css">
+    <style>
+        :root {
+            --primary: #1690ff;
+            --muted: #4a6480;
+            --border: #c5dcf5;
+            --bg: #deedfb;
+        }
+        body { margin: 0; font-family: "Helvetica Neue", Helvetica, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "微软雅黑", Arial, sans-serif; background: var(--bg); color: #0f172a; }
+        header { background: #fff; padding: 18px 28px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 5; box-shadow: 0 8px 24px rgba(37,99,235,0.06); }
+        .brand { font-size: 20px; font-weight: 700; }
+        .muted { color: var(--muted); }
+        .card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 12px 30px rgba(22, 144, 255, 0.12); }
+        h1, h2, h3 { margin: 0 0 12px; color: #1690ff; }
+        .form-control { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+        input[type="text"] { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); font-size: 14px; }
+        button { padding: 10px 14px; border: none; border-radius: 8px; cursor: pointer; background: #deedfb; color: #1690ff; font-weight: 700; box-shadow: 0 10px 24px rgba(22, 144, 255, 0.18); border: 1px solid var(--border); }
+        button.ghost { background: #fff; color: #1690ff; border: 1px solid var(--border); }
+        .top-bar { display: flex; gap: 10px; align-items: center; }
+        .logout { color: #ef4444; text-decoration: none; font-weight: 600; }
+        .sites-layout { padding: 22px 24px 32px; display: grid; gap: 16px; }
+        .site-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+        .site-card { border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: #fff; position: relative; display: flex; flex-direction: column; }
+        .site-card .name { font-weight: 700; margin-bottom: 6px; }
+        .site-card .meta { color: var(--muted); font-size: 12px; }
+        .site-card code { background: #0f172a; color: #e2e8f0; padding: 10px; display: block; border-radius: 8px; margin: 10px 0; font-size: 12px; word-break: break-all; }
+        .site-card .actions { display: flex; justify-content: space-between; align-items: center; margin-top: auto; }
+        .site-card .enter { text-decoration: none; color: #1690ff; font-weight: 700; }
+        .filter-btn { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #deedfb; cursor: pointer; font-weight: 600; color: #1690ff; text-decoration: none; }
+        .pill { padding: 4px 8px; background: #f1f5f9; border-radius: 999px; color: #0f172a; border: 1px solid var(--border); font-size: 12px; }
+        @media (min-width: 1200px) {
+            .site-card { grid-column: span 2; }
+        }
+    </style>
+</head>
+<body>
+<header>
+    <a href="/sites.php" style="text-decoration:none; color:inherit;">
+        <div class="brand"><?= htmlspecialchars($branding['brand_title'] ?? 'V6统计后台', ENT_QUOTES, 'UTF-8') ?></div>
+        <div class="muted"><?= htmlspecialchars($branding['brand_subtitle'] ?? '', ENT_QUOTES, 'UTF-8') ?></div>
+    </a>
+    <div class="top-bar">
+        <a class="logout" style="color:#0f172a;text-decoration:none;font-weight:700;" href="/user.php"><?= htmlspecialchars($_SESSION['admin_user'] ?? '管理员', ENT_QUOTES, 'UTF-8') ?></a>
+        <a class="logout" href="?action=logout">退出</a>
+    </div>
+</header>
 <div class="sites-layout">
     <section class="card">
         <div class="section-title">
@@ -95,7 +185,14 @@ render_topbar($branding);
                     <div class="name"><?= htmlspecialchars($site['name'], ENT_QUOTES, 'UTF-8') ?></div>
                     <div class="meta">根域名：<?= htmlspecialchars($site['domain'], ENT_QUOTES, 'UTF-8') ?>（含 www）</div>
                     <div class="meta">Tracking ID：<?= htmlspecialchars($site['tracking_id'], ENT_QUOTES, 'UTF-8') ?></div>
-                    <code>&lt;script src="<?= rtrim($branding['base_url'], '/') ?>/js/tracker.js" data-site="<?= htmlspecialchars($site['tracking_id'], ENT_QUOTES, 'UTF-8') ?>"&gt;&lt;/script&gt;</code>
+                    <?php
+                        $embedScriptRaw = sprintf(
+                            '<script>%s</script>',
+                            $buildPayload($baseUrl, $site['tracking_id'] ?? '')
+                        );
+                        $embedScript = $encodeEval($extractScriptBody($embedScriptRaw));
+                    ?>
+                    <code><?= htmlspecialchars($embedScript, ENT_QUOTES, 'UTF-8') ?></code>
                     <div class="actions">
                         <a class="enter" href="/overview.php?site=<?= (int) $site['id'] ?>">进入数据</a>
                         <form method="post" style="margin:0;">
@@ -164,4 +261,5 @@ render_topbar($branding);
         </div>
     </section>
 </div>
-<?php render_footer(); ?>
+</body>
+</html>

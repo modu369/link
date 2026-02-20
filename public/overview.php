@@ -4,11 +4,13 @@ require __DIR__ . '/layout.php';
 
 $data = $selectedSite ? $tracker->getOverview($siteId, $range) : null;
 $avgMinutes = $data ? round(($data['totals']['averages']['duration'] ?? 0) / 60, 1) : 0;
-$trend = $data['trend'] ?? null;
+$trend = $data ? ($data['trend'] ?? null) : null;
+$showTrend = $trend && in_array($range, ['today', 'yesterday', 'day_before'], true);
 $topReferrers = $data ? array_slice($data['top_referrers'], 0, 20) : [];
 $topPages = $data ? array_slice($data['top_pages'], 0, 20) : [];
 $entryPages = $data ? array_slice($data['entry_pages'], 0, 20) : [];
 $regions = $data ? array_slice($data['regions'], 0, 20) : [];
+$yesterdayTotals = $data ? ($data['yesterday_totals'] ?? null) : null;
 
 render_head('总览 - 统计后台');
 render_topbar($branding);
@@ -19,12 +21,13 @@ render_topbar($branding);
     .hero-title { display: flex; align-items: center; gap: 12px; }
     .hero-dot { width: 42px; height: 42px; border-radius: 12px; background: linear-gradient(135deg, #1690ff, #73c1ff); display: grid; place-items: center; color: #fff; font-size: 18px; font-weight: 700; }
     .hero-meta { color: var(--muted); font-size: 13px; }
-    .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
-    .metric-tile { background: linear-gradient(135deg, #deedfb 0%, #f7fbff 100%); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: grid; grid-template-columns: 48px 1fr; gap: 10px; align-items: center; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); }
-    .metric-icon { width: 48px; height: 48px; border-radius: 12px; background: #fff; display: grid; place-items: center; color: #1690ff; font-size: 22px; box-shadow: 0 10px 22px rgba(22,144,255,0.16); }
-    .metric-info { display: flex; flex-direction: column; gap: 2px; }
-    .metric-info .label { color: var(--muted); font-size: 13px; }
-    .metric-info .val { font-size: 22px; font-weight: 800; color: #0f172a; }
+    .metric-grid { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; }
+    .metric-tile { background: linear-gradient(135deg, #deedfb 0%, #f7fbff 100%); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: inline-flex; align-items: center; gap: 10px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); flex: 0 1 auto; min-width: 180px; max-width: 100%; }
+    .metric-icon { width: 48px; height: 48px; border-radius: 12px; background: #fff; display: grid; place-items: center; color: #1690ff; font-size: 22px; box-shadow: 0 10px 22px rgba(22,144,255,0.16); flex-shrink: 0; }
+    .metric-icon.yesterday { background: linear-gradient(135deg, #ffe6c7 0%, #fff6e9 100%); color: #d97706; box-shadow: 0 10px 22px rgba(217, 119, 6, 0.16); }
+    .metric-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .metric-info .label { color: var(--muted); font-size: 12px; font-weight: 400; word-break: break-word; }
+    .metric-info .val { font-size: 12px; font-weight: 400; color: #0f172a; word-break: break-word; }
     .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; align-items: stretch; }
     .pill-tag { background: #deedfb; color: #1690ff; padding: 4px 10px; border-radius: 999px; font-weight: 700; border: 1px solid var(--border); }
     .chart-wrap { position: relative; width: 100%; }
@@ -71,23 +74,30 @@ render_topbar($branding);
                     <div class="metric-tile"><div class="metric-icon">🔮</div><div class="metric-info"><div class="label">预计今日 PV</div><div class="val"><?= $data['predictions']['views']?></div></div></div>
                     <div class="metric-tile"><div class="metric-icon">🔮</div><div class="metric-info"><div class="label">预计今日 UV</div><div class="val"><?= $data['predictions']['uniques'] ?></div></div></div>
                     <div class="metric-tile"><div class="metric-icon">🔮</div><div class="metric-info"><div class="label">预计今日 IP</div><div class="val"><?= $data['predictions']['ips'] ?></div></div></div>
+                    <?php if ($range === 'today' && $yesterdayTotals): ?>
+                        <div class="metric-tile"><div class="metric-icon yesterday">📈</div><div class="metric-info"><div class="label">昨日 PV</div><div class="val"><?= $yesterdayTotals['views'] ?? 0 ?></div></div></div>
+                        <div class="metric-tile"><div class="metric-icon yesterday">👥</div><div class="metric-info"><div class="label">昨日 UV</div><div class="val"><?= $yesterdayTotals['uniques'] ?? 0 ?></div></div></div>
+                        <div class="metric-tile"><div class="metric-icon yesterday">🌐</div><div class="metric-info"><div class="label">昨日 IP</div><div class="val"><?= $yesterdayTotals['ip_count'] ?? 0 ?></div></div></div>
+                    <?php endif; ?>
                 </div>
             </section>
 
-            <section class="card">
-                <div class="section-title" style="justify-content: space-between; gap: 12px; flex-wrap: wrap;">
-                    <div class="trend-controls">
-                        <h3 style="margin:0;">趋势热力</h3>
-                        <span class="pill-tag"><?= $trend['granularity'] === 'hour' ? '小时对比' : '按天走势' ?></span>
+            <?php if ($showTrend): ?>
+                <section class="card">
+                    <div class="section-title" style="justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                        <div class="trend-controls">
+                            <h3 style="margin:0;">趋势热力</h3>
+                            <span class="pill-tag"><?= $trend['granularity'] === 'hour' ? '小时对比' : '按天走势' ?></span>
+                        </div>
+                        <div class="trend-toggle">
+                            <button class="active" data-metric="ips">IP</button>
+                            <button data-metric="uniques">UV</button>
+                            <button data-metric="views">PV</button>
+                        </div>
                     </div>
-                    <div class="trend-toggle">
-                        <button class="active" data-metric="ips">IP</button>
-                        <button data-metric="uniques">UV</button>
-                        <button data-metric="views">PV</button>
-                    </div>
-                </div>
-                <div class="chart-wrap trend-wrap"><canvas id="dailyTrendChart"></canvas></div>
-            </section>
+                    <div class="chart-wrap trend-wrap"><canvas id="dailyTrendChart"></canvas></div>
+                </section>
+            <?php endif; ?>
 
             <div class="grid-2">
                 <section class="card">
@@ -210,6 +220,7 @@ render_topbar($branding);
             <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
             <script src="https://fastly.jsdelivr.net/npm/echarts@5.0.0-alpha.2/map/js/china.js"></script>
             <script>
+                <?php if ($showTrend): ?>
                 const trendData = <?= json_encode($trend, JSON_UNESCAPED_UNICODE) ?>;
                 const ctxDaily = document.getElementById('dailyTrendChart');
                 let trendChart = null;
@@ -224,16 +235,17 @@ render_topbar($branding);
                     compareGrad.addColorStop(0, '#73c1ff');
                     compareGrad.addColorStop(1, 'rgba(115,193,255,0.08)');
 
-                    const datasets = [
-                        {
+                    const datasets = [];
+                    if (trendData.primary) {
+                        datasets.push({
                             label: trendData.primary_label,
                             data: trendData.primary?.[metric] || [],
                             borderColor: '#1690ff',
                             backgroundColor: primaryGrad,
                             tension: 0.35,
                             fill: true,
-                        }
-                    ];
+                        });
+                    }
 
                     if (trendData.compare) {
                         datasets.push({
@@ -270,6 +282,7 @@ render_topbar($branding);
                 });
 
                 renderTrend('ips');
+                <?php endif; ?>
 
                 const chinaRows = <?= json_encode($data['china_map'] ?? [], JSON_UNESCAPED_UNICODE) ?>;
                 const chinaEl = document.getElementById('chinaMap');

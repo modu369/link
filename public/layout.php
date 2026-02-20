@@ -33,14 +33,14 @@ function render_head(string $title = '统计后台'): void
             .logout { color: #ef4444; text-decoration: none; font-weight: 600; }
             .sites-layout { padding: 22px 24px 32px; display: grid; gap: 16px; }
             .site-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
-            .site-card { border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: #fff; position: relative; }
+            .site-card { border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: #fff; position: relative; min-height: 240px; display: flex; flex-direction: column; }
             .site-card .name { font-weight: 700; margin-bottom: 6px; }
             .site-card .meta { color: var(--muted); font-size: 12px; }
-            .site-card code { background: #0f172a; color: #e2e8f0; padding: 10px; display: block; border-radius: 8px; margin: 10px 0; font-size: 12px; word-break: break-all; }
-            .site-card .actions { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+            .site-card code { background: #0f172a; color: #e2e8f0; padding: 10px; display: block; border-radius: 8px; margin: 10px 0; font-size: 12px; word-break: break-all; max-height: 120px; overflow: auto; }
+            .site-card .actions { display: flex; justify-content: space-between; align-items: center; margin-top: auto; }
             .site-card .enter { text-decoration: none; color: #1690ff; font-weight: 700; }
-            .data-layout { display: grid; grid-template-columns: 240px 1fr; gap: 16px; padding: 22px 24px 32px; align-items: start; }
-            .nav { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 12px 30px rgba(22, 144, 255, 0.12); position: sticky; top: 90px; }
+            .data-layout { display: grid; grid-template-columns: minmax(220px, 260px) minmax(0, 1fr); gap: 16px; padding: 22px 24px 32px; align-items: start; width: 100%; box-sizing: border-box; }
+            .nav { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 12px 30px rgba(22, 144, 255, 0.12); position: sticky; top: 90px; max-height: calc(100vh - 120px); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
             .nav .site-name { font-size: 18px; font-weight: 700; margin: 0 0 4px; }
             .nav .site-domain { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
             .nav select { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 12px; }
@@ -51,22 +51,47 @@ function render_head(string $title = '统计后台'): void
             .nav-section.open .nav-links { display: block; }
             .nav a { display: block; padding: 10px 12px; border-radius: 10px; text-decoration: none; color: #1690ff; font-weight: 600; border: 1px solid transparent; margin: 4px 8px; }
             .nav a.active { background: #1690ff; color: #fff; border-color: #1690ff; box-shadow: 0 8px 18px rgba(22,144,255,0.18); }
-            .nav .return-link { display: block; width: 100%; margin-top: 12px; text-align: center; padding: 10px 12px; border-radius: 10px; background: #deedfb; font-weight: 700; color: #1690ff; text-decoration: none; border: 1px dashed var(--border); box-shadow: 0 12px 30px rgba(22, 144, 255, 0.12); }
+            .nav .return-link { display: block; margin: 12px 0px 4px; padding: 10px 12px; border-radius: 10px; background: #deedfb; font-weight: 700; color: #1690ff; text-decoration: none; border: 1px dashed var(--border); box-shadow: 0 12px 30px rgba(22, 144, 255, 0.12); text-align: left; }
             .content { display: grid; gap: 12px; }
             .filters { display: flex; gap: 10px; align-items: center; justify-content: flex-end; }
             .filter-btn { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #deedfb; cursor: pointer; font-weight: 600; color: #1690ff; text-decoration: none; }
             .filter-btn.active { background: #1690ff; color: #fff; border-color: #1690ff; box-shadow: 0 8px 18px rgba(22,144,255,0.18); }
-            .metric-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
-            .metric { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card-gradient); color: #0f172a; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); }
-            .metric .value { font-size: 22px; font-weight: 700; }
+            .date-range-form { display: inline-flex; align-items: center; gap: 8px; }
+            .date-range-form input[type="date"] {
+                padding: 6px 10px;
+                border-radius: 8px;
+                border: 1px solid #73c1ff;
+                line-height: 1.6;
+                font-size: 14px;
+                background: #fff;
+            }
+            .date-range-form input[type="date"]::-webkit-calendar-picker-indicator {
+                transform: scale(1.2);
+            }
+            .metric-row { display: flex; flex-wrap: wrap; gap: 10px; }
+            .metric { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card-gradient); color: #0f172a; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); flex: 1 1 170px; min-width: 160px; box-sizing: border-box; }
+            .metric .value { font-size: 12px; font-weight: 400; word-break: break-word; }
             .card-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; align-items: start; }
             table { width: 100%; border-collapse: collapse; }
             th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: left; }
             th { color: var(--muted); font-weight: 600; }
+            .table-wrapper { width: 100%; overflow-x: auto; }
+            .url-ellipsis { max-width: 320px; display: inline-block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+            @media (max-width: 768px) {
+                .url-ellipsis { max-width: 220px; }
+            }
             code.inline { background: #0f172a; color: #e2e8f0; padding: 12px; display: block; border-radius: 8px; word-break: break-all; }
             .section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
             .pill { padding: 4px 8px; background: #f1f5f9; border-radius: 999px; color: #0f172a; border: 1px solid var(--border); font-size: 12px; }
             .empty { padding: 24px; text-align: center; color: var(--muted); }
+            .pagination { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding: 8px 0; flex-wrap: wrap; }
+            .pagination a, .pagination span { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); text-decoration: none; color: #1690ff; font-weight: 600; background: #fff; min-width: 36px; text-align: center; }
+            .pagination .current { background: #1690ff; color: #fff; box-shadow: 0 8px 18px rgba(22,144,255,0.18); }
+            .pagination .disabled { color: var(--muted); border-style: dashed; background: #f8fbff; }
+            @media (max-width: 1100px) {
+                .data-layout { grid-template-columns: 1fr; }
+                .nav { position: static; top: auto; }
+            }
         </style>
     </head>
     <body>
@@ -138,6 +163,9 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
                 'title' => '配置',
                 'items' => [
                     ['key' => 'config', 'label' => '配置修改', 'href' => "/config.php?site={$siteId}&range={$range}"],
+                    ['key' => 'blocked_domains', 'label' => '被拦截域名', 'href' => "/blocked_domains.php?site={$siteId}&range={$range}"],
+                    ['key' => 'proxy_block', 'label' => '刷量风险IP', 'href' => "/proxy_block.php?site={$siteId}&range={$range}"],
+                    ['key' => 'code', 'label' => '获取代码', 'href' => "/code.php?site={$siteId}&range={$range}"],
                 ],
             ],
         ];
@@ -175,16 +203,95 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
 
 function render_range_filters(array $allowedRanges, string $range, string $page, int $siteId, array $extra = []): void
 {
+    $isCustom = str_starts_with($range, 'custom:');
+    $customStart = '';
+    $customEnd = '';
+    if ($isCustom) {
+        $parts = explode(':', $range);
+        $customStartRaw = $parts[1] ?? '';
+        $customEndRaw = $parts[2] ?? '';
+        $customStart = preg_match('/^\d{4}-\d{2}-\d{2}$/', $customStartRaw) ? $customStartRaw : '';
+        $customEnd = preg_match('/^\d{4}-\d{2}-\d{2}$/', $customEndRaw) ? $customEndRaw : '';
+    }
     ?>
     <div class="filters">
         <span class="muted" style="font-size:13px;">时间范围</span>
         <?php foreach ($allowedRanges as $r): ?>
             <?php $qs = http_build_query(array_merge(['site' => (int)$siteId, 'range' => $r], $extra)); ?>
             <a class="filter-btn <?= $range === $r ? 'active' : '' ?>" href="/<?= htmlspecialchars($page, ENT_QUOTES, 'UTF-8') ?>.php?<?= $qs ?>">
-                <?= ['today' => '今日', 'yesterday' => '昨日', '7d' => '近7天', '30d' => '近30天'][$r] ?>
+                <?= ['today' => '今日', 'yesterday' => '昨日', 'day_before' => '前天', '7d' => '近7天'][$r] ?>
             </a>
         <?php endforeach; ?>
+        <form method="get" action="/<?= htmlspecialchars($page, ENT_QUOTES, 'UTF-8') ?>.php" class="date-range-form" onsubmit="return applyCustomRange(this);">
+            <?php foreach ($extra as $key => $value): ?>
+                <input type="hidden" name="<?= htmlspecialchars($key, ENT_QUOTES, 'UTF-8') ?>" value="<?= htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8') ?>">
+            <?php endforeach; ?>
+            <input type="hidden" name="site" value="<?= (int) $siteId ?>">
+            <input type="hidden" name="range" value="">
+            <input type="date" name="start" value="<?= htmlspecialchars($customStart, ENT_QUOTES, 'UTF-8') ?>" required>
+            <span class="muted">-</span>
+            <input type="date" name="end" value="<?= htmlspecialchars($customEnd, ENT_QUOTES, 'UTF-8') ?>" required>
+            <button type="submit" class="filter-btn <?= $isCustom ? 'active' : '' ?>">自定义</button>
+        </form>
     </div>
+    <script>
+        function applyCustomRange(form) {
+            var start = form.querySelector('input[name="start"]').value;
+            var end = form.querySelector('input[name="end"]').value;
+            if (!start || !end) {
+                return false;
+            }
+            form.querySelector('input[name="range"]').value = 'custom:' + start + ':' + end;
+            return true;
+        }
+    </script>
+    <?php
+}
+
+function render_pagination(int $page, int $totalPages, string $path, array $params = []): void
+{
+    if ($totalPages <= 1) {
+        return;
+    }
+    $page = max(1, $page);
+    $totalPages = max(1, $totalPages);
+    $prevPage = max(1, $page - 1);
+    $nextPage = min($totalPages, $page + 1);
+    $renderLink = function(int $p, string $label, bool $disabled = false, bool $current = false) use ($path, $params) {
+        $query = http_build_query(array_merge($params, ['page' => $p]));
+        $href = $path . '?' . $query;
+        $class = $current ? 'current' : '';
+        if ($disabled) {
+            echo '<span class="disabled">' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '</span>';
+        } else {
+            echo '<a class="' . $class . '" href="' . htmlspecialchars($href, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '</a>';
+        }
+    };
+    ?>
+    <nav class="pagination" aria-label="分页">
+        <?php
+        $renderLink($prevPage, '上一页', $page === 1);
+        $window = 2;
+        $start = max(1, $page - $window);
+        $end = min($totalPages, $page + $window);
+        if ($start > 1) {
+            $renderLink(1, '1', false, $page === 1);
+            if ($start > 2) {
+                echo '<span class="disabled">...</span>';
+            }
+        }
+        for ($i = $start; $i <= $end; $i++) {
+            $renderLink($i, (string) $i, false, $i === $page);
+        }
+        if ($end < $totalPages) {
+            if ($end < $totalPages - 1) {
+                echo '<span class="disabled">...</span>';
+            }
+            $renderLink($totalPages, (string) $totalPages, false, $page === $totalPages);
+        }
+        $renderLink($nextPage, '下一页', $page === $totalPages);
+        ?>
+    </nav>
     <?php
 }
 

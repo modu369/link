@@ -12,31 +12,49 @@ $filters = [
     'ip' => $_GET['ip'] ?? '',
     'keyword' => $_GET['keyword'] ?? '',
 ];
+$page = max(1, (int) ($_GET['page'] ?? 1));
+$perPage = 50;
 
-$detailRange = in_array($range, ['today', 'yesterday']) ? $range : '15d';
-$data = $selectedSite ? $tracker->getContentData($siteId, $detailRange, $filters) : null;
+$detailRange = in_array($range, ['today', 'yesterday', 'day_before', '7d'], true)
+    ? $range
+    : (str_starts_with($range, 'custom:') ? $range : '7d');
+$data = $selectedSite ? $tracker->getContentData($siteId, $detailRange, $filters, $page, $perPage) : null;
+if ($selectedSite && $data) {
+    $totalSessions = (int) ($data['total_sessions'] ?? 0);
+    $totalPages = max(1, (int) ceil($totalSessions / $perPage));
+    if ($page > $totalPages) {
+        $page = $totalPages;
+    }
+} else {
+    $totalPages = 1;
+    $totalSessions = 0;
+}
 
 render_head('访问明细 - 统计后台');
 render_topbar($branding);
 ?>
 <style>
-    .content-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
-    .summary-card { background:#fff; border:1px solid var(--border); border-radius:12px; padding:14px; display:flex; gap:10px; align-items:center; box-shadow:0 10px 24px rgba(22,144,255,0.08); }
-    .summary-icon { width:44px; height:44px; border-radius:12px; background:#deedfb; display:grid; place-items:center; color:#1690ff; font-size:18px; }
-    .summary-info { display:flex; flex-direction:column; gap:2px; }
-    .summary-info .label { color:var(--muted); font-size:13px; }
-    .summary-info .val { font-size:20px; font-weight:800; }
-    .filters { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; }
-    .filters label { font-size:12px; color:var(--muted); display:flex; flex-direction:column; gap:4px; min-width:120px; }
-    .filters input, .filters select { width:180px; max-width:220px; padding:8px 10px; border:1px solid var(--border); border-radius:8px; }
-    .visit-table { width:100%; border-collapse: collapse; }
-    .visit-table th, .visit-table td { border-bottom:1px solid var(--border); padding:8px 6px; text-align:left; }
+    .content-grid { display:flex; flex-wrap:wrap; gap:12px; }
+    .summary-card { background:#fff; border:1px solid var(--border); border-radius:12px; padding:14px; display:flex; gap:10px; align-items:center; box-shadow:0 10px 24px rgba(22,144,255,0.08); flex:0 1 auto; min-width:200px; }
+    .summary-icon { width:44px; height:44px; border-radius:12px; background:#deedfb; display:grid; place-items:center; color:#1690ff; font-size:18px; flex-shrink:0; }
+    .summary-info { display:flex; flex-direction:column; gap:4px; min-width:0; }
+    .summary-info .label { color:var(--muted); font-size:12px; font-weight:400; word-break:break-word; }
+    .summary-info .val { font-size:12px; font-weight:400; word-break:break-word; }
+    .filters { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; width:100%; }
+    .filters label { font-size:12px; color:var(--muted); display:flex; flex-direction:column; gap:4px; min-width:160px; flex:1 1 200px; max-width:240px; }
+    .filters input, .filters select { width:100%; padding:8px 10px; border:1px solid var(--border); border-radius:8px; box-sizing:border-box; }
+    .visit-table-wrapper { overflow:auto; max-height:700px; width:100%; }
+    .visit-table { width:100%; border-collapse: collapse; table-layout: fixed; font-size:12px; }
+    .visit-table th, .visit-table td { border-bottom:1px solid var(--border); padding:6px 4px; text-align:left; word-break:break-all; }
     .visit-table th { background:#f8fbff; color:#0f172a; position:sticky; top:0; }
     .visit-table tbody tr:hover { background:#f4f8ff; }
     .badge { display:inline-block; padding:2px 8px; border-radius:10px; background:#deedfb; color:#1690ff; font-weight:700; font-size:12px; }
     .status-live { color:#15a655; font-weight:700; }
     .status-done { color:#999; }
     .note { color:var(--muted); font-size:13px; }
+    @media (max-width: 1280px) {
+        .visit-table-wrapper { transform: scale(0.96); transform-origin: top left; width: calc(100% / 0.96); }
+    }
 </style>
 <div class="data-layout">
     <?php render_sidebar($sites, $siteId, $selectedSite, 'content', $range); ?>
@@ -68,6 +86,7 @@ render_topbar($branding);
                     </div>
                     <form method="get" class="filters">
                         <input type="hidden" name="site" value="<?= (int)$siteId ?>" />
+                        <input type="hidden" name="page" value="1" />
                         <label>时间
                             <input type="date" name="date" value="<?= htmlspecialchars($filters['date'], ENT_QUOTES, 'UTF-8') ?>" max="<?= date('Y-m-d') ?>">
                         </label>
@@ -114,9 +133,9 @@ render_topbar($branding);
             <section class="card">
                 <div class="section-title" style="justify-content:space-between;">
                     <h3 style="margin:0;">访问明细</h3>
-                    <span class="note">共 <?= (int)$data['total_sessions'] ?> 条 · 近15天数据</span>
+                    <span class="note">共 <?= (int)$data['total_sessions'] ?> 条 · 近15天数据 · 每页 <?= $perPage ?> 条</span>
                 </div>
-                <div style="overflow:auto; max-height:700px;">
+                <div class="visit-table-wrapper">
                     <table class="visit-table">
                         <thead>
                         <tr>
@@ -168,6 +187,13 @@ render_topbar($branding);
                         </tbody>
                     </table>
                 </div>
+                <?php
+                    $paginationParams = array_merge(
+                        ['site' => (int) $siteId, 'range' => $range],
+                        $filters
+                    );
+                    render_pagination($page, $totalPages, '/content.php', $paginationParams);
+                ?>
             </section>
         <?php endif; ?>
     </main>
