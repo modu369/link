@@ -43,12 +43,11 @@ class Tracker
     private int $ingestStalledAfter = 300;
     private array $ingestFilterDefaults = ['ip_filters' => '', 'keyword_filters' => '', 'asn_filters' => '', 'ua_filters' => ''];
     private array $ingestFilters = ['ip_filters' => '', 'keyword_filters' => '', 'asn_filters' => '', 'ua_filters' => ''];
-    private string $ipRiskQueueKey = 'tracker:ingest:ip_risk';
-    private string $ipRiskProcessingKey = 'tracker:ingest:ip_risk:processing';
-    private int $ipRiskMaxQueueLength = 200000;
-    private string $ipRiskApi = 'https://qifu.baidu.com/api/v1/ip-portrait/brief-info?ip=';
-    private string $proxyBlockedKey = 'proxy:blocked_ips';
-    private int $proxyBlockTtlSeconds = 14400;
+    private int $proxyCleanupInterval = 600;
+    private int $proxyCleanupBatch = 10;
+    private int $proxyRecoverySeconds = 3600;
+    private int $proxyProbationSeconds = 3600;
+    private int $proxyRiskHoldSeconds = 3600;
     private array $rollupCoverageCache = [];
     private array $rollupSpanCache = [];
 
@@ -87,9 +86,6 @@ class Tracker
         $this->blockedDomainQueueKey = $ingest['blocked_domain_queue_key'] ?? $this->blockedDomainQueueKey;
         $this->blockedDomainProcessingKey = $ingest['blocked_domain_processing_key'] ?? $this->blockedDomainProcessingKey;
         $this->blockedDomainMaxQueueLength = max(0, (int) ($ingest['blocked_domain_max_queue_length'] ?? $this->blockedDomainMaxQueueLength));
-        $this->ipRiskQueueKey = $ingest['ip_risk_queue_key'] ?? $this->ipRiskQueueKey;
-        $this->ipRiskProcessingKey = $ingest['ip_risk_processing_key'] ?? $this->ipRiskProcessingKey;
-        $this->ipRiskMaxQueueLength = max(0, (int) ($ingest['ip_risk_max_queue_length'] ?? $this->ipRiskMaxQueueLength));
         $this->ingestAutoDrain = (bool) ($ingest['auto_drain'] ?? $this->ingestAutoDrain);
         $this->ingestAutoDrainEvery = max(1, (int) ($ingest['auto_drain_every'] ?? $this->ingestAutoDrainEvery));
         $this->ingestAutoDrainBatch = max(1, (int) ($ingest['auto_drain_batch'] ?? $this->ingestAutoDrainBatch));
@@ -113,6 +109,7 @@ class Tracker
         $this->hydrateIngestFilters();
         $this->maybeCleanupRetention();
         $this->maybeCleanupBlockedDomains();
+        $this->maybeCleanupProxyHistory();
     }
 
     private function cacheAggregate(string $key, int $ttlSeconds, callable $builder): array
@@ -304,273 +301,6 @@ class Tracker
         $this->redis->lPush($this->blockedDomainQueueKey, json_encode($payload, JSON_UNESCAPED_UNICODE));
     }
 
-    public function getBlockedProxyIpCount(): int
-    {
-        try {
-            $this->redis->zRemRangeByScore($this->proxyBlockedKey, '-inf', (string) (time() - $this->proxyBlockTtlSeconds));
-            return (int) $this->redis->zCard($this->proxyBlockedKey);
-        } catch (Throwable $e) {
-            return 0;
-        }
-    }
-
-    public function getBlockedProxyIps(int $page = 1, int $perPage = 50): array
-    {
-        $page = max(1, $page);
-        $perPage = max(1, min(200, $perPage));
-        $start = ($page - 1) * $perPage;
-        $end = $start + $perPage - 1;
-        try {
-            $this->redis->zRemRangeByScore($this->proxyBlockedKey, '-inf', (string) (time() - $this->proxyBlockTtlSeconds));
-            $rows = $this->redis->zRevRange($this->proxyBlockedKey, $start, $end, true);
-            $result = [];
-            foreach ($rows as $ip => $ts) {
-                $result[] = [
-                    'ip' => (string) $ip,
-                    'blocked_at' => date('Y-m-d H:i:s', (int) $ts),
-                ];
-            }
-            return $result;
-        } catch (Throwable $e) {
-            return [];
-        }
-    }
-
-    private function rememberBlockedProxyIp(string $ip): void
-    {
-        if ($ip === '') {
-            return;
-        }
-        $now = time();
-        try {
-            $this->redis->zAdd($this->proxyBlockedKey, $now, $ip);
-            $this->redis->zRemRangeByScore($this->proxyBlockedKey, '-inf', (string) ($now - $this->proxyBlockTtlSeconds));
-        } catch (Throwable $e) {
-            // ignore
-        }
-    }
-
-    private function isBlockedProxyIp(string $ip): bool
-    {
-        if ($ip === '') {
-            return false;
-        }
-        $now = time();
-        try {
-            $score = $this->redis->zScore($this->proxyBlockedKey, $ip);
-            if ($score === false || $score === null) {
-                return false;
-            }
-            if (((int) $score) < ($now - $this->proxyBlockTtlSeconds)) {
-                $this->redis->zRem($this->proxyBlockedKey, $ip);
-                return false;
-            }
-            return true;
-        } catch (Throwable $e) {
-            return false;
-        }
-    }
-
-    private function evaluateLocalProxyRisk(string $ip, string $ipHash, string $sessionId, string $fingerprint, string $userAgent, int $duration, int $pageCount, array $geo): array
-    {
-        $score = 0;
-        $uid = $fingerprint !== '' ? $fingerprint : $sessionId;
-        $now = time();
-
-        $ua = strtolower($userAgent);
-        foreach (['python', 'curl', 'wget', 'scrapy', 'headless', 'selenium', 'phantom', 'httpclient'] as $bad) {
-            if ($ua !== '' && str_contains($ua, $bad)) {
-                $score += 35;
-                break;
-            }
-        }
-
-        $asn = strtolower((string) ($geo['isp_domain'] ?? ''));
-        foreach (['amazon', 'google', 'azure', 'linode', 'digitalocean', 'cloudflare', 'tencent cloud', 'aliyun', 'oracle'] as $dc) {
-            if ($asn !== '' && str_contains($asn, $dc)) {
-                $score += 25;
-                break;
-            }
-        }
-
-        $country = (string) ($geo['country_name'] ?? '');
-        if ($country !== '' && !str_contains($country, '中国')) {
-            $score += 10;
-        }
-
-        if ($ip !== '') {
-            $rateKey = 'proxy:risk:rate:' . $ip;
-            $count10 = (int) $this->redis->incr($rateKey);
-            if ($count10 === 1) {
-                $this->redis->expire($rateKey, 10);
-            }
-            if ($count10 > 15) {
-                $score += 30;
-            }
-        }
-
-        if ($uid !== '') {
-            $stateKey = 'proxy:risk:state:' . hash('sha256', $uid);
-            $raw = $this->redis->get($stateKey);
-            $last = is_string($raw) ? json_decode($raw, true) : null;
-            if (is_array($last)) {
-                $lastIp = (string) ($last['ip'] ?? '');
-                $lastRegion = (string) ($last['region'] ?? '');
-                $lastAsn = (string) ($last['asn'] ?? '');
-                $lastTs = (int) ($last['ts'] ?? 0);
-                if ($lastIp !== '' && $ip !== '' && $lastIp !== $ip) {
-                    $score += 20;
-                    if ($lastRegion !== '' && $lastRegion !== (string) ($geo['region_name'] ?? '')) {
-                        $score += 10;
-                    }
-                    if ($lastAsn !== '' && $lastAsn !== (string) ($geo['isp_domain'] ?? '')) {
-                        $score += 10;
-                    }
-                    if ($lastTs > 0 && ($now - $lastTs) <= 600) {
-                        $score += 15;
-                    }
-                }
-            }
-            $this->redis->setex($stateKey, 1800, json_encode([
-                'ip' => $ip,
-                'region' => (string) ($geo['region_name'] ?? ''),
-                'asn' => (string) ($geo['isp_domain'] ?? ''),
-                'ts' => $now,
-            ], JSON_UNESCAPED_UNICODE));
-        }
-
-        if ($duration >= 10) {
-            $score -= 8;
-        }
-        if ($pageCount >= 3) {
-            $score -= 10;
-        }
-        $score = max(0, min(100, $score));
-
-        $isRisk = $score >= 45;
-        $blocked = $score >= 75;
-        if ($blocked && $ip !== '') {
-            $this->rememberBlockedProxyIp($ip);
-        }
-
-        if ($ipHash !== '') {
-            $riskKey = 'proxy:risk_ip:' . $ipHash;
-            if ($isRisk) {
-                $this->redis->setex($riskKey, 86400, '1');
-            } else {
-                $this->redis->del($riskKey);
-                $this->redis->lPush('proxy:risk_recover', $ipHash);
-            }
-        }
-
-        return ['risk' => $isRisk, 'blocked' => $blocked, 'score' => $score];
-    }
-
-    private function ipRiskCacheKey(string $ip): string
-    {
-        return 'ip:risk:level:' . $ip;
-    }
-
-    private function getCachedIpRiskLevel(string $ip): ?int
-    {
-        try {
-            $cached = $this->redis->get($this->ipRiskCacheKey($ip));
-            if ($cached === false || $cached === null) {
-                return null;
-            }
-            $level = (int) $cached;
-            if ($level < 0 || $level > 4) {
-                return null;
-            }
-            return $level;
-        } catch (Throwable $e) {
-            return null;
-        }
-    }
-
-    private function enqueueIpRiskLookup(string $ip): void
-    {
-        if ($ip === '') {
-            return;
-        }
-
-        $dedupeKey = 'ip:risk:queued:' . $ip;
-        try {
-            if (!$this->redis->setnx($dedupeKey, '1')) {
-                return;
-            }
-            $this->redis->expire($dedupeKey, 600);
-
-            if ($this->ipRiskMaxQueueLength > 0) {
-                $len = (int) $this->redis->lLen($this->ipRiskQueueKey);
-                if ($len >= $this->ipRiskMaxQueueLength) {
-                    return;
-                }
-            }
-
-            $payload = [
-                'ip' => $ip,
-                'received_at' => time(),
-            ];
-            $this->redis->lPush($this->ipRiskQueueKey, json_encode($payload, JSON_UNESCAPED_UNICODE));
-        } catch (Throwable $e) {
-            // ignore
-        }
-    }
-
-    private function fetchIpRiskLevelFromApi(string $ip): int
-    {
-        $url = $this->ipRiskApi . urlencode($ip);
-        $ch = curl_init($url);
-        if (!$ch) {
-            return 0;
-        }
-
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT_MS => 1500,
-            CURLOPT_CONNECTTIMEOUT_MS => 800,
-            CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_SSL_VERIFYHOST => false,
-            CURLOPT_HTTPHEADER => [
-                'Referer: https://www.baidu.com',
-                'Origin: https://www.baidu.com',
-                'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
-            ],
-        ]);
-
-        $body = curl_exec($ch);
-        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        if (!is_string($body) || $body === '' || $httpCode !== 200) {
-            return 0;
-        }
-
-        $json = json_decode($body, true);
-        if (!is_array($json)) {
-            return 0;
-        }
-
-        $riskRaw = (string) ($json['data']['risk_score'] ?? '');
-        $risk = preg_replace('/\s+/u', '', trim($riskRaw)) ?? '';
-
-        if ($risk === '' || str_contains($risk, '无')) {
-            return 0;
-        }
-        if (str_contains($risk, '低')) {
-            return 1;
-        }
-        if (str_contains($risk, '中')) {
-            return 2;
-        }
-        if (str_contains($risk, '高')) {
-            return 3;
-        }
-
-        return 0;
-    }
-
     private function persistBlockedDomain(int $siteId, string $domain): void
     {
         if ($siteId <= 0 || $domain === '') {
@@ -632,7 +362,6 @@ class Tracker
         $audienceLabel = 'returning';
         $uvToday = false;
         $isUnique = false;
-        $isProxyRisk = false;
 
         $rawSessionId = $this->limitText($payload['session_id'] ?? '', 64);
         $rawFingerprint = $this->limitText($payload['fingerprint'] ?? '', 128);
@@ -641,6 +370,7 @@ class Tracker
         if ($fingerprint === '') {
             $fingerprint = $sessionId;
         }
+        $uidProvided = $rawSessionId !== '' || $rawFingerprint !== '';
         $duration = max(0, (int) ($payload['duration'] ?? 0));
         $pageCount = max(1, (int) ($payload['page_count'] ?? 1));
         $userAgent = $this->limitText($payload['user_agent'] ?? '', 1024);
@@ -650,26 +380,56 @@ class Tracker
         }
         $isMobile = $this->isMobile($userAgent);
         $keyword = $this->limitText($this->extractKeyword($referrer) ?? '', 255);
+        $headerMeta = [
+            'language' => $this->limitText($payload['language'] ?? '', 32),
+            'showp' => $this->limitText($payload['showp'] ?? '', 32),
+            'ntime' => $this->limitText($payload['ntime'] ?? '', 16),
+            'accept_language' => $this->limitText($payload['accept_language'] ?? '', 128),
+            'accept_encoding' => $this->limitText($payload['accept_encoding'] ?? '', 128),
+            'sec_ch_ua' => $this->limitText($payload['sec_ch_ua'] ?? '', 256),
+            'sec_ch_ua_mobile' => $this->limitText($payload['sec_ch_ua_mobile'] ?? '', 32),
+            'sec_ch_ua_platform' => $this->limitText($payload['sec_ch_ua_platform'] ?? '', 64),
+            'sec_fetch_site' => $this->limitText($payload['sec_fetch_site'] ?? '', 32),
+            'sec_fetch_mode' => $this->limitText($payload['sec_fetch_mode'] ?? '', 32),
+            'sec_fetch_dest' => $this->limitText($payload['sec_fetch_dest'] ?? '', 32),
+            'referrer_host' => $this->limitText($referrerHost ?? '', 255),
+        ];
+        $fallbackUid = $this->buildFallbackUid($ip, $userAgent, $headerMeta);
+        $proxyRisk = ['blocked' => false, 'risk' => false];
         if (!$isBot) {
-            if ($this->isBlockedProxyIp($ip)) {
-                return;
-            }
             if ($this->shouldFilterIngest($ip, $keyword, $path, $referrer, $userAgent)) {
                 return;
             }
 
             $geo = $ip ? $this->resolveIpMeta($ip) : [];
-            $riskState = $this->evaluateLocalProxyRisk($ip, (string) ($ipHash ?? ''), $sessionId, $fingerprint, $userAgent, $duration, $pageCount, $geo);
-            if (!empty($riskState['blocked'])) {
-                return;
-            }
-            $isProxyRisk = !empty($riskState['risk']);
-
             $countryName = $this->limitText($geo['country_name'] ?? '', 128);
             $regionName = $this->limitText($geo['region_name'] ?? '', 128);
             $cityName = $this->limitText($geo['city_name'] ?? '', 128);
             $ispName = $this->limitText($geo['isp_domain'] ?? '', 128);
             $countryCode = $this->limitText($geo['country_code'] ?? '', 16);
+            $asnMeta = $ip ? $this->resolveAsnMeta($ip) : [];
+
+            $proxyRisk = $this->isProxySuspicious(
+                $sessionId,
+                $fingerprint,
+                $uidProvided,
+                $fallbackUid,
+                $userAgent,
+                $duration,
+                $pageCount,
+                $ip,
+                $ipHash,
+                $asnMeta,
+                $cityName,
+                $regionName,
+                $countryName,
+                $headerMeta,
+                (bool) $isMobile,
+                $canonicalHost ?: $host
+            );
+            if ($proxyRisk['blocked']) {
+                return;
+            }
         }
 
         if ($isBot) {
@@ -716,7 +476,7 @@ class Tracker
             ':keyword' => $keyword ?: null,
             ':is_mobile' => $isMobile ? 1 : 0,
             ':is_unique' => $isUnique ? 1 : 0,
-            ':is_proxy_risk' => $isProxyRisk ? 1 : 0,
+            ':is_proxy_risk' => (int) ($proxyRisk['risk'] ?? false),
             ':country_name' => $countryName ?: null,
             ':region_name' => $regionName ?: null,
             ':city_name' => $cityName ?: null,
@@ -853,6 +613,10 @@ class Tracker
         $uaFilters = $this->ingestFilters['ua_filters'] ?? '';
 
         if ($ip && $ipFilters !== '' && $this->ipMatchesFilters($ip, $ipFilters)) {
+            return true;
+        }
+
+        if ($ip && $this->isBlockedProxyIp($ip)) {
             return true;
         }
 
@@ -1004,6 +768,878 @@ class Tracker
         return false;
     }
 
+    private function isChinaNetwork(string $country, array $asnMeta): bool
+    {
+        $countryValue = trim($country);
+        if ($countryValue !== '' && !str_contains($countryValue, '中国')) {
+            return false;
+        }
+
+        $asnName = strtolower(trim((string) ($asnMeta['name'] ?? '')));
+        $ispName = strtolower(trim((string) ($asnMeta['isp'] ?? '')));
+        $combined = $asnName . ' ' . $ispName;
+
+        $chinaIsps = [
+            'china mobile',
+            'china unicom',
+            'china telecom',
+            'cmcc',
+            'unicom',
+            'chinanet',
+            'cnc',
+            'ct',
+            '移动',
+            '联通',
+            '电信',
+            '铁通',
+            '广电',
+            '教育网',
+            '长城宽带',
+            '鹏博士',
+        ];
+
+        foreach ($chinaIsps as $isp) {
+            if ($isp !== '' && str_contains($combined, strtolower($isp))) {
+                return true;
+            }
+        }
+
+        return $countryValue !== '';
+    }
+
+    private function isProxySuspicious(
+        string $sessionId,
+        string $fingerprint,
+        bool $uidProvided,
+        string $fallbackUid,
+        string $userAgent,
+        int $duration,
+        int $pageCount,
+        ?string $ip,
+        ?string $ipHash,
+        array $asnMeta,
+        string $city,
+        string $region,
+        string $country,
+        array $headerMeta,
+        bool $isMobile,
+        string $siteHost
+    ): array {
+        if (!$ip) {
+            return ['blocked' => false, 'risk' => false, 'score' => 0];
+        }
+
+        $uid = $uidProvided
+            ? ($fingerprint !== '' ? $fingerprint : $sessionId)
+            : $fallbackUid;
+        if ($uid === '') {
+            return ['blocked' => false, 'risk' => false, 'score' => 0];
+        }
+        $uidMissing = !$uidProvided;
+
+        try {
+            $blockedKey = "proxy:blocked_uid:{$uid}";
+            if ($this->redis->get($blockedKey)) {
+                $this->rememberBlockedProxyIp($ip);
+                return ['blocked' => true, 'risk' => true, 'score' => 100];
+            }
+        } catch (Throwable $e) {
+            // ignore
+        }
+
+        $nowMs = (int) round(microtime(true) * 1000);
+        $profileKey = "proxy:risk:{$uid}";
+        $coarseMode = false;
+        try {
+            $churnKey = "proxy:uid_churn:{$ip}";
+            $churnCount = (int) $this->redis->incr($churnKey);
+            if ($churnCount === 1) {
+                $this->redis->expire($churnKey, 1);
+            }
+            if ($churnCount > 25) {
+                $uid = "ip:{$ip}";
+                $profileKey = "proxy:risk:ip:{$ip}";
+                $coarseMode = true;
+            }
+        } catch (Throwable $e) {
+            // ignore
+        }
+        $sessionKey = $sessionId !== '' ? "proxy:session:{$sessionId}" : '';
+
+        $asnValue = trim((string) ($asnMeta['number'] ?? $asnMeta['name'] ?? ''));
+        $cityValue = trim($city);
+        $regionValue = trim($region);
+        $countryValue = trim($country);
+        $isChinaNetwork = $this->isChinaNetwork($countryValue, $asnMeta);
+        $isDataCenterAsn = $this->isDataCenterAsn($asnMeta);
+        $uaSuspicious = $this->isSuspiciousUserAgent($userAgent);
+        $ipChanged = true;
+        $score = 0;
+        $lastTs = 0;
+        $ipChangeCount = 0;
+        $requestCount = 0;
+        $windowStart = 0;
+        $goodScore = 0;
+        $crossRegionHits = 0;
+        $highFreqHits = 0;
+        $sustainedHits = 0;
+        $lastUa = '';
+        $lastFp = '';
+
+        try {
+            $profile = $this->redis->hGetAll($profileKey);
+            $score = (int) ($profile['score'] ?? 0);
+            $lastIp = (string) ($profile['last_ip'] ?? '');
+            $lastAsn = (string) ($profile['last_asn'] ?? '');
+            $lastCity = (string) ($profile['last_city'] ?? '');
+            $lastRegion = (string) ($profile['last_region'] ?? '');
+            $lastCountry = (string) ($profile['last_country'] ?? '');
+            $lastTs = (int) ($profile['last_ts'] ?? 0);
+            $ipChangeCount = (int) ($profile['ip_change_count'] ?? 0);
+            $requestCount = (int) ($profile['request_count'] ?? 0);
+            $windowStart = (int) ($profile['window_start'] ?? 0);
+            $goodScore = (int) ($profile['good_score'] ?? 0);
+            $crossRegionHits = (int) ($profile['cross_region_hits'] ?? 0);
+            $highFreqHits = (int) ($profile['high_freq_hits'] ?? 0);
+            $sustainedHits = (int) ($profile['sustained_hits'] ?? 0);
+            $lastUa = (string) ($profile['last_ua'] ?? '');
+            $lastFp = (string) ($profile['last_fp'] ?? '');
+
+            if ($windowStart <= 0 || ($nowMs - $windowStart) > 300000) {
+                $windowStart = $nowMs;
+                $ipChangeCount = 0;
+                $requestCount = 0;
+                $crossRegionHits = 0;
+                $highFreqHits = 0;
+                $sustainedHits = 0;
+            }
+
+            $requestCount += 1;
+            $ipChanged = $lastIp !== '' && $lastIp !== $ip;
+
+            $gapMs = $lastTs > 0 ? ($nowMs - $lastTs) : 0;
+            if ($gapMs > 0) {
+                $decaySteps = (int) floor($gapMs / 600000);
+                if ($decaySteps > 0) {
+                    $score = (int) round($score * (0.9 ** $decaySteps));
+                }
+            }
+            $deduct = 0;
+            if ($duration >= 10 && $duration <= 120) {
+                $deduct += 5;
+            }
+            if ($pageCount >= 3 && $pageCount <= 5) {
+                $deduct += 5;
+            } elseif ($pageCount > 5) {
+                $deduct += 15;
+            }
+            if ($gapMs > 86400000 && ($lastUa !== '' && $lastUa === $userAgent)) {
+                $deduct += 20;
+            }
+            $referrerHost = strtolower(trim((string) ($headerMeta['referrer_host'] ?? '')));
+            $siteHostValue = strtolower(trim($siteHost));
+            if ($referrerHost !== '' && $siteHostValue !== '' && $referrerHost === $siteHostValue) {
+                $deduct += 5;
+            }
+            $trustedHosts = [
+                'baidu.com',
+                'sogou.com',
+                'so.com',
+                'google.com',
+                'bing.com',
+                'wechat.com',
+                'douyin.com',
+                'bilibili.com',
+                'weibo.com',
+                'zhihu.com',
+            ];
+            foreach ($trustedHosts as $trusted) {
+                if ($referrerHost !== '' && $trusted !== '' && (str_ends_with($referrerHost, $trusted))) {
+                    $deduct += 25;
+                    break;
+                }
+            }
+
+            $headerScore = $this->headerIntegrityScore($userAgent, $headerMeta);
+            if ($headerScore > 0) {
+                $score += $headerScore;
+            }
+
+            $ntimeScore = $this->clientTimeDriftScore($headerMeta, (int) round($nowMs / 1000));
+            if ($ntimeScore > 0) {
+                $score += $ntimeScore;
+            }
+
+            if ($uidMissing) {
+                $score += 6;
+            }
+            if ($coarseMode) {
+                $score += 4;
+            }
+
+            if ($uaSuspicious) {
+                $score += 16;
+                $highFreqHits += 1;
+            }
+
+            if ($isDataCenterAsn) {
+                $score += 18;
+            }
+
+            if ($countryValue === '' || $countryValue === '未知' || str_contains($countryValue, '保留地址')) {
+                $score += 6;
+            }
+
+            if ($pageCount <= 1 && $duration <= 1 && $requestCount >= 4) {
+                $score += 8;
+            }
+
+            $geoCross = false;
+            if ($ipChanged) {
+                $ipChangeCount += 1;
+                $geoSameRegion = $regionValue !== '' && $regionValue === $lastRegion;
+                $geoSameCity = $cityValue !== '' && $cityValue === $lastCity;
+                $geoSameCountry = $countryValue !== '' && $countryValue === $lastCountry;
+
+                $geoCross = (!$geoSameCountry && $countryValue !== '' && $lastCountry !== '')
+                    || (!$geoSameRegion && $regionValue !== '' && $lastRegion !== '');
+
+                $asnChanged = $asnValue !== '' && $lastAsn !== '' && $asnValue !== $lastAsn;
+                $mobileChina = $isMobile && $isChinaNetwork && !$isDataCenterAsn;
+                if ($geoCross && $asnChanged) {
+                    $score += $mobileChina ? 4 : 12;
+                    $crossRegionHits += 1;
+                } elseif ($asnChanged) {
+                    $score += $mobileChina ? 2 : 4;
+                } else {
+                    $score += 1;
+                }
+
+                if ($asnChanged && !$geoSameRegion && !$geoSameCountry) {
+                    $score += 6;
+                }
+
+                if ($lastTs > 0 && ($nowMs - $lastTs) < 500 && !$mobileChina) {
+                    $score += 6;
+                }
+            }
+
+            if ($ipChangeCount > 6 && ($nowMs - $windowStart) <= 300000) {
+                $score += 20;
+                if (($nowMs - $windowStart) >= 180000) {
+                    $sustainedHits += 1;
+                }
+            }
+
+            $windowKey = "proxy:req:{$uid}:window10";
+            $windowCount = (int) $this->redis->incr($windowKey);
+            if ($windowCount === 1) {
+                $this->redis->expire($windowKey, 10);
+            }
+            $hourKey = "proxy:req:{$uid}:1h";
+            $hourCount = (int) $this->redis->incr($hourKey);
+            if ($hourCount === 1) {
+                $this->redis->expire($hourKey, 3600);
+            }
+            $dayKey = "proxy:req:{$uid}:24h";
+            $dayCount = (int) $this->redis->incr($dayKey);
+            if ($dayCount === 1) {
+                $this->redis->expire($dayKey, 86400);
+            }
+            $uaStable = $lastUa !== '' && $lastUa === $userAgent;
+            $fpStable = $lastFp !== '' && $lastFp === $fingerprint;
+            $identityStable = $uaStable || $fpStable;
+            $isNat = false;
+            if ($ip && $sessionId !== '') {
+                $natKey = "proxy:ip_sessions:{$ip}";
+                $this->redis->sAdd($natKey, $sessionId);
+                $this->redis->expire($natKey, 3600);
+                $isNat = $this->redis->sCard($natKey) > 5;
+            }
+            $windowLimit = $isNat ? 30 : 15;
+            if ($windowCount > $windowLimit && $identityStable) {
+                $score += 10;
+                $highFreqHits += 1;
+            }
+            if ($hourCount > 300) {
+                $score += 6;
+            }
+            if ($dayCount > 2000) {
+                $score += 8;
+            }
+
+            $isForeign = $countryValue !== '' && $countryValue !== '中国' && strcasecmp($countryValue, 'China') !== 0;
+            if ($isForeign && ($ipChanged || $highFreqHits > 0)) {
+                $score += 6;
+            }
+
+            if ($ipChanged && $ipChangeCount >= 3 && $highFreqHits >= 1 && !$isDataCenterAsn) {
+                $score += 10;
+                if (($nowMs - $windowStart) >= 120000) {
+                    $sustainedHits += 1;
+                }
+            }
+
+            $updateKey = "proxy:risk:update:{$uid}";
+            $allowUpdate = $this->redis->setnx($updateKey, '1');
+            if ($allowUpdate) {
+                $this->redis->expire($updateKey, 1);
+            } else {
+                $isRisk = $score >= 50 || ($crossRegionHits >= 1 && $highFreqHits >= 1);
+                $this->markProxyRiskStatus($ipHash, $isRisk);
+                return ['blocked' => false, 'risk' => $isRisk, 'score' => $score];
+            }
+
+            if ($sessionKey && !$coarseMode) {
+                $sessionProfile = $this->redis->hGetAll($sessionKey);
+                $sessionUa = (string) ($sessionProfile['ua'] ?? '');
+                $sessionFp = (string) ($sessionProfile['fp'] ?? '');
+                if (($sessionUa && $sessionUa !== $userAgent) || ($sessionFp && $sessionFp !== $fingerprint && $fingerprint !== '')) {
+                    $score += 5;
+                }
+                $this->redis->hMSet($sessionKey, [
+                    'ua' => $userAgent,
+                    'fp' => $fingerprint,
+                    'ts' => $nowMs,
+                ]);
+                $this->redis->expire($sessionKey, 1800);
+            }
+
+            if ($score < 0) {
+                $score = 0;
+            }
+            if ($score > 100) {
+                $score = 100;
+            }
+
+            if ($deduct > 0) {
+                $remaining = max(0, 40 - $goodScore);
+                if ($remaining > 0) {
+                    $applied = min($deduct, $remaining);
+                    $score = max(0, $score - $applied);
+                    $goodScore += $applied;
+                }
+            }
+
+            if ($isChinaNetwork && !$isDataCenterAsn) {
+                $score = (int) round($score * 0.6);
+            }
+
+            $this->redis->hMSet($profileKey, [
+                'score' => $score,
+                'last_ip' => $ip,
+                'last_asn' => $asnValue,
+                'last_city' => $cityValue,
+                'last_region' => $regionValue,
+                'last_country' => $countryValue,
+                'last_ua' => $userAgent,
+                'last_fp' => $fingerprint,
+                'last_ts' => $nowMs,
+                'ip_change_count' => $ipChangeCount,
+                'request_count' => $requestCount,
+                'window_start' => $windowStart,
+                'good_score' => $goodScore,
+                'cross_region_hits' => $crossRegionHits,
+                'high_freq_hits' => $highFreqHits,
+                'sustained_hits' => $sustainedHits,
+            ]);
+            $this->redis->expire($profileKey, 1800);
+
+            if ($score >= 95 || ($score >= 75 && $highFreqHits >= 2)) {
+                $probationKey = "proxy:probation:{$ip}";
+                $isProbation = (bool) $this->redis->get($probationKey);
+                if (!$isProbation) {
+                    $this->redis->setex($probationKey, $this->proxyProbationSeconds, '1');
+                    $this->markProxyRiskStatus($ipHash, true);
+                    return ['blocked' => false, 'risk' => true, 'score' => $score];
+                }
+
+                $this->rememberBlockedProxyIp($ip);
+                $this->redis->setex($blockedKey, 14400, '1');
+                return ['blocked' => true, 'risk' => true, 'score' => $score];
+            }
+        } catch (Throwable $e) {
+            return ['blocked' => false, 'risk' => false, 'score' => 0];
+        }
+
+        $isRisk = $score >= 50 || ($crossRegionHits >= 1 && $highFreqHits >= 1);
+        $this->markProxyRiskStatus($ipHash, $isRisk);
+        return ['blocked' => false, 'risk' => $isRisk, 'score' => $score];
+    }
+
+    private function isBlockedProxyIp(string $ip): bool
+    {
+        try {
+            $score = $this->redis->zScore('proxy:blocked_ips', $ip);
+            if (!$score) {
+                return false;
+            }
+
+            $now = time();
+            if (($now - (int) $score) >= $this->proxyRecoverySeconds) {
+                $this->redis->zRem('proxy:blocked_ips', $ip);
+                return false;
+            }
+
+            return true;
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+
+    private function rememberBlockedProxyIp(string $ip, ?int $now = null): void
+    {
+        $now = $now ?? time();
+        try {
+            $key = 'proxy:blocked_ips';
+            $this->redis->zAdd($key, $now, $ip);
+            $this->redis->zRemRangeByScore($key, 0, $now - 14400);
+            $this->queueProxyCleanup($ip, $now);
+        } catch (Throwable $e) {
+            // ignore
+        }
+    }
+
+    private function queueProxyCleanup(string $ip, int $now): void
+    {
+        try {
+            $key = 'proxy:cleanup_queue';
+            $this->redis->zAdd($key, $now, $ip);
+            $this->redis->zRemRangeByScore($key, 0, $now - 14400);
+        } catch (Throwable $e) {
+            // ignore
+        }
+    }
+
+    private function markProxyRiskStatus(?string $ipHash, bool $isRisk): void
+    {
+        if (!$ipHash) {
+            return;
+        }
+
+        $key = "proxy:risk_ip:{$ipHash}";
+        try {
+            if ($isRisk) {
+                $this->redis->setex($key, $this->proxyRiskHoldSeconds, '1');
+                return;
+            }
+
+            if ($this->redis->get($key)) {
+                $this->redis->del($key);
+                $this->redis->zAdd('proxy:risk_recover', time(), $ipHash);
+            }
+        } catch (Throwable $e) {
+            // ignore
+        }
+    }
+
+    private function maybeCleanupProxyHistory(): void
+    {
+        if ($this->proxyCleanupBatch <= 0) {
+            return;
+        }
+
+        $now = time();
+        $lastKey = 'proxy:cleanup:last';
+        $last = (int) ($this->redis->get($lastKey) ?: 0);
+        if ($last > 0 && ($now - $last) < $this->proxyCleanupInterval) {
+            return;
+        }
+
+        $lockKey = 'proxy:cleanup:lock';
+        if (!$this->redis->setnx($lockKey, '1')) {
+            return;
+        }
+        $this->redis->expire($lockKey, 60);
+        $this->redis->setex($lastKey, $this->proxyCleanupInterval, (string) $now);
+
+        $this->cleanupProxyHistory($this->proxyCleanupBatch);
+    }
+
+    private function cleanupProxyHistory(int $batch): void
+    {
+        $batch = max(1, $batch);
+        $queueKey = 'proxy:cleanup_queue';
+
+        try {
+            $targets = $this->redis->zRange($queueKey, 0, $batch - 1, true);
+        } catch (Throwable $e) {
+            return;
+        }
+
+        if (empty($targets)) {
+            return;
+        }
+
+        foreach ($targets as $ip => $detectedAt) {
+            $this->cleanupProxyIpData((string) $ip);
+            try {
+                $this->redis->zRem($queueKey, (string) $ip);
+            } catch (Throwable $e) {
+                // ignore
+            }
+        }
+    }
+
+    private function cleanupProxyIpData(string $ip): void
+    {
+        $ip = trim($ip);
+        if ($ip === '') {
+            return;
+        }
+
+        $statement = $this->db->prepare(
+            'SELECT site_id, MIN(occurred_at) as min_ts, MAX(occurred_at) as max_ts
+             FROM pageviews
+             WHERE ip_address = :ip
+             GROUP BY site_id'
+        );
+        $statement->execute([':ip' => $ip]);
+        $rows = $statement->fetchAll();
+        if (empty($rows)) {
+            return;
+        }
+
+        $this->deleteBatched(
+            'DELETE FROM pageviews WHERE ip_address = :ip LIMIT :batch',
+            [':ip' => $ip],
+            50000
+        );
+
+        $ipHash = hash('sha256', $ip);
+        foreach ($rows as $row) {
+            $siteId = (int) ($row['site_id'] ?? 0);
+            if ($siteId <= 0) {
+                continue;
+            }
+
+            $minTs = $row['min_ts'] ? new DateTimeImmutable($row['min_ts']) : null;
+            $maxTs = $row['max_ts'] ? new DateTimeImmutable($row['max_ts']) : null;
+            if (!$minTs || !$maxTs) {
+                continue;
+            }
+
+            $startBucket = $minTs->setTime((int) $minTs->format('H'), 0, 0);
+            $endBucket = $maxTs->setTime((int) $maxTs->format('H'), 0, 0)->modify('+1 hour');
+
+            $deleteAudience = $this->db->prepare(
+                'DELETE FROM site_ip_audience WHERE site_id = :site_id AND ip_hash = :ip_hash LIMIT 1'
+            );
+            $deleteAudience->execute([
+                ':site_id' => $siteId,
+                ':ip_hash' => $ipHash,
+            ]);
+
+            $this->rebuildRollupRange($siteId, $startBucket, $endBucket);
+        }
+    }
+
+    private function rebuildRollupRange(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): void
+    {
+        $current = $start;
+        while ($current < $end) {
+            $bucketStart = $current;
+            $bucketEnd = $bucketStart->modify('+1 hour');
+            $this->rebuildRollupBucket($siteId, $bucketStart, $bucketEnd);
+            $current = $bucketEnd;
+        }
+    }
+
+    private function rebuildRollupBucket(int $siteId, DateTimeImmutable $bucketStart, DateTimeImmutable $bucketEnd): void
+    {
+        $bucketKey = $bucketStart->format('Y-m-d H:i:s');
+        $start = $bucketStart->format('Y-m-d H:i:s');
+        $end = $bucketEnd->format('Y-m-d H:i:s');
+        $dayStart = $bucketStart->setTime(0, 0, 0);
+        $dayEnd = $dayStart->modify('+1 day');
+        $dayStartKey = $dayStart->format('Y-m-d H:i:s');
+        $dayEndKey = $dayEnd->format('Y-m-d H:i:s');
+
+        $this->db->beginTransaction();
+        try {
+            $this->db->prepare('DELETE FROM pageview_rollups WHERE site_id = ? AND bucket_start = ?')
+                ->execute([$siteId, $bucketKey]);
+            $this->db->prepare('DELETE FROM pageview_dimension_rollups WHERE site_id = ? AND bucket_start = ?')
+                ->execute([$siteId, $bucketKey]);
+            $this->db->prepare('DELETE FROM pageview_page_rollups WHERE site_id = ? AND bucket_start = ?')
+                ->execute([$siteId, $bucketKey]);
+            $this->db->prepare('DELETE FROM pageview_entry_rollups WHERE site_id = ? AND bucket_start = ?')
+                ->execute([$siteId, $bucketKey]);
+
+            $totalsStmt = $this->db->prepare(
+                "SELECT COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ips
+                 FROM pageviews
+                 WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?"
+            );
+            $totalsStmt->execute([$siteId, $start, $end]);
+            $totals = $totalsStmt->fetch() ?: [];
+
+            $sessionStmt = $this->db->prepare(
+                "SELECT COUNT(*) as sessions, SUM(duration_seconds) as duration_sum, SUM(page_count) as page_sum, SUM(bounce) as bounce_count
+                 FROM (
+                    SELECT MAX(duration_seconds) as duration_seconds,
+                           MAX(page_count) as page_count,
+                           CASE WHEN MAX(page_count) <= 1 THEN 1 ELSE 0 END as bounce
+                    FROM pageviews
+                    WHERE site_id = ? AND session_id IS NOT NULL
+                      AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY session_id
+                 ) t"
+            );
+            $sessionStmt->execute([$siteId, $start, $end]);
+            $sessions = $sessionStmt->fetch() ?: [];
+
+            $insertRollup = $this->db->prepare(
+                'INSERT INTO pageview_rollups (site_id, bucket_start, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            );
+            $insertRollup->execute([
+                $siteId,
+                $bucketKey,
+                (int) ($totals['views'] ?? 0),
+                (int) ($totals['uniques'] ?? 0),
+                (int) ($totals['ips'] ?? 0),
+                (int) ($sessions['sessions'] ?? 0),
+                (int) ($sessions['duration_sum'] ?? 0),
+                (int) ($sessions['page_sum'] ?? 0),
+                (int) ($sessions['bounce_count'] ?? 0),
+            ]);
+
+            $dimensionInserts = [
+                'host' => "SELECT LEFT(COALESCE(canonical_host, '未知域名'), 255) as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY dimension_value",
+                'host_device' => "SELECT LEFT(CONCAT(COALESCE(canonical_host, '未知域名'), '|', IF(is_mobile = 1, 'mobile', 'desktop')), 255) as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY dimension_value",
+                'device' => "SELECT IF(is_mobile = 1, 'mobile', 'desktop') as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY dimension_value",
+                'browser' => "SELECT LEFT(" . $this->browserCase('p') . ", 255) as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY dimension_value",
+                'referrer_host' => "SELECT dimension_value, pv, uv, ips, sessions, duration_sum, page_sum, bounce_count
+                    FROM (
+                        SELECT LEFT(" . $this->referrerHostExpr('p') . ", 255) as dimension_value,
+                            SUM(p.page_count) as pv,
+                            SUM(p.is_unique) as uv,
+                            COUNT(DISTINCT p.ip_hash) as ips,
+                            COUNT(*) as sessions,
+                            SUM(p.duration_seconds) as duration_sum,
+                            SUM(p.page_count) as page_sum,
+                            SUM(CASE WHEN p.page_count <= 1 THEN 1 ELSE 0 END) as bounce_count
+                        FROM (
+                            SELECT MIN(id) as first_id, session_id
+                            FROM pageviews
+                            WHERE site_id = ? AND session_id IS NOT NULL
+                              AND occurred_at >= ? AND occurred_at < ?
+                            GROUP BY session_id
+                        ) s
+                        JOIN pageviews p ON p.id = s.first_id
+                        GROUP BY dimension_value
+                        ORDER BY ips DESC
+                        LIMIT 500
+                    ) t",
+                'search_engine' => "SELECT LEFT(" . $this->searchEngineCase('p') . ", 255) as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY dimension_value",
+                'keyword_engine' => "SELECT LEFT(CONCAT(COALESCE(keyword,''), '|', " . $this->searchEngineCase('p') . ", '|', COALESCE(canonical_host, host, s.domain, ''), COALESCE(NULLIF(path,''), '/')), 255) as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p
+                    JOIN sites s ON s.id = p.site_id
+                    WHERE p.site_id = ? AND p.keyword IS NOT NULL AND keyword != '' AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY dimension_value",
+                'audience' => "SELECT LEFT(CASE WHEN a.first_seen >= ? AND a.first_seen < ? THEN 'new' ELSE 'returning' END, 255) as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT p.ip_hash) as ips
+                    FROM pageviews p
+                    LEFT JOIN site_ip_audience a ON a.site_id = p.site_id AND a.ip_hash = p.ip_hash
+                    WHERE p.site_id = ? AND p.p.occurred_at >= ? AND p.occurred_at < ?
+                    GROUP BY dimension_value",
+            ];
+
+            foreach ($dimensionInserts as $dimension => $sql) {
+                $useSessionMetrics = $dimension === 'referrer_host';
+                $insert = $this->db->prepare(
+                    'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+                     SELECT ?, ?, ?, dimension_value, pv, uv, ips, ' .
+                    ($useSessionMetrics ? 'sessions, duration_sum, page_sum, bounce_count' : '0, 0, 0, 0') .
+                    ' FROM (' . $sql . ') t'
+                );
+                if ($dimension === 'audience') {
+                    $params = [$dayStartKey, $dayEndKey, $siteId, $start, $end];
+                } else {
+                    $params = [$siteId, $start, $end];
+                }
+                $insert->execute(array_merge([$siteId, $bucketKey, $dimension], $params));
+            }
+
+            $geoStmt = $this->db->prepare(
+                "SELECT ip_address, ip_hash, COUNT(*) as pv, SUM(is_unique) as uv
+                 FROM pageviews
+                 WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?
+                   AND ip_address IS NOT NULL AND ip_address != ''
+                 GROUP BY ip_hash, ip_address"
+            );
+            $geoStmt->execute([$siteId, $start, $end]);
+            $geoRows = $geoStmt->fetchAll();
+
+            $regionAgg = [];
+            $countryAgg = [];
+            $ispAgg = [];
+
+            foreach ($geoRows as $row) {
+                $meta = $this->ipResolver->resolve($row['ip_address'] ?? '');
+                $country = trim($meta['country_name'] ?? '');
+                $region = trim($meta['region_name'] ?? '');
+                $isp = trim($meta['isp_domain'] ?? '');
+
+                $regionKey = $this->regionLabel($country, $region);
+                $countryKey = $country !== '' ? $country : '未知';
+                $ispKey = $isp !== '' ? $isp : '未知运营商';
+
+                $pv = (int) ($row['pv'] ?? 0);
+                $uv = (int) ($row['uv'] ?? 0);
+                $ips = 1;
+
+                $regionAgg[$regionKey]['pv'] = ($regionAgg[$regionKey]['pv'] ?? 0) + $pv;
+                $regionAgg[$regionKey]['uv'] = ($regionAgg[$regionKey]['uv'] ?? 0) + $uv;
+                $regionAgg[$regionKey]['ips'] = ($regionAgg[$regionKey]['ips'] ?? 0) + $ips;
+
+                $countryAgg[$countryKey]['pv'] = ($countryAgg[$countryKey]['pv'] ?? 0) + $pv;
+                $countryAgg[$countryKey]['uv'] = ($countryAgg[$countryKey]['uv'] ?? 0) + $uv;
+                $countryAgg[$countryKey]['ips'] = ($countryAgg[$countryKey]['ips'] ?? 0) + $ips;
+
+                $ispAgg[$ispKey]['pv'] = ($ispAgg[$ispKey]['pv'] ?? 0) + $pv;
+                $ispAgg[$ispKey]['uv'] = ($ispAgg[$ispKey]['uv'] ?? 0) + $uv;
+                $ispAgg[$ispKey]['ips'] = ($ispAgg[$ispKey]['ips'] ?? 0) + $ips;
+            }
+
+            $geoInsert = $this->db->prepare(
+                'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)'
+            );
+
+            foreach ($regionAgg as $label => $data) {
+                $geoInsert->execute([
+                    $siteId,
+                    $bucketKey,
+                    'region',
+                    mb_substr($label, 0, 255),
+                    $data['pv'],
+                    $data['uv'],
+                    $data['ips'],
+                ]);
+            }
+
+            foreach ($countryAgg as $label => $data) {
+                $geoInsert->execute([
+                    $siteId,
+                    $bucketKey,
+                    'country',
+                    mb_substr($label, 0, 255),
+                    $data['pv'],
+                    $data['uv'],
+                    $data['ips'],
+                ]);
+            }
+
+            foreach ($ispAgg as $label => $data) {
+                $geoInsert->execute([
+                    $siteId,
+                    $bucketKey,
+                    'isp',
+                    mb_substr($label, 0, 255),
+                    $data['pv'],
+                    $data['uv'],
+                    $data['ips'],
+                ]);
+            }
+
+            $pageStmt = $this->db->prepare(
+                "INSERT INTO pageview_page_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+                 SELECT ?, ?, path, pv, uv, ips, 0, 0, 0, 0
+                 FROM (
+                    SELECT LEFT(COALESCE(path,'/'), 512) as path,
+                        COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p
+                    WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY path
+                    ORDER BY ips DESC
+                    LIMIT 500
+                 ) t"
+            );
+            $pageStmt->execute([$siteId, $bucketKey, $siteId, $start, $end]);
+
+            $entryStmt = $this->db->prepare(
+                "INSERT INTO pageview_entry_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+                 SELECT ?, ?, path, pv, uv, ips, session_count, duration_sum, page_sum, bounce_count
+                 FROM (
+                    SELECT LEFT(entry.path, 512) as path,
+                        COUNT(*) as pv, SUM(entry.is_unique) as uv, COUNT(DISTINCT entry.ip_hash) as ips,
+                        COUNT(*) as session_count,
+                        SUM(entry.duration_seconds) as duration_sum,
+                        SUM(entry.page_count) as page_sum,
+                        SUM(CASE WHEN entry.page_count <= 1 THEN 1 ELSE 0 END) as bounce_count
+                    FROM (
+                        SELECT MIN(id) as first_id, session_id
+                        FROM pageviews
+                        WHERE site_id = ? AND session_id IS NOT NULL
+                          AND occurred_at >= ? AND occurred_at < ?
+                        GROUP BY session_id
+                    ) s
+                    JOIN pageviews entry ON entry.id = s.first_id
+                    GROUP BY entry.path
+                    ORDER BY ips DESC
+                    LIMIT 500
+                 ) t"
+            );
+            $entryStmt->execute([$siteId, $bucketKey, $siteId, $start, $end]);
+
+            $this->db->commit();
+        } catch (Throwable $e) {
+            $this->db->rollBack();
+        }
+    }
+
+    private function referrerHostExpr(string $alias): string
+    {
+        return "COALESCE(NULLIF(SUBSTRING_INDEX(SUBSTRING_INDEX({$alias}.referrer, '/', 3), '//', -1), ''), '直接访问')";
+    }
+
+    public function getBlockedProxyIps(int $limit = 200, int $offset = 0): array
+    {
+        $limit = max(1, $limit);
+        $offset = max(0, $offset);
+        try {
+            $key = 'proxy:blocked_ips';
+            $rows = $this->redis->zRevRange($key, $offset, $offset + $limit - 1, true);
+            $results = [];
+            foreach ($rows as $ip => $score) {
+                $results[] = [
+                    'ip' => (string) $ip,
+                    'detected_at' => date('Y-m-d H:i:s', (int) $score),
+                ];
+            }
+            return $results;
+        } catch (Throwable $e) {
+            return [];
+        }
+    }
+
+    public function getBlockedProxyIpCount(): int
+    {
+        try {
+            return (int) $this->redis->zCard('proxy:blocked_ips');
+        } catch (Throwable $e) {
+            return 0;
+        }
+    }
+
     private function splitFilterList(string $filters): array
     {
         $raw = preg_split('/[\r\n,;]+/', $filters);
@@ -1150,39 +1786,6 @@ class Tracker
         return $processed;
     }
 
-    public function drainIpRiskQueue(int $maxBatch = 500): int
-    {
-        $processed = 0;
-
-        $this->recoverStalledIpRiskQueue();
-
-        while ($processed < $maxBatch) {
-            $raw = $this->redis->rPopLPush($this->ipRiskQueueKey, $this->ipRiskProcessingKey);
-            if ($raw === false || $raw === null) {
-                break;
-            }
-
-            $decoded = json_decode($raw, true);
-            $ip = is_array($decoded) ? trim((string) ($decoded['ip'] ?? '')) : '';
-            if ($ip === '' || !filter_var($ip, FILTER_VALIDATE_IP)) {
-                $this->redis->lRem($this->ipRiskProcessingKey, $raw, 1);
-                continue;
-            }
-
-            try {
-                $level = $this->fetchIpRiskLevelFromApi($ip);
-                $this->redis->setex($this->ipRiskCacheKey($ip), 1296000, (string) $level);
-                $this->redis->del('ip:risk:queued:' . $ip);
-                $this->redis->lRem($this->ipRiskProcessingKey, $raw, 1);
-                $processed++;
-            } catch (Throwable $e) {
-                // keep for retry
-            }
-        }
-
-        return $processed;
-    }
-
     private function recoverStalledIngestQueue(): void
     {
         if ($this->ingestStalledAfter <= 0) {
@@ -1267,35 +1870,6 @@ class Tracker
             }
 
             $this->redis->lPush($this->blockedDomainQueueKey, $raw);
-        }
-    }
-
-    private function recoverStalledIpRiskQueue(): void
-    {
-        if ($this->ingestStalledAfter <= 0) {
-            return;
-        }
-
-        $len = (int) $this->redis->lLen($this->ipRiskProcessingKey);
-        if ($len <= 0) {
-            return;
-        }
-
-        $cutoff = time() - $this->ingestStalledAfter;
-        for ($i = 0; $i < $len; $i++) {
-            $raw = $this->redis->rPop($this->ipRiskProcessingKey);
-            if ($raw === false || $raw === null) {
-                break;
-            }
-
-            $decoded = json_decode($raw, true);
-            $receivedAt = is_array($decoded) ? (int) ($decoded['received_at'] ?? 0) : 0;
-            if ($receivedAt > 0 && $receivedAt > $cutoff) {
-                $this->redis->lPush($this->ipRiskProcessingKey, $raw);
-                continue;
-            }
-
-            $this->redis->lPush($this->ipRiskQueueKey, $raw);
         }
     }
 
@@ -3160,35 +3734,6 @@ class Tracker
         return $stmt->fetchAll();
     }
 
-    private function parseKeywordEngineDimensionValue(string $value): array
-    {
-        $parts = explode('|', $value);
-        if (count($parts) <= 3) {
-            [$keyword, $engine, $entry] = array_pad($parts, 3, '');
-            return [trim($keyword), trim($engine), trim($entry)];
-        }
-
-        $knownEngines = ['百度', '谷歌', '必应', '360', '头条', '搜狗', '神马', '夸克', '华为', '其他'];
-        $engineIndex = null;
-        foreach ($parts as $idx => $part) {
-            if (in_array(trim($part), $knownEngines, true)) {
-                $engineIndex = $idx;
-                break;
-            }
-        }
-
-        if ($engineIndex === null) {
-            [$keyword, $engine, $entry] = array_pad($parts, 3, '');
-            return [trim($keyword), trim($engine), trim($entry)];
-        }
-
-        $keyword = implode('|', array_slice($parts, 0, $engineIndex));
-        $engine = $parts[$engineIndex] ?? '';
-        $entry = implode('|', array_slice($parts, $engineIndex + 1));
-
-        return [trim($keyword), trim($engine), trim($entry)];
-    }
-
     private function getKeywords(int $siteId, string $range): array
     {
         $cacheKey = "keywords:{$siteId}:{$range}";
@@ -3206,7 +3751,7 @@ class Tracker
                 $keywords = [];
 
                 foreach ($rollup as $row) {
-                    [$keyword, $engine, $entry] = $this->parseKeywordEngineDimensionValue((string) ($row['dimension_value'] ?? ''));
+                    [$keyword, $engine, $entry] = array_pad(explode('|', $row['dimension_value'] ?? '', 3), 3, '');
                     if ($keyword === '') {
                         continue;
                     }
@@ -3255,7 +3800,7 @@ class Tracker
 
             $engineKeywords = [];
             foreach ($rollup as $row) {
-                [$keyword, $engine, $entry] = $this->parseKeywordEngineDimensionValue((string) ($row['dimension_value'] ?? ''));
+                [$keyword, $engine, $entry] = array_pad(explode('|', $row['dimension_value'] ?? '', 3), 3, '');
                 if ($keyword === '') {
                     continue;
                 }
@@ -3505,6 +4050,108 @@ class Tracker
         return max($today, $estimate);
     }
 
+    private function buildFallbackUid(?string $ip, string $userAgent, array $headerMeta): string
+    {
+        if (!$ip) {
+            return '';
+        }
+
+        $parts = [
+            $ip,
+            strtolower(trim($userAgent)),
+            strtolower(trim((string) ($headerMeta['language'] ?? ''))),
+            strtolower(trim((string) ($headerMeta['showp'] ?? ''))),
+            strtolower(trim((string) ($headerMeta['accept_language'] ?? ''))),
+            strtolower(trim((string) ($headerMeta['accept_encoding'] ?? ''))),
+            strtolower(trim((string) ($headerMeta['sec_ch_ua'] ?? ''))),
+            strtolower(trim((string) ($headerMeta['sec_ch_ua_mobile'] ?? ''))),
+            strtolower(trim((string) ($headerMeta['sec_ch_ua_platform'] ?? ''))),
+            strtolower(trim((string) ($headerMeta['sec_fetch_site'] ?? ''))),
+            strtolower(trim((string) ($headerMeta['sec_fetch_mode'] ?? ''))),
+            strtolower(trim((string) ($headerMeta['sec_fetch_dest'] ?? ''))),
+        ];
+
+        return hash('sha256', implode('|', $parts));
+    }
+
+    private function headerIntegrityScore(string $userAgent, array $headerMeta): int
+    {
+        $ua = strtolower(trim($userAgent));
+        if ($ua === '') {
+            return 6;
+        }
+
+        $acceptLanguage = strtolower(trim((string) ($headerMeta['accept_language'] ?? '')));
+        $acceptEncoding = strtolower(trim((string) ($headerMeta['accept_encoding'] ?? '')));
+        $secChUa = strtolower(trim((string) ($headerMeta['sec_ch_ua'] ?? '')));
+        $secChUaMobile = strtolower(trim((string) ($headerMeta['sec_ch_ua_mobile'] ?? '')));
+        $secChUaPlatform = strtolower(trim((string) ($headerMeta['sec_ch_ua_platform'] ?? '')));
+        $secFetchSite = strtolower(trim((string) ($headerMeta['sec_fetch_site'] ?? '')));
+        $secFetchMode = strtolower(trim((string) ($headerMeta['sec_fetch_mode'] ?? '')));
+        $secFetchDest = strtolower(trim((string) ($headerMeta['sec_fetch_dest'] ?? '')));
+        $language = strtolower(trim((string) ($headerMeta['language'] ?? '')));
+        $showp = strtolower(trim((string) ($headerMeta['showp'] ?? '')));
+
+        $score = 0;
+        $looksBrowser = (bool) preg_match('/chrome|crios|safari|firefox|fxios|edg|opera|webkit/', $ua);
+
+        if ($language === '') {
+            $score += 1;
+        }
+        if ($showp === '') {
+            $score += 2;
+        } elseif (!$this->isValidScreenResolution($showp)) {
+            $score += 2;
+        }
+
+        if ($acceptLanguage === '') {
+            $score += 2;
+        }
+        if ($acceptEncoding === '') {
+            $score += 2;
+        }
+        if ($acceptLanguage !== '' && strlen($acceptLanguage) < 5) {
+            $score += 1;
+        }
+
+        $isChromeFamily = $looksBrowser && (str_contains($ua, 'chrome') || str_contains($ua, 'edg') || str_contains($ua, 'opera'));
+        if ($isChromeFamily) {
+            if ($secChUa === '') {
+                $score += 3;
+            }
+            if ($secFetchSite === '' || $secFetchMode === '' || $secFetchDest === '') {
+                $score += 3;
+            }
+            if ($showp !== '' && ($secChUa === '' || $secFetchSite === '' || $secFetchMode === '' || $secFetchDest === '')) {
+                $score += 2;
+            }
+        }
+
+        if ($looksBrowser && str_contains($ua, 'safari') && !str_contains($ua, 'chrome')) {
+            if ($secChUa !== '') {
+                $score += 2;
+            }
+        }
+
+        if (!$looksBrowser && ($secChUa !== '' || $secFetchSite !== '' || $secFetchMode !== '' || $secFetchDest !== '')) {
+            $score += 2;
+        }
+
+        if ($secFetchMode !== '' && !in_array($secFetchMode, ['navigate', 'cors', 'no-cors', 'same-origin', 'websocket'], true)) {
+            $score += 2;
+        }
+
+        if ($secChUaMobile !== '' && !in_array($secChUaMobile, ['?0', '?1'], true)) {
+            $score += 1;
+        }
+
+        if ($secChUaPlatform !== '' && strlen($secChUaPlatform) > 20) {
+            $score += 1;
+        }
+
+        return min(10, $score);
+    }
+
     private function clientTimeDriftScore(array $headerMeta, int $serverEpoch): int
     {
         $ntimeRaw = trim((string) ($headerMeta['ntime'] ?? ''));
@@ -3544,6 +4191,63 @@ class Tracker
         }
 
         return $width <= 10000 && $height <= 10000;
+    }
+
+    private function isDataCenterAsn(array $asnMeta): bool
+    {
+        $asnName = strtolower(trim((string) ($asnMeta['name'] ?? '')));
+        $ispName = strtolower(trim((string) ($asnMeta['isp'] ?? '')));
+        $combined = trim($asnName . ' ' . $ispName);
+        if ($combined === '') {
+            return false;
+        }
+
+        $needles = [
+            'amazon', 'aws', 'amazon web services', 'google', 'gcp', 'microsoft', 'azure',
+            'oracle', 'oracle cloud', 'digitalocean', 'linode', 'vultr', 'hetzner', 'ovh',
+            'leaseweb', 'gcore', 'cloudflare', 'akamai', 'fastly',
+            'alibaba', 'aliyun', 'tencent', 'huawei cloud', 'baidu', 'ucloud', 'qingcloud',
+            'google cloud', 'tencent cloud', 'alibaba cloud', 'baidu cloud', 'huawei',
+            'datacenter', 'data center', 'colo', 'host', 'hosting', 'server', 'cloud',
+        ];
+
+        foreach ($needles as $needle) {
+            if ($needle !== '' && str_contains($combined, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isSuspiciousUserAgent(string $userAgent): bool
+    {
+        $ua = strtolower(trim($userAgent));
+        if ($ua === '') {
+            return true;
+        }
+
+        if ($this->isSearchEngineSpider($ua)) {
+            return false;
+        }
+
+        $needles = [
+            'bot', 'spider', 'crawler', 'scrapy', 'headless', 'phantomjs', 'selenium',
+            'playwright', 'puppeteer', 'chromedriver', 'cypress', 'node-fetch', 'axios',
+            'okhttp', 'apache-httpclient', 'java/', 'python-requests', 'python-urllib',
+            'go-http-client', 'libwww-perl', 'curl/', 'wget/', 'postman', 'insomnia',
+            'powershell', 'httpclient/', 'aiohttp', 'httpx', 'gocolly/', 'zgrab/', 'zmap',
+            'masscan', 'nmap', 'sqlmap', 'nessus', 'acunetix', 'netcraft', 'censys',
+            'ahrefsbot', 'semrushbot', 'mj12bot', 'dotbot',
+        ];
+
+        foreach ($needles as $needle) {
+            if ($needle !== '' && str_contains($ua, $needle)) {
+                return true;
+            }
+        }
+
+        return strlen($ua) < 20;
     }
 
     private function isBot(string $userAgent): bool
