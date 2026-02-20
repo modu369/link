@@ -60,7 +60,6 @@ return [
         'blocked_domain_queue_key' => getenv('BLOCKED_DOMAIN_QUEUE_KEY') ?: 'tracker:ingest:blocked_domains',
         'blocked_domain_processing_key' => getenv('BLOCKED_DOMAIN_PROCESSING_KEY') ?: 'tracker:ingest:blocked_domains:processing',
         'blocked_domain_max_queue_length' => (int) (getenv('BLOCKED_DOMAIN_QUEUE_MAX') ?: 50000),
-        // 风险IP改为本地实时识别，不再依赖外部API风险队列配置
         // 队列长度上限，防止异常堆积；0 表示不限制
         'max_queue_length' => (int) (getenv('INGEST_QUEUE_MAX') ?: 100000),
         // 自动抽样消费队列，避免忘记启动 worker 时数据堆积
