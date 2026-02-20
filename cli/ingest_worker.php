@@ -32,9 +32,11 @@ do {
     $botProcessingLen = (int) $redis->lLen($botProcessingKey);
     $blockedQueueLen = (int) $redis->lLen($blockedQueueKey);
     $blockedProcessingLen = (int) $redis->lLen($blockedProcessingKey);
-    $processed = $tracker->drainIngestQueue($batchSize);
-    $botProcessed = $tracker->drainBotQueue($batchSize);
-    $blockedProcessed = $tracker->drainBlockedDomainQueue($batchSize);
+    
+    $processed = (int) $tracker->drainIngestQueue($batchSize);
+    $botProcessed = (int) $tracker->drainBotQueue($batchSize);
+    $blockedProcessed = (int) $tracker->drainBlockedDomainQueue($batchSize);
+    
     $elapsed = microtime(true) - $loopStarted;
 
     echo sprintf(
@@ -69,7 +71,15 @@ do {
         break;
     }
 
+    // --- 修改部分 ---
     if ($sleepSeconds > 0) {
-        sleep($sleepSeconds);
+        // 计算还需要休眠多久 = 设定的休眠时间 - 本次处理数据消耗的时间
+        $actualSleepSeconds = $sleepSeconds - $elapsed;
+        
+        // 如果处理时间已经超过了设定的 sleep 时间（比如处理耗时130秒），那就直接进入下一次循环，不休眠
+        if ($actualSleepSeconds > 0) {
+            // 取整后进行休眠
+            sleep((int)$actualSleepSeconds);
+        }
     }
 } while (true);

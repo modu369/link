@@ -1,34 +1,5 @@
 #!/usr/bin/env php
 <?php
-$__rollupLogFile = __DIR__ . '/rollup_worker.log';
-$__rollupBootstrapLog = static function (string $message) use ($__rollupLogFile): void {
-    $line = '[' . date('Y-m-d H:i:s') . '] ' . $message . PHP_EOL;
-    @file_put_contents($__rollupLogFile, $line, FILE_APPEND);
-    @fwrite(STDERR, $line);
-};
-
-ini_set('display_errors', '1');
-error_reporting(E_ALL);
-
-set_error_handler(static function (int $severity, string $message, string $file, int $line) use ($__rollupBootstrapLog): bool {
-    $__rollupBootstrapLog("PHP error({$severity}) {$message} at {$file}:{$line}");
-    return false;
-});
-
-set_exception_handler(static function (Throwable $e) use ($__rollupBootstrapLog): void {
-    $__rollupBootstrapLog('Uncaught exception: ' . $e->getMessage() . "\n" . $e->getTraceAsString());
-    exit(1);
-});
-
-register_shutdown_function(static function () use ($__rollupBootstrapLog): void {
-    $err = error_get_last();
-    if (is_array($err) && in_array($err['type'] ?? 0, [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
-        $__rollupBootstrapLog('Fatal shutdown: ' . ($err['message'] ?? '') . ' at ' . ($err['file'] ?? '') . ':' . ($err['line'] ?? ''));
-    }
-});
-
-$__rollupBootstrapLog('rollup_worker bootstrap start');
-
 require_once __DIR__ . '/../src/Database.php';
 require_once __DIR__ . '/../src/RedisClient.php';
 require_once __DIR__ . '/../src/Tracker.php';
@@ -39,7 +10,6 @@ $db = Database::connection($config['db']);
 $redis = RedisClient::connection($config['redis']);
 $tracker = new Tracker($db, $redis, $config);
 $ipResolver = new IpResolver($config['ipdb']['path'] ?? null);
-$__rollupBootstrapLog('rollup_worker bootstrap init done');
 
 $options = getopt('', [
     'loop::',
@@ -56,39 +26,22 @@ $workerIndex = max(1, (int) ($options['worker'] ?? 1));
 $workerCount = max(1, (int) ($options['workers'] ?? 1));
 
 ob_implicit_flush(true);
-stream_set_write_buffer(STDOUT, 0);
-stream_set_write_buffer(STDERR, 0);
 
 function logLine(string $message): void
 {
-    global $__rollupLogFile;
-    $line = '[' . date('Y-m-d H:i:s') . '] ' . $message;
-    echo $line . PHP_EOL;
-    fwrite(STDERR, $line . PHP_EOL);
-    @file_put_contents($__rollupLogFile, $line . PHP_EOL, FILE_APPEND);
+    echo $message . PHP_EOL;
     flush();
 }
 
 function logError(string $message): void
 {
-    global $__rollupLogFile;
-    $line = '[' . date('Y-m-d H:i:s') . '] ' . $message;
-    fwrite(STDERR, $line . PHP_EOL);
-    @file_put_contents($__rollupLogFile, $line . PHP_EOL, FILE_APPEND);
+    fwrite(STDERR, $message . PHP_EOL);
     flush();
 }
 
 function truncateBucketStart(DateTimeImmutable $time): DateTimeImmutable
 {
     return $time->setTime((int) $time->format('H'), 0, 0);
-}
-
-function normalizeRollupSql(string $sql): string
-{
-    if (str_contains($sql, 'p.p.')) {
-        return str_replace('p.p.', 'p.', $sql);
-    }
-    return $sql;
 }
 
 function engineCase(string $alias): string
@@ -171,17 +124,35 @@ function processRiskRecoveries(PDO $db, Redis $redis, int $hoursBack, int $batch
     }
 
     $since = (new DateTimeImmutable('now'))->modify("-{$hoursBack} hours")->format('Y-m-d H:i:s');
-    $stmt = $db->prepare('UPDATE pageviews SET is_proxy_risk = 0 WHERE ip_hash = :ip_hash AND occurred_at >= :since');
+    
+    // 提取所有的 ip_hash
+    $ipHashes = array_keys($targets);
+    
+    // 构建批量 IN 的占位符 (?, ?, ?)
+    $placeholders = implode(',', array_fill(0, count($ipHashes), '?'));
+    
+    // 将单一变量 $since 放在数组开头，拼接上所有的 ipHashes 构成绑定参数
+    $params = array_merge([$since], $ipHashes);
+    
+    // 使用 IN (...) 批量更新，极大减少锁竞争次数和通信开销
+    $sql = "UPDATE pageviews SET is_proxy_risk = 0 WHERE occurred_at >= ? AND ip_hash IN ($placeholders)";
 
-    foreach ($targets as $ipHash => $score) {
-        $stmt->execute([
-            ':ip_hash' => (string) $ipHash,
-            ':since' => $since,
-        ]);
-        try {
-            $redis->zRem($queueKey, (string) $ipHash);
-        } catch (Throwable $e) {
-            // ignore
+    try {
+        $stmt = $db->prepare($sql);
+        $stmt->execute($params);
+
+        // 数据库更新成功后，再批量从 Redis 队列中移除
+        foreach ($ipHashes as $ipHash) {
+            try {
+                $redis->zRem($queueKey, (string) $ipHash);
+            } catch (Throwable $e) {
+                // ignore
+            }
+        }
+    } catch (PDOException $e) {
+        // 捕获锁超时或死锁异常，只记录日志不中断进程，等待下一轮 loop 自动重试
+        if (function_exists('logError')) {
+            logError("[processRiskRecoveries] Batch update failed (Lock timeout?): " . $e->getMessage());
         }
     }
 }
@@ -306,7 +277,6 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
         ];
 
         foreach ($dimensionInserts as $dimension => $sql) {
-            $sql = normalizeRollupSql($sql);
             $useSessionMetrics = $dimension === 'referrer_host';
             $insert = $db->prepare(
                 'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
@@ -464,8 +434,6 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
         ];
     }
 }
-
-logLine(sprintf("[rollup worker %d/%d] started loop=%s sleep=%ds hours=%d", $workerIndex, $workerCount, $loop ? 'yes' : 'no', $sleepSeconds, $hoursBack));
 
 do {
     $loopStarted = microtime(true);
