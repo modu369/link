@@ -112,21 +112,32 @@ class Tracker
         $this->maybeCleanupProxyHistory();
     }
 
-    private function cacheAggregate(string $key, int $ttlSeconds, callable $builder): array
-    {
-        $cached = $this->redis->get($key);
-        if ($cached !== false) {
-            $decoded = json_decode($cached, true);
-            if (is_array($decoded)) {
-                return $decoded;
-            }
-        }
-
-        $result = $builder();
-        $this->redis->setex($key, $ttlSeconds, json_encode($result));
-
-        return $result;
+private function cacheAggregate(string $key, int $ttlSeconds, callable $builder): array
+{
+    // 如果 key 包含确定的历史区间，大幅延长缓存时间
+    if (str_contains($key, ':yesterday')) {
+        $ttlSeconds = 86400; // 缓存 24 小时
+    } elseif (str_contains($key, ':day_before')) {
+        $ttlSeconds = 86400; // 缓存 24 小时
+    } elseif (str_contains($key, ':7d') || str_contains($key, ':custom:')) {
+        $ttlSeconds = 3600;  // 长时间跨度缓存 1 小时，后台可通过定时任务预热
+    } elseif (str_contains($key, ':today')) {
+        $ttlSeconds = 60;    // 今天的数据缓存 1 分钟即可
     }
+
+    $cached = $this->redis->get($key);
+    if ($cached !== false) {
+        $decoded = json_decode($cached, true);
+        if (is_array($decoded)) {
+            return $decoded;
+        }
+    }
+
+    $result = $builder();
+    $this->redis->setex($key, $ttlSeconds, json_encode($result));
+
+    return $result;
+}
 
     public function createSite(string $name, string $domain): array
     {
@@ -4759,7 +4770,9 @@ class Tracker
                 bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
                 PRIMARY KEY (site_id, bucket_start, dimension_type, dimension_value),
                 INDEX idx_dimension_type (dimension_type, dimension_value),
-                INDEX idx_dimension_time (bucket_start)
+                INDEX idx_dimension_time (bucket_start),
+                INDEX idx_query_perf (site_id, dimension_type, bucket_start),
+                INDEX idx_share_perf (dimension_type, bucket_start, site_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
         );
 
@@ -4776,7 +4789,8 @@ class Tracker
                 page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
                 bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
                 PRIMARY KEY (site_id, bucket_start, path),
-                INDEX idx_page_time (bucket_start)
+                INDEX idx_page_time (bucket_start),
+                INDEX idx_query_perf (site_id, bucket_start)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
         );
 
@@ -4793,7 +4807,8 @@ class Tracker
                 page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
                 bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
                 PRIMARY KEY (site_id, bucket_start, path),
-                INDEX idx_entry_time (bucket_start)
+                INDEX idx_entry_time (bucket_start),
+                INDEX idx_query_perf (site_id, bucket_start)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
         );
 
