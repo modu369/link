@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS pageview_dimension_rollups (
     INDEX idx_dimension_time (bucket_start),
     INDEX idx_query_perf (site_id, dimension_type, bucket_start),
     INDEX idx_share_perf (dimension_type, bucket_start, site_id)
+    INDEX idx_cover_query (site_id, dimension_type, bucket_start, dimension_value, pv, uv, ip_count);
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 /*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
 
