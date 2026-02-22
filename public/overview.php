@@ -68,11 +68,14 @@ render_topbar($branding);
                     <div class="metric-tile"><div class="metric-icon">📈</div><div class="metric-info"><div class="label">PV</div><div class="val"><?= $data['totals']['views'] ?></div></div></div>
                     <div class="metric-tile"><div class="metric-icon">👥</div><div class="metric-info"><div class="label">UV</div><div class="val"><?= $data['totals']['uniques'] ?></div></div></div>
                     <div class="metric-tile"><div class="metric-icon">🌐</div><div class="metric-info"><div class="label">IP</div><div class="val"><?= $data['totals']['ip_count'] ?></div></div></div>
+                    
+                    <div class="metric-tile"><div class="metric-icon">📲</div><div class="metric-info"><div class="label">移动 PV</div><div class="val"><?= (int)($data['devices']['mobile']['views'] ?? 0) ?></div></div></div>
+                    <div class="metric-tile"><div class="metric-icon">📶</div><div class="metric-info"><div class="label">移动 IP</div><div class="val"><?= (int)($data['devices']['mobile']['ips'] ?? 0) ?></div></div></div>
                     <div class="metric-tile"><div class="metric-icon">⏱️</div><div class="metric-info"><div class="label">平均访问时长</div><div class="val"><?= $avgMinutes ?> min</div></div></div>
                     <div class="metric-tile"><div class="metric-icon">📄</div><div class="metric-info"><div class="label">平均访问页数</div><div class="val"><?= $data['totals']['averages']['pages'] ?></div></div></div>
                     <div class="metric-tile"><div class="metric-icon">↩️</div><div class="metric-info"><div class="label">跳出率</div><div class="val"><?= round($data['totals']['bounce_rate'] * 100, 1) ?>%</div></div></div>
-                    <div class="metric-tile"><div class="metric-icon">🔮</div><div class="metric-info"><div class="label">预计今日 PV</div><div class="val"><?= $data['predictions']['views']?></div></div></div>
-                    <div class="metric-tile"><div class="metric-icon">🔮</div><div class="metric-info"><div class="label">预计今日 UV</div><div class="val"><?= $data['predictions']['uniques'] ?></div></div></div>
+                    <div class="metric-tile"><div class="metric-icon">🎯</div><div class="metric-info"><div class="label">预计今日 PV</div><div class="val"><?= $data['predictions']['views']?></div></div></div>
+                    <div class="metric-tile"><div class="metric-icon">👤</div><div class="metric-info"><div class="label">预计今日 UV</div><div class="val"><?= $data['predictions']['uniques'] ?></div></div></div>
                     <div class="metric-tile"><div class="metric-icon">🔮</div><div class="metric-info"><div class="label">预计今日 IP</div><div class="val"><?= $data['predictions']['ips'] ?></div></div></div>
                     <?php if ($range === 'today' && $yesterdayTotals): ?>
                         <div class="metric-tile"><div class="metric-icon yesterday">📈</div><div class="metric-info"><div class="label">昨日 PV</div><div class="val"><?= $yesterdayTotals['views'] ?? 0 ?></div></div></div>
