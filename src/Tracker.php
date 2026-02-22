@@ -5168,14 +5168,14 @@ private function formatHostDeviceBreakdown(array $hosts, array $hostDevices): ar
         });
     }
 
-    private function getExternalLinks(int $siteId, string $range): array
+private function getExternalLinks(int $siteId, string $range): array
     {
         $cacheKey = "external_links:{$siteId}:{$range}";
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
             [$start, $end] = $this->rollupRangeBounds($range);
-            $site = $this->getSite($siteId);
-            $domain = $site['domain'] ?? '';
+            $domains = $this->getAllSiteDomains($siteId);
+            
             $blocked = ['baidu', 'google', 'bing.', 'sm.cn', 'quark.cn', 'so.com', 'sogou', 'bytedance', 'toutiao'];
             $span = $this->rollupSpanForRange($siteId, $start, $end);
             if (!$span) {
@@ -5193,6 +5193,8 @@ private function formatHostDeviceBreakdown(array $hosts, array $hostDevices): ar
                     }
 
                     $skip = false;
+                    
+                    // 排除搜索引擎
                     foreach ($blocked as $needle) {
                         if (str_contains($host, $needle)) {
                             $skip = true;
@@ -5200,7 +5202,7 @@ private function formatHostDeviceBreakdown(array $hosts, array $hostDevices): ar
                         }
                     }
 
-                    if ($domain && (str_ends_with($host, $domain) || str_ends_with($host, 'www.' . ltrim($domain, '.')))) {
+                    if (!$skip && $domains && $this->isOwnReferrer($host, $domains)) {
                         $skip = true;
                     }
 
