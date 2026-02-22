@@ -113,31 +113,34 @@ class Tracker
     }
 
 private function cacheAggregate(string $key, int $ttlSeconds, callable $builder): array
-{
-    // 如果 key 包含确定的历史区间，大幅延长缓存时间
-    if (str_contains($key, ':yesterday')) {
-        $ttlSeconds = 86400; // 缓存 24 小时
-    } elseif (str_contains($key, ':day_before')) {
-        $ttlSeconds = 86400; // 缓存 24 小时
-    } elseif (str_contains($key, ':7d') || str_contains($key, ':custom:')) {
-        $ttlSeconds = 3600;  // 长时间跨度缓存 1 小时，后台可通过定时任务预热
-    } elseif (str_contains($key, ':today')) {
-        $ttlSeconds = 60;    // 今天的数据缓存 1 分钟即可
-    }
+    {
+        $todayStr = date('Y-m-d');
 
-    $cached = $this->redis->get($key);
-    if ($cached !== false) {
-        $decoded = json_decode($cached, true);
-        if (is_array($decoded)) {
-            return $decoded;
+        if (str_contains($key, ':yesterday') || str_contains($key, ':day_before') || str_contains($key, ':7d') || str_contains($key, ':today')) {
+            $key .= ':' . $todayStr;
         }
+
+        if (str_contains($key, ':yesterday') || str_contains($key, ':day_before')) {
+            $ttlSeconds = max(60, strtotime('tomorrow') - time()); 
+        } elseif (str_contains($key, ':7d') || str_contains($key, ':custom:')) {
+            $ttlSeconds = 3600; 
+        } elseif (str_contains($key, ':today')) {
+            $ttlSeconds = 60;
+        }
+
+        $cached = $this->redis->get($key);
+        if ($cached !== false) {
+            $decoded = json_decode($cached, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        }
+
+        $result = $builder();
+        $this->redis->setex($key, $ttlSeconds, json_encode($result));
+
+        return $result;
     }
-
-    $result = $builder();
-    $this->redis->setex($key, $ttlSeconds, json_encode($result));
-
-    return $result;
-}
 
     public function createSite(string $name, string $domain): array
     {
@@ -4975,7 +4978,7 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
         ];
     }
 
-    private function getMobileBreakdown(int $siteId, string $range): array
+private function getMobileBreakdown(int $siteId, string $range): array
     {
         $cacheKey = "mobile_breakdown:{$siteId}:{$range}";
 
@@ -4987,20 +4990,42 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
                 $hostDevices = $this->aggregateDimensionRollups($siteId, 'host_device', $span['start'], $span['end'], 400);
 
                 if (!empty($hosts)) {
-                    return $this->formatHostDeviceBreakdown($hosts, $hostDevices);
+                    $result = $this->formatHostDeviceBreakdown($hosts, $hostDevices);
+                    
+                    // 获取真实的全局去重 IP (无需再查 PV)
+                    $globalTotals = $this->aggregateTotalsWithRollups($siteId, $span['start'], $span['end']);
+                    $deviceRollup = $this->aggregateDimensionRollups($siteId, 'device', $span['start'], $span['end'], 2);
+                    
+                    $mobileIps = 0;
+                    foreach ($deviceRollup as $dr) {
+                        if (($dr['dimension_value'] ?? '') === 'mobile') {
+                            $mobileIps = (int) ($dr['ips'] ?? 0);
+                            break;
+                        }
+                    }
+                    
+                    // 构建全局汇总行：PV 与 "汇总" 保持一致，IP 使用全局去重后的值
+                    $globalRow = [
+                        'domain' => '全局汇总',
+                        'views' => $result[0]['views'],               // 保持一致
+                        'mobile_views' => $result[0]['mobile_views'], // 保持一致
+                        'ips' => (int) ($globalTotals['ip_count'] ?? 0),
+                        'mobile_ips' => $mobileIps,
+                    ];
+                    
+                    // 插入到数组最前面
+                    array_unshift($result, $globalRow);
+                    return $result;
                 }
             }
-            return [[
-                'domain' => '汇总',
-                'views' => 0,
-                'ips' => 0,
-                'mobile_views' => 0,
-                'mobile_ips' => 0,
-            ]];
+            return [
+                ['domain' => '全局汇总', 'views' => 0, 'ips' => 0, 'mobile_views' => 0, 'mobile_ips' => 0],
+                ['domain' => '汇总', 'views' => 0, 'ips' => 0, 'mobile_views' => 0, 'mobile_ips' => 0]
+            ];
         });
     }
 
-    private function formatHostDeviceBreakdown(array $hosts, array $hostDevices): array
+private function formatHostDeviceBreakdown(array $hosts, array $hostDevices): array
     {
         $deviceMap = [];
 
@@ -5016,7 +5041,7 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
 
         $rows = [];
         $totals = [
-            'domain' => '汇总',
+            'domain' => '汇总', // <--- 改为“汇总”
             'views' => 0,
             'ips' => 0,
             'mobile_views' => 0,
@@ -5194,7 +5219,7 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
         });
     }
 
-    public function getDeviceBreakdown(int $siteId, string $range): array
+public function getDeviceBreakdown(int $siteId, string $range): array
     {
         $cacheKey = "devices:{$siteId}:{$range}";
 
@@ -5962,16 +5987,45 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
         ];
     }
 
-    private function getHostDeviceRollupRowsForSites(array $siteIds, DateTimeImmutable $start, DateTimeImmutable $end): array
+private function getHostDeviceRollupRowsForSites(array $siteIds, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
         $hosts = $this->aggregateDimensionRollupsForSites($siteIds, 'host', $start, $end, 500);
         if (empty($hosts)) {
-            return [];
+            return [
+                ['domain' => '全局汇总', 'views' => 0, 'ips' => 0, 'mobile_views' => 0, 'mobile_ips' => 0],
+                ['domain' => '汇总', 'views' => 0, 'ips' => 0, 'mobile_views' => 0, 'mobile_ips' => 0]
+            ];
         }
 
         $hostDevices = $this->aggregateDimensionRollupsForSites($siteIds, 'host_device', $start, $end, 1000);
+        $result = $this->formatHostDeviceBreakdown($hosts, $hostDevices);
 
-        return $this->formatHostDeviceBreakdown($hosts, $hostDevices);
+        // 计算该分享页包含的所有站点的真实全局去重 IP
+        $placeholders = implode(',', array_fill(0, count($siteIds), '?'));
+        $params = array_merge($siteIds, [$start->format('Y-m-d H:i:s'), $end->format('Y-m-d H:i:s')]);
+        
+        // 全局基础 IP
+        $stmt = $this->db->prepare("SELECT SUM(ip_count) as ips FROM pageview_rollups WHERE site_id IN ($placeholders) AND bucket_start >= ? AND bucket_start < ?");
+        $stmt->execute($params);
+        $globalTotals = $stmt->fetch() ?: [];
+
+        // 全局移动端 IP
+        $stmtDevice = $this->db->prepare("SELECT SUM(ip_count) as ips FROM pageview_dimension_rollups WHERE site_id IN ($placeholders) AND dimension_type = 'device' AND dimension_value = 'mobile' AND bucket_start >= ? AND bucket_start < ?");
+        $stmtDevice->execute($params);
+        $globalMobile = $stmtDevice->fetch() ?: [];
+
+        // 构建全局汇总行：PV 与 "汇总" 保持一致
+        $globalRow = [
+            'domain' => '全局汇总',
+            'views' => $result[0]['views'],               // 保持一致
+            'mobile_views' => $result[0]['mobile_views'], // 保持一致
+            'ips' => (int) ($globalTotals['ips'] ?? 0),
+            'mobile_ips' => (int) ($globalMobile['ips'] ?? 0),
+        ];
+
+        // 插入到数组最前面
+        array_unshift($result, $globalRow);
+        return $result;
     }
 
     public function deleteSite(int $siteId): void
