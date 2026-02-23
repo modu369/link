@@ -552,7 +552,24 @@ do {
             $workerCount
         ));
     }
-
+// ================== 主动预热面板数据 ==================
+    $warmupStarted = microtime(true);
+    $warmedSites = 0;
+    foreach ($siteIds as $siteId) {
+        // 如果是多 Worker 分片，只预热自己负责的站点，避免争抢
+        if ($workerCount > 1 && ((($siteId - 1) % $workerCount) !== ($workerIndex - 1))) {
+            continue;
+        }
+        try {
+            $tracker->warmupDashboardCache($siteId);
+            $warmedSites++;
+        } catch (Throwable $e) {
+            logError("[warmup error] site={$siteId}: " . $e->getMessage());
+        }
+    }
+    $warmupElapsed = microtime(true) - $warmupStarted;
+    logLine(sprintf("[rollup worker %d/%d] active cache warmup finished for %d sites, elapsed=%.2fs", $workerIndex, $workerCount, $warmedSites, $warmupElapsed));
+    // =======================================================
     if (!$loop) {
         break;
     }
