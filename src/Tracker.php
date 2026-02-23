@@ -50,7 +50,8 @@ class Tracker
     private int $proxyRiskHoldSeconds = 3600;
     private array $rollupCoverageCache = [];
     private array $rollupSpanCache = [];
-
+    private bool $forceRefresh = false;
+    
     public function __construct(
         private PDO $db,
         private Redis $redis,
@@ -112,31 +113,61 @@ class Tracker
         $this->maybeCleanupProxyHistory();
     }
 
+public function warmupDashboardCache(int $siteId): void
+    {
+        $this->forceRefresh = true;
+        try {
+            // 补上 day_before
+            $ranges = ['today', 'yesterday', 'day_before', '7d'];
+            foreach ($ranges as $range) {
+                $this->getOverview($siteId, $range);
+                $this->getTrendData($siteId, $range);
+                $this->getSearchEngineData($siteId, $range);
+                $this->getKeywordData($siteId, $range);
+                $this->getExternalLinkData($siteId, $range);
+                $this->getMobileData($siteId, $range);
+                $this->getVisitorEnv($siteId, $range);
+                $this->getRegionData($siteId, $range);
+                $this->getIspData($siteId, $range);
+                $this->getAudienceData($siteId, $range);
+            }
+        } finally {
+            $this->forceRefresh = false;
+        }
+    }
+
 private function cacheAggregate(string $key, int $ttlSeconds, callable $builder): array
     {
         $todayStr = date('Y-m-d');
 
+        // 【防串包核心】：如果是相对时间（如昨天、今天），将当前真实日期拼接到 Key 后面,例如：overview:1:yesterday 会变成 overview:1:yesterday:2026-02-23,这样只要过了 0 点，$todayStr 改变，系统就会自动去生成全新的 Key，老 Key 会自然随 TTL 淘汰。
         if (str_contains($key, ':yesterday') || str_contains($key, ':day_before') || str_contains($key, ':7d') || str_contains($key, ':today')) {
             $key .= ':' . $todayStr;
         }
 
-        if (str_contains($key, ':yesterday') || str_contains($key, ':day_before')) {
-            $ttlSeconds = max(60, strtotime('tomorrow') - time()); 
-        } elseif (str_contains($key, ':7d') || str_contains($key, ':custom:')) {
-            $ttlSeconds = 3600; 
-        } elseif (str_contains($key, ':today')) {
-            $ttlSeconds = 60;
-        }
-
-        $cached = $this->redis->get($key);
-        if ($cached !== false) {
-            $decoded = json_decode($cached, true);
-            if (is_array($decoded)) {
-                return $decoded;
+        // 如果不是 Worker 强制刷新（即前端普通访问），则优先读缓存
+        if (!$this->forceRefresh) {
+            $cached = $this->redis->get($key);
+            if ($cached !== false) {
+                $decoded = json_decode($cached, true);
+                if (is_array($decoded)) {
+                    return $decoded;
+                }
             }
         }
 
+        // 查库执行聚合
         $result = $builder();
+
+        // 【TTL 区分策略】：针对固化数据与动态数据设置不同过期时间
+        if (str_contains($key, ':yesterday') || str_contains($key, ':day_before')) {
+            // 昨天和前天的数据已经固化，不再高频改变,缓存有效时间设置为：距离今天 23:59:59 的剩余秒数,保证它们在今天内一直有效，降低 Worker 重复计算的无用功。
+            $ttlSeconds = max(300, strtotime('tomorrow') - time()); 
+        } else {
+            // 对于 today 和 7d（包含今天的活跃数据），设置 300 秒（5分钟）,配合 rollup_worker 2分钟的 sleep 周期，既不过期，又能及时被覆盖刷新
+            $ttlSeconds = 300; 
+        }
+
         $this->redis->setex($key, $ttlSeconds, json_encode($result));
 
         return $result;
@@ -2690,47 +2721,22 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
         return $this->recalcEntryRollupIps($siteId, $span['start'], $span['end'], $rows);
     }
 
-    private function aggregateDimensionRollupsForSites(array $siteIds, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
+private function aggregateDimensionRollupsForSites(array $siteIds, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
     {
         if (empty($siteIds)) {
             return [];
         }
 
-        $placeholders = [];
-        $bindings = [
-            ':dimension' => $dimension,
-            ':start' => $start->format('Y-m-d H:i:s'),
-            ':end' => $end->format('Y-m-d H:i:s'),
-            ':limit' => $limit,
-        ];
-
-        foreach (array_values($siteIds) as $idx => $siteId) {
-            $ph = ':sid' . $idx;
-            $placeholders[] = $ph;
-            $bindings[$ph] = (int) $siteId;
+        $allRowsSets = [];
+        foreach ($siteIds as $siteId) {
+            $rows = $this->aggregateDimensionRollups((int) $siteId, $dimension, $start, $end, $limit);
+            $allRowsSets[] = $rows;
         }
 
-        $sql = sprintf(
-            'SELECT dimension_value, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ips, SUM(session_count) as sessions, SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count
-             FROM pageview_dimension_rollups
-             WHERE site_id IN (%s) AND dimension_type = :dimension AND bucket_start >= :start AND bucket_start < :end
-             GROUP BY dimension_value
-             ORDER BY views DESC
-             LIMIT :limit',
-            implode(',', $placeholders)
-        );
-
-        $statement = $this->db->prepare($sql);
-        foreach ($bindings as $key => $value) {
-            $paramType = (str_starts_with($key, ':sid') || $key === ':limit') ? PDO::PARAM_INT : PDO::PARAM_STR;
-            $statement->bindValue($key, $value, $paramType);
-        }
-
-        $statement->execute();
-
-        $rows = $statement->fetchAll();
-
-        return $this->recalcRollupIps($siteIds, $dimension, $start, $end, $rows);
+        $merged = $this->mergeDimensionRows('dimension_value', ...$allRowsSets);
+        usort($merged, static fn($a, $b) => ($b['views'] ?? 0) <=> ($a['views'] ?? 0));
+        
+        return array_slice($merged, 0, $limit);
     }
 
     private function recalcRollupIps(?array $siteIds, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, array $rows): array
@@ -6002,30 +6008,30 @@ private function getHostDeviceRollupRowsForSites(array $siteIds, DateTimeImmutab
         $hostDevices = $this->aggregateDimensionRollupsForSites($siteIds, 'host_device', $start, $end, 1000);
         $result = $this->formatHostDeviceBreakdown($hosts, $hostDevices);
 
-        // 计算该分享页包含的所有站点的真实全局去重 IP
-        $placeholders = implode(',', array_fill(0, count($siteIds), '?'));
-        $params = array_merge($siteIds, [$start->format('Y-m-d H:i:s'), $end->format('Y-m-d H:i:s')]);
-        
-        // 全局基础 IP
-        $stmt = $this->db->prepare("SELECT SUM(ip_count) as ips FROM pageview_rollups WHERE site_id IN ($placeholders) AND bucket_start >= ? AND bucket_start < ?");
-        $stmt->execute($params);
-        $globalTotals = $stmt->fetch() ?: [];
+        $globalIps = 0;
+        $globalMobileIps = 0;
 
-        // 全局移动端 IP
-        $stmtDevice = $this->db->prepare("SELECT SUM(ip_count) as ips FROM pageview_dimension_rollups WHERE site_id IN ($placeholders) AND dimension_type = 'device' AND dimension_value = 'mobile' AND bucket_start >= ? AND bucket_start < ?");
-        $stmtDevice->execute($params);
-        $globalMobile = $stmtDevice->fetch() ?: [];
+        foreach ($siteIds as $siteId) {
+            $totals = $this->aggregateTotalsWithRollups((int)$siteId, $start, $end);
+            $globalIps += (int)($totals['ip_count'] ?? 0);
 
-        // 构建全局汇总行：PV 与 "汇总" 保持一致
+            $deviceRollup = $this->aggregateDimensionRollups((int)$siteId, 'device', $start, $end, 2);
+            foreach ($deviceRollup as $dr) {
+                if (($dr['dimension_value'] ?? '') === 'mobile') {
+                    $globalMobileIps += (int)($dr['ips'] ?? 0);
+                    break;
+                }
+            }
+        }
+
         $globalRow = [
             'domain' => '全局汇总',
-            'views' => $result[0]['views'],               // 保持一致
-            'mobile_views' => $result[0]['mobile_views'], // 保持一致
-            'ips' => (int) ($globalTotals['ips'] ?? 0),
-            'mobile_ips' => (int) ($globalMobile['ips'] ?? 0),
+            'views' => $result[0]['views'],               
+            'mobile_views' => $result[0]['mobile_views'], 
+            'ips' => $globalIps,
+            'mobile_ips' => $globalMobileIps,
         ];
 
-        // 插入到数组最前面
         array_unshift($result, $globalRow);
         return $result;
     }
