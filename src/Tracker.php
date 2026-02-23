@@ -51,6 +51,7 @@ class Tracker
     private array $rollupCoverageCache = [];
     private array $rollupSpanCache = [];
     private bool $forceRefresh = false;
+    private int $cacheTtl = 300;
     
     public function __construct(
         private PDO $db,
@@ -112,7 +113,10 @@ class Tracker
         $this->maybeCleanupBlockedDomains();
         $this->maybeCleanupProxyHistory();
     }
-
+public function setCacheTtl(int $ttlSeconds): void
+    {
+        $this->cacheTtl = max(60, $ttlSeconds);
+    }
 public function warmupDashboardCache(int $siteId): void
     {
         $this->forceRefresh = true;
@@ -140,12 +144,12 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
     {
         $todayStr = date('Y-m-d');
 
-        // 【防串包核心】：如果是相对时间（如昨天、今天），将当前真实日期拼接到 Key 后面,例如：overview:1:yesterday 会变成 overview:1:yesterday:2026-02-23,这样只要过了 0 点，$todayStr 改变，系统就会自动去生成全新的 Key，老 Key 会自然随 TTL 淘汰。
+        // 【防串包核心】：如果是相对时间，追加当前真实日期
         if (str_contains($key, ':yesterday') || str_contains($key, ':day_before') || str_contains($key, ':7d') || str_contains($key, ':today')) {
             $key .= ':' . $todayStr;
         }
 
-        // 如果不是 Worker 强制刷新（即前端普通访问），则优先读缓存
+        // 优先读缓存
         if (!$this->forceRefresh) {
             $cached = $this->redis->get($key);
             if ($cached !== false) {
@@ -159,16 +163,16 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
         // 查库执行聚合
         $result = $builder();
 
-        // 【TTL 区分策略】：针对固化数据与动态数据设置不同过期时间
+        // 【动态 TTL 策略】：使用动态的 $this->cacheTtl 替代固定的 300
         if (str_contains($key, ':yesterday') || str_contains($key, ':day_before')) {
-            // 昨天和前天的数据已经固化，不再高频改变,缓存有效时间设置为：距离今天 23:59:59 的剩余秒数,保证它们在今天内一直有效，降低 Worker 重复计算的无用功。
-            $ttlSeconds = max(300, strtotime('tomorrow') - time()); 
+            // 固化数据：存活到今天结束，至少保证覆盖 sleep 周期
+            $computedTtl = max($this->cacheTtl, strtotime('tomorrow') - time()); 
         } else {
-            // 对于 today 和 7d（包含今天的活跃数据），设置 300 秒（5分钟）,配合 rollup_worker 2分钟的 sleep 周期，既不过期，又能及时被覆盖刷新
-            $ttlSeconds = 300; 
+            // 活跃数据：直接使用根据 sleep 动态计算出的 TTL
+            $computedTtl = $this->cacheTtl; 
         }
 
-        $this->redis->setex($key, $ttlSeconds, json_encode($result));
+        $this->redis->setex($key, $computedTtl, json_encode($result));
 
         return $result;
     }
