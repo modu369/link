@@ -24,7 +24,8 @@ $sleepSeconds = max(0, (int) ($options['sleep'] ?? 5));
 $hoursBack = max(1, (int) ($options['hours'] ?? 2));
 $workerIndex = max(1, (int) ($options['worker'] ?? 1));
 $workerCount = max(1, (int) ($options['workers'] ?? 1));
-
+$dynamicTtl = max(300, ($sleepSeconds * 2) + 60);
+$tracker->setCacheTtl($dynamicTtl);
 ob_implicit_flush(true);
 
 function logLine(string $message): void
@@ -157,7 +158,6 @@ function processRiskRecoveries(PDO $db, Redis $redis, int $hoursBack, int $batch
     }
 }
 
-processRiskRecoveries($db, $redis, $hoursBack);
 
 function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeImmutable $bucketStart, DateTimeImmutable $bucketEnd): array
 {
@@ -437,6 +437,7 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
 
 do {
     $loopStarted = microtime(true);
+    processRiskRecoveries($db, $redis, $hoursBack);
     $siteStmt = $db->query('SELECT id FROM sites ORDER BY id ASC');
     $siteIds = array_map('intval', $siteStmt->fetchAll(PDO::FETCH_COLUMN));
 
