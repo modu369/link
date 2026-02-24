@@ -557,7 +557,7 @@ do {
     $warmupStarted = microtime(true);
     $warmedSites = 0;
     foreach ($siteIds as $siteId) {
-        // 如果是多 Worker 分片，只预热自己负责的站点，避免争抢
+        // 如果是多 Worker 分片，只预热自己负责的站点
         if ($workerCount > 1 && ((($siteId - 1) % $workerCount) !== ($workerIndex - 1))) {
             continue;
         }
@@ -568,8 +568,16 @@ do {
             logError("[warmup error] site={$siteId}: " . $e->getMessage());
         }
     }
+
+    // 👇 修改：每个 Worker 都会执行，但在 Tracker 内部会自动根据分享页 ID 认领自己的份额
+    try {
+        $tracker->warmupShareCache($workerIndex, $workerCount);
+    } catch (Throwable $e) {
+        logError("[warmup error] share_pages: " . $e->getMessage());
+    }
+
     $warmupElapsed = microtime(true) - $warmupStarted;
-    logLine(sprintf("[rollup worker %d/%d] active cache warmup finished for %d sites, elapsed=%.2fs", $workerIndex, $workerCount, $warmedSites, $warmupElapsed));
+    logLine(sprintf("[rollup worker %d/%d] active cache warmup finished for %d sites (and mapped shares), elapsed=%.2fs", $workerIndex, $workerCount, $warmedSites, $warmupElapsed));
     // =======================================================
     if (!$loop) {
         break;
