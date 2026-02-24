@@ -92,8 +92,8 @@ CREATE TABLE IF NOT EXISTS pageview_rollups (
     page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
     bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
     PRIMARY KEY (site_id, bucket_start),
-    INDEX idx_bucket_time (bucket_start)
-    INDEX idx_cover_totals (site_id, bucket_start, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count);
+    INDEX idx_bucket_time (bucket_start),
+    INDEX idx_cover_totals (site_id, bucket_start, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 /*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
 
@@ -112,9 +112,8 @@ CREATE TABLE IF NOT EXISTS pageview_dimension_rollups (
     PRIMARY KEY (site_id, bucket_start, dimension_type, dimension_value),
     INDEX idx_dimension_type (dimension_type, dimension_value),
     INDEX idx_dimension_time (bucket_start),
-    INDEX idx_query_perf (site_id, dimension_type, bucket_start),
-    INDEX idx_share_perf (dimension_type, bucket_start, site_id)
-    INDEX idx_cover_query (site_id, dimension_type, bucket_start, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count);
+    INDEX idx_share_perf_v2 (dimension_type, site_id, bucket_start),
+    INDEX idx_cover_query (site_id, dimension_type, bucket_start, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 /*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
 
