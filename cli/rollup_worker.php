@@ -24,7 +24,7 @@ $sleepSeconds = max(0, (int) ($options['sleep'] ?? 5));
 $hoursBack = max(1, (int) ($options['hours'] ?? 2));
 $workerIndex = max(1, (int) ($options['worker'] ?? 1));
 $workerCount = max(1, (int) ($options['workers'] ?? 1));
-$dynamicTtl = max(300, ($sleepSeconds * 2) + 60);
+$dynamicTtl = max(3600, ($sleepSeconds * 2) + 60);
 $tracker->setCacheTtl($dynamicTtl);
 ob_implicit_flush(true);
 
