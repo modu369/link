@@ -51,7 +51,7 @@ class Tracker
     private array $rollupCoverageCache = [];
     private array $rollupSpanCache = [];
     private bool $forceRefresh = false;
-    private int $cacheTtl = 300;
+    private int $cacheTtl = 3600;
     
     public function __construct(
         private PDO $db,
@@ -170,26 +170,45 @@ public function warmupShareCache(int $workerIndex = 1, int $workerCount = 1): vo
         }
     }
 private function cacheAggregate(string $key, int $ttlSeconds, callable $builder): ?array
-    {
-        $todayStr = date('Y-m-d');
+{
+    $todayStr = date('Y-m-d');
 
-        // 【防串包核心】：如果是相对时间，追加当前真实日期
-        if (str_contains($key, ':yesterday') || str_contains($key, ':day_before') || str_contains($key, ':7d') || str_contains($key, ':today')) {
-            $key .= ':' . $todayStr;
-        }
+    // 【防串包核心】：如果是相对时间，追加当前真实日期
+    if (str_contains($key, ':yesterday') || str_contains($key, ':day_before') || str_contains($key, ':7d') || str_contains($key, ':today')) {
+        $key .= ':' . $todayStr;
+    }
 
-        // 优先读缓存
-        if (!$this->forceRefresh) {
-            $cached = $this->redis->get($key);
-            if ($cached !== false) {
-                $decoded = json_decode($cached, true);
-                // 只要 JSON 是合法的（哪怕是 null）就直接返回，杜绝二次击穿查库
-                if (json_last_error() === JSON_ERROR_NONE) {
-                    return $decoded;
-                }
+    $lockKey = "lock:{$key}";
+    $hasLock = false;
+
+    // 优先读缓存
+    if (!$this->forceRefresh) {
+        $cached = $this->redis->get($key);
+        if ($cached !== false) {
+            $decoded = json_decode($cached, true);
+            if (json_last_error() === JSON_ERROR_NONE) {
+                return $decoded;
             }
         }
 
+        // 没命中缓存，尝试加锁
+        if (!$this->redis->setnx($lockKey, '1')) {
+            // 如果没拿到锁，说明有其他进程正在查库，阻塞等待 (最多等 45 秒)
+            for ($i = 0; $i < 90; $i++) {
+                usleep(500000); // 等待 0.5 秒
+                $cached = $this->redis->get($key);
+                if ($cached !== false) {
+                    return json_decode($cached, true);
+                }
+            }
+        } else {
+            // 拿到锁，设置锁超时防止死锁
+            $this->redis->expire($lockKey, 120);
+            $hasLock = true;
+        }
+    }
+
+    try {
         // 查库执行聚合
         $result = $builder();
 
@@ -203,7 +222,13 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
         $this->redis->setex($key, $computedTtl, json_encode($result));
 
         return $result;
+    } finally {
+        // 释放锁
+        if ($hasLock) {
+            $this->redis->del($lockKey);
+        }
     }
+}
 
     public function createSite(string $name, string $domain): array
     {
