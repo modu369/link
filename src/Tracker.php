@@ -120,6 +120,8 @@ public function setCacheTtl(int $ttlSeconds): void
 public function warmupDashboardCache(int $siteId): void
     {
         $this->forceRefresh = true;
+        $this->rollupCoverageCache = [];
+        $this->rollupSpanCache = [];
         try {
             // 补上 day_before
             $ranges = ['today', 'yesterday', 'day_before', '7d'];
@@ -142,6 +144,8 @@ public function warmupDashboardCache(int $siteId): void
 public function warmupShareCache(int $workerIndex = 1, int $workerCount = 1): void
     {
         $this->forceRefresh = true;
+        $this->rollupCoverageCache = [];
+        $this->rollupSpanCache = [];
         try {
             // 获取所有创建的分享页
             $shares = $this->getSharePages();
