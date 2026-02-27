@@ -6,10 +6,17 @@ require_once __DIR__ . '/../src/Tracker.php';
 require_once __DIR__ . '/../src/IpResolver.php';
 
 $config = require __DIR__ . '/../config/config.php';
-$db = Database::connection($config['db']);
-$redis = RedisClient::connection($config['redis']);
-$tracker = new Tracker($db, $redis, $config);
-$ipResolver = new IpResolver($config['ipdb']['path'] ?? null);
+
+// 【修改点1】服务初始化包裹在 try-catch 中，连接失败立刻让守护进程接管重启
+try {
+    $db = Database::connection($config['db']);
+    $redis = RedisClient::connection($config['redis']);
+    $tracker = new Tracker($db, $redis, $config);
+    $ipResolver = new IpResolver($config['ipdb']['path'] ?? null);
+} catch (Throwable $e) {
+    echo "[rollup worker] Initialization failed: " . $e->getMessage() . "\n";
+    exit(1); 
+}
 
 $options = getopt('', [
     'loop::',
@@ -157,7 +164,6 @@ function processRiskRecoveries(PDO $db, Redis $redis, int $hoursBack, int $batch
         }
     }
 }
-
 
 function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeImmutable $bucketStart, DateTimeImmutable $bucketEnd): array
 {
@@ -437,153 +443,170 @@ function rollupSiteHour(PDO $db, IpResolver $ipResolver, int $siteId, DateTimeIm
 
 do {
     $loopStarted = microtime(true);
-    processRiskRecoveries($db, $redis, $hoursBack);
-    $siteStmt = $db->query('SELECT id FROM sites ORDER BY id ASC');
-    $siteIds = array_map('intval', $siteStmt->fetchAll(PDO::FETCH_COLUMN));
 
-    $now = new DateTimeImmutable('now');
-    $cutoff = $now->modify('-5 minutes');
-    $endHour = truncateBucketStart($cutoff)->modify('+1 hour');
-
-    logLine(sprintf(
-        "[rollup worker %d/%d] sites=%d window_end=%s",
-        $workerIndex,
-        $workerCount,
-        count($siteIds),
-        $endHour->format('Y-m-d H:i:s')
-    ));
-
-    if (empty($siteIds)) {
-        if (!$loop) {
-            break;
-        }
-        if ($sleepSeconds > 0) {
-            sleep($sleepSeconds);
-        }
-        continue;
+    // 【修改点2】主循环开头统一探活
+    try {
+        $db->query("SELECT 1");
+        $redis->ping();
+    } catch (Throwable $e) {
+        logError(sprintf("[rollup worker %d/%d] Fatal: Connection lost (%s). Exiting for restart...", $workerIndex, $workerCount, $e->getMessage()));
+        exit(1); 
     }
 
-    $processedBuckets = 0;
-    $processedSites = 0;
-    $skippedSites = 0;
+    // 【修改点3】将整个核心聚合逻辑包裹进异常捕获中
+    try {
+        processRiskRecoveries($db, $redis, $hoursBack);
+        $siteStmt = $db->query('SELECT id FROM sites ORDER BY id ASC');
+        $siteIds = array_map('intval', $siteStmt->fetchAll(PDO::FETCH_COLUMN));
 
-    foreach ($siteIds as $siteId) {
-        if ($workerCount > 1 && ((($siteId - 1) % $workerCount) !== ($workerIndex - 1))) {
-            $skippedSites++;
-            continue;
-        }
-        $processedSites++;
+        $now = new DateTimeImmutable('now');
+        $cutoff = $now->modify('-5 minutes');
+        $endHour = truncateBucketStart($cutoff)->modify('+1 hour');
 
-        $jobStmt = $db->prepare('SELECT last_rolled_at FROM rollup_jobs WHERE site_id = :site_id');
-        $jobStmt->execute([':site_id' => $siteId]);
-        $last = $jobStmt->fetchColumn();
-        $lastRolled = $last ? new DateTimeImmutable($last) : truncateBucketStart($now->modify("-{$hoursBack} hours"));
-        $minStart = truncateBucketStart($endHour->modify("-{$hoursBack} hours"));
-        if ($lastRolled > $minStart) {
-            $lastRolled = $minStart;
-        }
-
-        $current = truncateBucketStart($lastRolled);
-        while ($current < $endHour) {
-            $bucketStart = $current;
-            $bucketEnd = $bucketStart->modify('+1 hour');
-            $summary = rollupSiteHour($db, $ipResolver, $siteId, $bucketStart, $bucketEnd);
-            if (!empty($summary['error'])) {
-                $errorMessage = sprintf(
-                    "[rollup worker %d/%d] site=%d bucket=%s error=%s",
-                    $workerIndex,
-                    $workerCount,
-                    $siteId,
-                    $summary['bucket'] ?? $bucketStart->format('Y-m-d H:i:s'),
-                    $summary['error']
-                );
-                logLine($errorMessage);
-                if (!empty($summary['trace'])) {
-                    logError($errorMessage . PHP_EOL . $summary['trace']);
-                } else {
-                    logError($errorMessage);
-                }
-            } else {
-                logLine(sprintf(
-                    "[rollup worker %d/%d] site=%d bucket=%s pv=%d uv=%d ip=%d sessions=%d",
-                    $workerIndex,
-                    $workerCount,
-                    $summary['site_id'],
-                    $summary['bucket'],
-                    $summary['pv'],
-                    $summary['uv'],
-                    $summary['ips'],
-                    $summary['sessions']
-                ));
-            }
-            $processedBuckets++;
-            $current = $bucketEnd;
-        }
-
-        $upsert = $db->prepare(
-            'INSERT INTO rollup_jobs (site_id, last_rolled_at) VALUES (:site_id, :last)
-             ON DUPLICATE KEY UPDATE last_rolled_at = VALUES(last_rolled_at)'
-        );
-        $upsert->execute([':site_id' => $siteId, ':last' => $endHour->format('Y-m-d H:i:s')]);
-    }
-
-    if ($processedBuckets === 0) {
         logLine(sprintf(
-            "[rollup worker %d/%d] no buckets processed (sites=%d)",
+            "[rollup worker %d/%d] sites=%d window_end=%s",
             $workerIndex,
             $workerCount,
-            count($siteIds)
+            count($siteIds),
+            $endHour->format('Y-m-d H:i:s')
         ));
-    }
-    $elapsed = microtime(true) - $loopStarted;
-    logLine(sprintf(
-        "[rollup worker %d/%d] summary sites=%d processed_sites=%d skipped_sites=%d buckets=%d elapsed=%.2fs",
-        $workerIndex,
-        $workerCount,
-        count($siteIds),
-        $processedSites,
-        $skippedSites,
-        $processedBuckets,
-        $elapsed
-    ));
-    if ($workerCount === 1 && count($siteIds) > 1) {
-        logLine(sprintf(
-            "[rollup worker %d/%d] hint: multiple sites detected; consider increasing --workers for faster coverage",
-            $workerIndex,
-            $workerCount
-        ));
-    }
-// ================== 主动预热面板数据 ==================
-    $warmupStarted = microtime(true);
-    $warmedSites = 0;
-    foreach ($siteIds as $siteId) {
-        // 如果是多 Worker 分片，只预热自己负责的站点
-        if ($workerCount > 1 && ((($siteId - 1) % $workerCount) !== ($workerIndex - 1))) {
-            continue;
-        }
-        try {
-            $tracker->warmupDashboardCache($siteId);
-            $warmedSites++;
-        } catch (Throwable $e) {
-            logError("[warmup error] site={$siteId}: " . $e->getMessage());
-        }
-    }
 
-    // 👇 修改：每个 Worker 都会执行，但在 Tracker 内部会自动根据分享页 ID 认领自己的份额
-    try {
-        $tracker->warmupShareCache($workerIndex, $workerCount);
+        if (!empty($siteIds)) {
+            $processedBuckets = 0;
+            $processedSites = 0;
+            $skippedSites = 0;
+
+            foreach ($siteIds as $siteId) {
+                if ($workerCount > 1 && ((($siteId - 1) % $workerCount) !== ($workerIndex - 1))) {
+                    $skippedSites++;
+                    continue;
+                }
+                $processedSites++;
+
+                $jobStmt = $db->prepare('SELECT last_rolled_at FROM rollup_jobs WHERE site_id = :site_id');
+                $jobStmt->execute([':site_id' => $siteId]);
+                $last = $jobStmt->fetchColumn();
+                $lastRolled = $last ? new DateTimeImmutable($last) : truncateBucketStart($now->modify("-{$hoursBack} hours"));
+                $minStart = truncateBucketStart($endHour->modify("-{$hoursBack} hours"));
+                if ($lastRolled > $minStart) {
+                    $lastRolled = $minStart;
+                }
+
+                $current = truncateBucketStart($lastRolled);
+                while ($current < $endHour) {
+                    $bucketStart = $current;
+                    $bucketEnd = $bucketStart->modify('+1 hour');
+                    
+                    // 这里去调用原本文件里保持不变的函数
+                    $summary = rollupSiteHour($db, $ipResolver, $siteId, $bucketStart, $bucketEnd);
+                    
+                    if (!empty($summary['error'])) {
+                        $errorMessage = sprintf(
+                            "[rollup worker %d/%d] site=%d bucket=%s error=%s",
+                            $workerIndex,
+                            $workerCount,
+                            $siteId,
+                            $summary['bucket'] ?? $bucketStart->format('Y-m-d H:i:s'),
+                            $summary['error']
+                        );
+                        logLine($errorMessage);
+                        if (!empty($summary['trace'])) {
+                            logError($errorMessage . PHP_EOL . $summary['trace']);
+                        } else {
+                            logError($errorMessage);
+                        }
+                    } else {
+                        logLine(sprintf(
+                            "[rollup worker %d/%d] site=%d bucket=%s pv=%d uv=%d ip=%d sessions=%d",
+                            $workerIndex,
+                            $workerCount,
+                            $summary['site_id'],
+                            $summary['bucket'],
+                            $summary['pv'],
+                            $summary['uv'],
+                            $summary['ips'],
+                            $summary['sessions']
+                        ));
+                    }
+                    $processedBuckets++;
+                    $current = $bucketEnd;
+                }
+
+                $upsert = $db->prepare(
+                    'INSERT INTO rollup_jobs (site_id, last_rolled_at) VALUES (:site_id, :last)
+                     ON DUPLICATE KEY UPDATE last_rolled_at = VALUES(last_rolled_at)'
+                );
+                $upsert->execute([':site_id' => $siteId, ':last' => $endHour->format('Y-m-d H:i:s')]);
+            }
+
+            if ($processedBuckets === 0) {
+                logLine(sprintf(
+                    "[rollup worker %d/%d] no buckets processed (sites=%d)",
+                    $workerIndex,
+                    $workerCount,
+                    count($siteIds)
+                ));
+            }
+            $elapsed = microtime(true) - $loopStarted;
+            logLine(sprintf(
+                "[rollup worker %d/%d] summary sites=%d processed_sites=%d skipped_sites=%d buckets=%d elapsed=%.2fs",
+                $workerIndex,
+                $workerCount,
+                count($siteIds),
+                $processedSites,
+                $skippedSites,
+                $processedBuckets,
+                $elapsed
+            ));
+            if ($workerCount === 1 && count($siteIds) > 1) {
+                logLine(sprintf(
+                    "[rollup worker %d/%d] hint: multiple sites detected; consider increasing --workers for faster coverage",
+                    $workerIndex,
+                    $workerCount
+                ));
+            }
+
+            // ================== 主动预热面板数据 ==================
+            $warmupStarted = microtime(true);
+            $warmedSites = 0;
+            foreach ($siteIds as $siteId) {
+                if ($workerCount > 1 && ((($siteId - 1) % $workerCount) !== ($workerIndex - 1))) {
+                    continue;
+                }
+                try {
+                    $tracker->warmupDashboardCache($siteId);
+                    $warmedSites++;
+                } catch (Throwable $e) {
+                    logError("[warmup error] site={$siteId}: " . $e->getMessage());
+                }
+            }
+
+            try {
+                $tracker->warmupShareCache($workerIndex, $workerCount);
+            } catch (Throwable $e) {
+                logError("[warmup error] share_pages: " . $e->getMessage());
+            }
+
+            $warmupElapsed = microtime(true) - $warmupStarted;
+            logLine(sprintf("[rollup worker %d/%d] active cache warmup finished for %d sites (and mapped shares), elapsed=%.2fs", $workerIndex, $workerCount, $warmedSites, $warmupElapsed));
+            // =======================================================
+        }
     } catch (Throwable $e) {
-        logError("[warmup error] share_pages: " . $e->getMessage());
+        logError(sprintf("[rollup worker %d/%d] Execution Error: %s\n%s", $workerIndex, $workerCount, $e->getMessage(), $e->getTraceAsString()));
+        exit(1); // 遭遇致命异常（如大段的数据库崩溃），直接退出等待接管重启
     }
 
-    $warmupElapsed = microtime(true) - $warmupStarted;
-    logLine(sprintf("[rollup worker %d/%d] active cache warmup finished for %d sites (and mapped shares), elapsed=%.2fs", $workerIndex, $workerCount, $warmedSites, $warmupElapsed));
-    // =======================================================
     if (!$loop) {
         break;
     }
 
+    // 【修改点4】采用动态休眠时间，补齐任务开销
     if ($sleepSeconds > 0) {
-        sleep($sleepSeconds);
+        $totalElapsed = microtime(true) - $loopStarted;
+        $actualSleepSeconds = $sleepSeconds - $totalElapsed;
+        if ($actualSleepSeconds > 0) {
+            sleep((int)$actualSleepSeconds);
+        }
     }
+
 } while (true);
