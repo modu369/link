@@ -436,13 +436,13 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
         $this->processPageview($trackingId, $payload);
     }
 
-    private function processPageview(string $trackingId, array $payload): void
+    private function processPageview(string $trackingId, array $payload, ?int $receivedAt = null): void
     {
         $site = $this->getSiteByTrackingId($trackingId);
         if (!$site) {
             return;
         }
-
+        $occurredAtStr = $receivedAt ? date('Y-m-d H:i:s', $receivedAt) : date('Y-m-d H:i:s');
         $parsedUrl = $this->parseUrl($payload['path'] ?? null, $site['domain'] ?? null);
         $path = $this->limitText($parsedUrl['path'] ?? '/', 2048, '/');
         $host = $this->limitText($parsedUrl['host'] ?? '', 255);
@@ -564,9 +564,9 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
         }
 
         $statement = $this->db->prepare(
-            'INSERT INTO pageviews (site_id, host, canonical_host, path, referrer, user_agent, ip_address, ip_hash, session_id, duration_seconds, page_count, keyword, is_mobile, is_unique, is_proxy_risk, country_name, region_name, city_name, isp_domain, country_code, occurred_at) VALUES
-            (:site_id, :host, :canonical_host, :path, :referrer, :user_agent, :ip_address, :ip_hash, :session_id, :duration_seconds, :page_count, :keyword, :is_mobile, :is_unique, :is_proxy_risk, :country_name, :region_name, :city_name, :isp_domain, :country_code, NOW())'
-        );
+    'INSERT INTO pageviews (site_id, host, canonical_host, path, referrer, user_agent, ip_address, ip_hash, session_id, duration_seconds, page_count, keyword, is_mobile, is_unique, is_proxy_risk, country_name, region_name, city_name, isp_domain, country_code, occurred_at) VALUES
+    (:site_id, :host, :canonical_host, :path, :referrer, :user_agent, :ip_address, :ip_hash, :session_id, :duration_seconds, :page_count, :keyword, :is_mobile, :is_unique, :is_proxy_risk, :country_name, :region_name, :city_name, :isp_domain, :country_code, :occurred_at)'
+);
         $statement->execute([
             ':site_id' => $site['id'],
             ':host' => $host,
@@ -588,6 +588,7 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
             ':city_name' => $cityName ?: null,
             ':isp_domain' => $ispName ?: null,
             ':country_code' => $countryCode ?: null,
+            ':occurred_at' => $occurredAtStr,
         ]);
 
         $now = new DateTimeImmutable('now');
@@ -1810,7 +1811,8 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
             }
 
             try {
-                $this->processPageview($decoded['tracking_id'], $decoded['payload']);
+                $receivedAt = (int) ($decoded['received_at'] ?? time());
+                $this->processPageview($decoded['tracking_id'], $decoded['payload'], $receivedAt);
                 $this->redis->lRem($this->ingestProcessingKey, $raw, 1);
                 $processed++;
             } catch (Throwable $e) {
