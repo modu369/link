@@ -486,6 +486,7 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
         }
         $isMobile = $this->isMobile($userAgent);
         $keyword = $this->limitText($this->extractKeyword($referrer) ?? '', 255);
+        $keyword = str_replace('|', ' ', $keyword);
         $headerMeta = [
             'language' => $this->limitText($payload['language'] ?? '', 32),
             'showp' => $this->limitText($payload['showp'] ?? '', 32),
@@ -3852,7 +3853,7 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
                 return [];
             }
 
-            $rollup = $this->aggregateDimensionRollups($siteId, 'keyword_engine', $span['start'], $span['end'], 500);
+            $rollup = $this->aggregateDimensionRollups($siteId, 'keyword_engine', $span['start'], $span['end'], 5000);
 
             if (!empty($rollup)) {
                 $keywords = [];
@@ -3900,7 +3901,7 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
                 return [];
             }
 
-            $rollup = $this->aggregateDimensionRollups($siteId, 'keyword_engine', $span['start'], $span['end'], 500);
+            $rollup = $this->aggregateDimensionRollups($siteId, 'keyword_engine', $span['start'], $span['end'], 5000);
             if (empty($rollup)) {
                 return [];
             }
