@@ -4049,15 +4049,21 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
         $averages = $this->getHistoricalAverages($siteId, 30);
 
         $predictedIps = $this->projectDayMetric($today['ips'], $yesterdayFull['ips'], $yesterdayPace['ips'], $averages['ips']);
+        $predictedViews = $this->projectDayMetric($today['views'], $yesterdayFull['views'], $yesterdayPace['views'], $averages['views']);
         $deviceData = $this->getDeviceBreakdown($siteId, 'today');
+        
         $currentMobileIps = $deviceData['mobile']['ips'] ?? 0;
         $currentTotalIps = max(1, $today['ips']); 
         $predictedMobileIps = (int) round($predictedIps * ($currentMobileIps / $currentTotalIps));
 
+        $currentMobileViews = $deviceData['mobile']['views'] ?? 0;
+        $currentTotalViews = max(1, $today['views']);
+        $predictedMobileViews = (int) round($predictedViews * ($currentMobileViews / $currentTotalViews));
+
         $predictions = [
-            'views' => $this->projectDayMetric($today['views'], $yesterdayFull['views'], $yesterdayPace['views'], $averages['views']),
-            'uniques' => $this->projectDayMetric($today['uniques'], $yesterdayFull['uniques'], $yesterdayPace['uniques'], $averages['uniques']),
+            'views' => $predictedViews,
             'ips' => $predictedIps,
+            'mobile_views' => $predictedMobileViews,
             'mobile_ips' => $predictedMobileIps, 
         ];
 
