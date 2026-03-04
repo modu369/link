@@ -53,7 +53,7 @@ class Tracker
     private bool $forceRefresh = false;
     private int $cacheTtl = 3600;
     
-    public function __construct(
+public function __construct(
         private PDO $db,
         private Redis $redis,
         private array $options = []
@@ -92,26 +92,13 @@ class Tracker
         $this->ingestAutoDrainEvery = max(1, (int) ($ingest['auto_drain_every'] ?? $this->ingestAutoDrainEvery));
         $this->ingestAutoDrainBatch = max(1, (int) ($ingest['auto_drain_batch'] ?? $this->ingestAutoDrainBatch));
         $this->ingestStalledAfter = max(30, (int) ($ingest['stalled_after'] ?? $this->ingestStalledAfter));
-        $this->ensureIpDbExists();
-        if ($this->asnEnabled) {
-            $this->ensureAsnDbExists();
-        }
         $this->ipResolver = new IpResolver($this->ipdbPath);
         $this->asnResolver = $this->asnEnabled
             ? new AsnResolver($this->asnDbPath, $this->asnDbPathV4, $this->asnDbPathV6)
             : new AsnResolver();
 
-        $this->ensureSiteDomainSchema();
-        $this->ensureBlockedDomainSchema();
-        $this->ensurePageviewSchema();
-        $this->ensureRollupSchema();
-        $this->ensureShareSchema();
-        $this->ensureSettingsSchema();
         $this->hydrateRetention();
         $this->hydrateIngestFilters();
-        $this->maybeCleanupRetention();
-        $this->maybeCleanupBlockedDomains();
-        $this->maybeCleanupProxyHistory();
     }
 public function setCacheTtl(int $ttlSeconds): void
     {
@@ -424,12 +411,10 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
         ]);
     }
 
-    public function recordPageview(string $trackingId, array $payload): void
+public function recordPageview(string $trackingId, array $payload): void
     {
         if ($this->ingestMode === 'queue') {
             $this->enqueuePageview($trackingId, $payload);
-            $this->autoDrainQueue();
-
             return;
         }
 
@@ -4599,19 +4584,9 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
         return $sanitized;
     }
 
-    private function maybeRefreshAsnDb(): void
+      private function maybeRefreshAsnDb(): void
     {
-        if (!$this->asnEnabled) {
-            return;
-        }
-        $now = time();
-        if ($this->asnNextRefreshAt > $now) {
-            return;
-        }
-
-        $this->ensureAsnDbExists();
-        $this->asnResolver->refreshIfUpdated();
-        $this->asnNextRefreshAt = $now + 3600;
+        return;
     }
 
     private function isValidGeo($meta): bool
@@ -5724,13 +5699,17 @@ public function getDeviceBreakdown(int $siteId, string $range): array
         return [$start, $endExclusive];
     }
 
-    private function getSetting(string $key): ?array
+private function getSetting(string $key): ?array
     {
-        $stmt = $this->db->prepare('SELECT setting_value FROM settings WHERE setting_key = :key LIMIT 1');
-        $stmt->execute([':key' => $key]);
-        $value = $stmt->fetchColumn();
+        try {
+            $stmt = $this->db->prepare('SELECT setting_value FROM settings WHERE setting_key = :key LIMIT 1');
+            $stmt->execute([':key' => $key]);
+            $value = $stmt->fetchColumn();
 
-        return $value ? (json_decode($value, true) ?: null) : null;
+            return $value ? (json_decode($value, true) ?: null) : null;
+        } catch (Throwable $e) {
+            return null;
+        }
     }
 
     private function setSetting(string $key, array $value): void
