@@ -95,7 +95,7 @@ function regionLabelCase(string $alias): string
     return "CASE
         WHEN COALESCE({$alias}.country_name,'') LIKE '中国%' THEN COALESCE(NULLIF({$alias}.region_name,''), '未知')
         WHEN COALESCE({$alias}.country_name,'') = '' THEN '未知'
-        ELSE COALESCE({$alias}.country_name, '未知')
+        ELSE '海外'
     END";
 }
 
@@ -107,8 +107,7 @@ function regionLabel(string $country, string $region): string
     if (str_starts_with($country, '中国')) {
         return $region !== '' ? $region : '未知';
     }
-
-    return $country;
+    return '海外';
 }
 
 function referrerHostExpr(string $alias): string
