@@ -22,7 +22,7 @@ $window = $tracker->rangeWindow($range);
 <html lang="zh-CN">
 <head>
     <meta charset="utf-8">
-    <title>分享统计面板</title>
+    <title><?= htmlspecialchars($data['share']['name'], ENT_QUOTES, 'UTF-8') ?> - 分享统计面板</title>
     <link rel="stylesheet" href="/t_statics/css/modern-normalize.css">
     <style>
         body { font-family: 'Inter','PingFang SC',sans-serif; background:#f8fafc; margin:0; color:#0f172a; }
