@@ -456,6 +456,14 @@ do {
     // 【修改点3】将整个核心聚合逻辑包裹进异常捕获中
     try {
         processRiskRecoveries($db, $redis, $hoursBack);
+        try {
+            $cleanedProxies = $tracker->cleanupProxyHistory(10);
+            if ($cleanedProxies > 0) {
+                logLine(sprintf("[rollup worker %d/%d] 🧹 Purged historical dirty data for %d proxy IPs.", $workerIndex, $workerCount, $cleanedProxies));
+            }
+        } catch (Throwable $e) {
+            logError("[rollup worker] Proxy history cleanup failed: " . $e->getMessage());
+        }
         $siteStmt = $db->query('SELECT id FROM sites ORDER BY id ASC');
         $siteIds = array_map('intval', $siteStmt->fetchAll(PDO::FETCH_COLUMN));
 
