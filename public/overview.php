@@ -128,7 +128,7 @@ render_topbar($branding);
                         <div class="metric"><div class="muted">回访访客 (IP)</div><div class="value"><?= (int) $data['new_vs_returning']['returning_ips'] ?></div></div>
                     </div>
                     <div class="section-title" style="margin-top:12px;"><h4 style="margin:0;">入口页（前15名）</h4><a class="filter-btn" href="/entry.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>">详情</a></div>
-                    <div class="table-wrap">
+                    <div class="table-wrap" style="max-height: 580px;">
                         <table>
                             <thead><tr><th>入口页</th><th>IP</th></tr></thead>
                             <tbody>
@@ -144,7 +144,7 @@ render_topbar($branding);
             <div class="grid-2">
                 <section class="card">
                     <div class="section-title"><h3>小时分布</h3><span class="muted">按选择的日期范围聚合</span></div>
-                    <div class="table-wrap">
+                    <div class="table-wrap" style="max-height: 680px;">
                         <table>
                             <thead><tr><th>小时</th><th>PV</th><th>UV</th><th>IP</th></tr></thead>
                             <tbody>
