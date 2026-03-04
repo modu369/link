@@ -4043,16 +4043,22 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
         $todayStart = $now->setTime(0, 0, 0);
         $yesterdayStart = $todayStart->sub(new DateInterval('P1D'));
         $yesterdaySameTime = $yesterdayStart->setTime((int) $now->format('H'), (int) $now->format('i'), (int) $now->format('s'));
-
         $today = $this->getRangeStats($siteId, $todayStart, $now);
         $yesterdayFull = $this->getRangeStats($siteId, $yesterdayStart, $todayStart);
         $yesterdayPace = $this->getRangeStats($siteId, $yesterdayStart, $yesterdaySameTime);
         $averages = $this->getHistoricalAverages($siteId, 30);
 
+        $predictedIps = $this->projectDayMetric($today['ips'], $yesterdayFull['ips'], $yesterdayPace['ips'], $averages['ips']);
+        $deviceData = $this->getDeviceBreakdown($siteId, 'today');
+        $currentMobileIps = $deviceData['mobile']['ips'] ?? 0;
+        $currentTotalIps = max(1, $today['ips']); 
+        $predictedMobileIps = (int) round($predictedIps * ($currentMobileIps / $currentTotalIps));
+
         $predictions = [
             'views' => $this->projectDayMetric($today['views'], $yesterdayFull['views'], $yesterdayPace['views'], $averages['views']),
             'uniques' => $this->projectDayMetric($today['uniques'], $yesterdayFull['uniques'], $yesterdayPace['uniques'], $averages['uniques']),
-            'ips' => $this->projectDayMetric($today['ips'], $yesterdayFull['ips'], $yesterdayPace['ips'], $averages['ips']),
+            'ips' => $predictedIps,
+            'mobile_ips' => $predictedMobileIps, 
         ];
 
         $this->redis->setex($cacheKey, 300, json_encode($predictions));
