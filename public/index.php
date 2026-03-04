@@ -76,14 +76,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
     if ($verified) {
         $_SESSION['admin_logged_in'] = true;
         $_SESSION['admin_user'] = $storedUser;
-        header('Location: /sites.php');
+        session_write_close();
+        header('Location: /sites.php', true, 303);
         exit;
     }
     $loginError = '账号或密码错误';
 }
 
 if ($_SESSION['admin_logged_in'] ?? false) {
-    header('Location: /sites.php');
+    session_write_close();
+    header('Location: /sites.php', true, 303);
     exit;
 }
 ?>
@@ -92,7 +94,7 @@ if ($_SESSION['admin_logged_in'] ?? false) {
 <head>
     <meta charset="utf-8">
     <title>统计后台登录</title>
-    <link rel="stylesheet" href="t_static/css/modern-normalize.css">
+    <link rel="stylesheet" href="/t_static/css/modern-normalize.css">
     <style>
         body { background: #f6f7fb; font-family: 'Inter', 'PingFang SC', sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin:0; }
         .login-box { width: 380px; padding: 32px; background: #fff; border-radius: 12px; box-shadow: 0 12px 40px rgba(15, 23, 42, 0.12); }

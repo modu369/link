@@ -11,7 +11,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $domain = trim($_POST['domain'] ?? '');
         if ($name && $domain) {
             $tracker->createSite($name, $domain);
-            header('Location: /sites.php');
+            session_write_close(); 
+            header('Location: /sites.php', true, 303);
             exit;
         } else {
             $error = '请输入网站名称和主域名';
@@ -25,7 +26,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (($_SESSION['current_site'] ?? null) === $siteIdToDelete) {
                 unset($_SESSION['current_site']);
             }
-            header('Location: /sites.php');
+            session_write_close(); 
+            header('Location: /sites.php', true, 303);
             exit;
         }
     }
@@ -35,7 +37,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $selectedSites = $_POST['share_sites'] ?? [];
         try {
             $tracker->createSharePage($name ?: '分享页', $selectedSites);
-            header('Location: /sites.php');
+            session_write_close(); 
+            header('Location: /sites.php', true, 303);
             exit;
         } catch (Throwable $e) {
             $shareError = $e->getMessage();
@@ -46,7 +49,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $shareId = (int) ($_POST['share_id'] ?? 0);
         if ($shareId > 0) {
             $tracker->deleteSharePage($shareId);
-            header('Location: /sites.php');
+            session_write_close(); 
+            header('Location: /sites.php', true, 303);
             exit;
         }
     }
@@ -103,7 +107,7 @@ $buildPayload = static function (string $baseUrl, string $trackingId): string {
 <head>
     <meta charset="utf-8">
     <title>域名列表 - 统计后台</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/modern-normalize/modern-normalize.css">
+    <link rel="stylesheet" href="/t_statics/css/modern-normalize.css">
     <style>
         :root {
             --primary: #1690ff;

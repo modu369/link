@@ -6,6 +6,20 @@ $GLOBALS['rollup_only'] = (bool) ($config['rollup_only'] ?? true);
 
 if (($_GET['action'] ?? '') === 'logout') {
     $entry = $config['security']['login_entry'] ?? 'admin';
+    try {
+        require_once __DIR__ . '/../src/Database.php';
+        $db = Database::connection($config['db']);
+        $stmt = $db->prepare("SELECT setting_value FROM settings WHERE setting_key = 'login_entry' LIMIT 1");
+        $stmt->execute();
+        $val = $stmt->fetchColumn();
+        if ($val) {
+            $decoded = json_decode($val, true);
+            if (isset($decoded['entry']) && trim((string)$decoded['entry']) !== '') {
+                $entry = trim((string)$decoded['entry']);
+            }
+        }
+    } catch (Throwable $e) {
+    }
     session_destroy();
     $redirectEntry = $entry !== '' ? '?entry=' . urlencode($entry) : '';
     header('Location: /index.php' . $redirectEntry);
