@@ -2952,8 +2952,7 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
         if (str_starts_with($country, '中国')) {
             return $region !== '' ? $region : '未知';
         }
-
-        return $country;
+        return '海外';
     }
 
     private function dimensionKey(array $parts): string
@@ -3234,11 +3233,9 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
         ];
     }
 
-    public function getIspData(int $siteId, string $range = 'today'): array
+    public function getIspData(int $siteId, string $range = 'today', int $page = 1, int $perPage = 50): array
     {
-        return [
-            'isps' => $this->getIspStats($siteId, $range),
-        ];
+        return $this->getIspStatsPaged($siteId, $range, $page, $perPage);
     }
 
     public function getAudienceData(int $siteId, string $range = 'today'): array
@@ -5369,22 +5366,53 @@ public function getDeviceBreakdown(int $siteId, string $range): array
         });
     }
 
-    public function getRegionStats(int $siteId, string $range, int $limit = 50): array
+public function getRegionStats(int $siteId, string $range, int $limit = 50): array
     {
-        $cacheKey = "regions:{$siteId}:{$range}:{$limit}";
+        $cacheKey = "regions_china_only:{$siteId}:{$range}:{$limit}";
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
             [$start, $end] = $this->rollupRangeBounds($range);
             $span = $this->rollupSpanForRange($siteId, $start, $end);
             if ($span) {
-                $rollup = $this->aggregateDimensionRollups($siteId, 'region', $span['start'], $span['end'], $limit);
+                $rollup = $this->aggregateDimensionRollups($siteId, 'region', $span['start'], $span['end'], $limit * 10);
 
                 if (!empty($rollup)) {
-                    return array_map(fn ($row) => [
-                        'region' => $row['dimension_value'],
-                        'views' => (int) ($row['views'] ?? 0),
-                        'ips' => (int) ($row['ips'] ?? 0),
-                    ], $rollup);
+                    $validRegions = [
+                        '北京', '天津', '上海', '重庆', '河北', '山西', '辽宁', '吉林', '黑龙江',
+                        '江苏', '浙江', '安徽', '福建', '江西', '山东', '河南', '湖北', '湖南',
+                        '广东', '海南', '四川', '贵州', '云南', '陕西', '甘肃', '青海', '台湾',
+                        '内蒙古', '广西', '西藏', '宁夏', '新疆', '香港', '澳门'
+                    ];
+
+                    $filteredMap = [];
+
+                    foreach ($rollup as $row) {
+                        $region = $row['dimension_value'] ?? '';
+                        $views = (int) ($row['views'] ?? 0);
+                        $ips = (int) ($row['ips'] ?? 0);
+
+                        $matchedRegion = null;
+                        foreach ($validRegions as $vr) {
+                            if (str_starts_with($region, $vr)) {
+                                $matchedRegion = $vr;
+                                break;
+                            }
+                        }
+
+                        if ($matchedRegion) {
+                            if (!isset($filteredMap[$matchedRegion])) {
+                                $filteredMap[$matchedRegion] = ['region' => $matchedRegion, 'views' => 0, 'ips' => 0];
+                            }
+                            $filteredMap[$matchedRegion]['views'] += $views;
+                            $filteredMap[$matchedRegion]['ips'] += $ips;
+                        }
+                    }
+
+                    $results = array_values($filteredMap);
+
+                    usort($results, fn($a, $b) => $b['ips'] <=> $a['ips']);
+
+                    return array_slice($results, 0, $limit);
                 }
             }
             return [];
@@ -5414,25 +5442,57 @@ public function getDeviceBreakdown(int $siteId, string $range): array
         });
     }
 
-    private function getIspStats(int $siteId, string $range, int $limit = 50): array
+    private function getIspStatsPaged(int $siteId, string $range, int $page = 1, int $perPage = 50): array
     {
-        $cacheKey = "isp:{$siteId}:{$range}:{$limit}";
+        $cacheKey = "isp_paged:{$siteId}:{$range}:{$page}:{$perPage}";
 
-        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $page, $perPage) {
             [$start, $end] = $this->rollupRangeBounds($range);
             $span = $this->rollupSpanForRange($siteId, $start, $end);
+            
             if ($span) {
-                $rollup = $this->aggregateDimensionRollups($siteId, 'isp', $span['start'], $span['end'], $limit);
+                $countStmt = $this->db->prepare(
+                    "SELECT COUNT(DISTINCT dimension_value) 
+                     FROM pageview_dimension_rollups 
+                     WHERE site_id = :site_id AND dimension_type = 'isp' AND bucket_start >= :start AND bucket_start < :end"
+                );
+                $countStmt->execute([
+                    ':site_id' => $siteId,
+                    ':start' => $span['start']->format('Y-m-d H:i:s'),
+                    ':end' => $span['end']->format('Y-m-d H:i:s'),
+                ]);
+                $total = (int) $countStmt->fetchColumn();
 
-                if (!empty($rollup)) {
-                    return array_map(fn ($row) => [
+                $offset = ($page - 1) * $perPage;
+                $statement = $this->db->prepare(
+                    "SELECT dimension_value, SUM(pv) as views, SUM(ip_count) as ips
+                     FROM pageview_dimension_rollups
+                     WHERE site_id = :site_id AND dimension_type = 'isp' AND bucket_start >= :start AND bucket_start < :end
+                     GROUP BY dimension_value
+                     ORDER BY ips DESC, views DESC
+                     LIMIT :limit OFFSET :offset"
+                );
+
+                $statement->bindValue(':site_id', $siteId, PDO::PARAM_INT);
+                $statement->bindValue(':start', $span['start']->format('Y-m-d H:i:s'), PDO::PARAM_STR);
+                $statement->bindValue(':end', $span['end']->format('Y-m-d H:i:s'), PDO::PARAM_STR);
+                $statement->bindValue(':limit', $perPage, PDO::PARAM_INT);
+                $statement->bindValue(':offset', $offset, PDO::PARAM_INT);
+                $statement->execute();
+
+                $rows = $statement->fetchAll();
+
+                if (!empty($rows)) {
+                    $isps = array_map(fn ($row) => [
                         'isp' => $row['dimension_value'],
                         'views' => (int) ($row['views'] ?? 0),
                         'ips' => (int) ($row['ips'] ?? 0),
-                    ], $rollup);
+                    ], $rows);
+
+                    return ['isps' => $isps, 'total' => $total];
                 }
             }
-            return [];
+            return ['isps' => [], 'total' => 0];
         });
     }
 
