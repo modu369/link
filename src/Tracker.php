@@ -1326,30 +1326,8 @@ public function recordPageview(string $trackingId, array $payload): void
         }
     }
 
-    private function maybeCleanupProxyHistory(): void
-    {
-        if ($this->proxyCleanupBatch <= 0) {
-            return;
-        }
 
-        $now = time();
-        $lastKey = 'proxy:cleanup:last';
-        $last = (int) ($this->redis->get($lastKey) ?: 0);
-        if ($last > 0 && ($now - $last) < $this->proxyCleanupInterval) {
-            return;
-        }
-
-        $lockKey = 'proxy:cleanup:lock';
-        if (!$this->redis->setnx($lockKey, '1')) {
-            return;
-        }
-        $this->redis->expire($lockKey, 60);
-        $this->redis->setex($lastKey, $this->proxyCleanupInterval, (string) $now);
-
-        $this->cleanupProxyHistory($this->proxyCleanupBatch);
-    }
-
-    private function cleanupProxyHistory(int $batch): void
+    public function cleanupProxyHistory(int $batch = 100): int
     {
         $batch = max(1, $batch);
         $queueKey = 'proxy:cleanup_queue';
@@ -1357,21 +1335,23 @@ public function recordPageview(string $trackingId, array $payload): void
         try {
             $targets = $this->redis->zRange($queueKey, 0, $batch - 1, true);
         } catch (Throwable $e) {
-            return;
+            return 0;
         }
 
         if (empty($targets)) {
-            return;
+            return 0;
         }
 
+        $processed = 0;
         foreach ($targets as $ip => $detectedAt) {
             $this->cleanupProxyIpData((string) $ip);
             try {
                 $this->redis->zRem($queueKey, (string) $ip);
+                $processed++;
             } catch (Throwable $e) {
-                // ignore
             }
         }
+        return $processed;
     }
 
     private function cleanupProxyIpData(string $ip): void
@@ -6131,39 +6111,6 @@ private function getHostDeviceRollupRowsForSites(array $siteIds, DateTimeImmutab
             throw $e;
         }
     }
-
-    private function maybeCleanupRetention(): void
-    {
-        if ($this->retentionDays <= 0 && $this->pageviewRetentionDays <= 0) {
-            return;
-        }
-
-        $key = 'retention:cleanup:' . date('Y-m-d');
-        $hour = (int) date('G');
-        if ($hour < $this->cleanupHour) {
-            return;
-        }
-
-        if ($this->redis->setnx($key, '1')) {
-            $this->redis->expire($key, 86400);
-            $this->cleanupDataOlderThan($this->retentionDays, $this->pageviewRetentionDays);
-        }
-    }
-
-    private function maybeCleanupBlockedDomains(): void
-    {
-        $key = 'blocked_domains:cleanup:' . date('Y-m-d');
-        if (!$this->redis->setnx($key, '1')) {
-            return;
-        }
-        $this->redis->expire($key, 86400);
-
-        $statement = $this->db->prepare(
-            'DELETE FROM site_blocked_domains WHERE log_date < DATE_SUB(CURDATE(), INTERVAL 1 DAY)'
-        );
-        $statement->execute();
-    }
-
     /**
      * 仅保留当前 SQL 中出现的命名参数，避免出现多余参数导致的 HY093 错误
      */
