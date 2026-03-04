@@ -11,7 +11,7 @@ $topPages = $data ? array_slice($data['top_pages'], 0, 20) : [];
 $entryPages = $data ? array_slice($data['entry_pages'], 0, 20) : [];
 $regions = $data ? array_slice($data['regions'], 0, 20) : [];
 $yesterdayTotals = $data ? ($data['yesterday_totals'] ?? null) : null;
-
+$yesterdayDevices = ($data && $range === 'today') ? $tracker->getDeviceBreakdown($siteId, 'yesterday') : null;
 render_head('总览 - 统计后台');
 render_topbar($branding);
 ?>
@@ -77,10 +77,13 @@ render_topbar($branding);
                     <div class="metric-tile"><div class="metric-icon">🎯</div><div class="metric-info"><div class="label">预计今日 PV</div><div class="val"><?= $data['predictions']['views']?></div></div></div>
                     <div class="metric-tile"><div class="metric-icon">👤</div><div class="metric-info"><div class="label">预计今日 UV</div><div class="val"><?= $data['predictions']['uniques'] ?></div></div></div>
                     <div class="metric-tile"><div class="metric-icon">🔮</div><div class="metric-info"><div class="label">预计今日 IP</div><div class="val"><?= $data['predictions']['ips'] ?></div></div></div>
+                    <div class="metric-tile"><div class="metric-icon">✨</div><div class="metric-info"><div class="label">预计今日移动 IP</div><div class="val"><?= $data['predictions']['mobile_ips'] ?? 0 ?></div></div></div>
+
                     <?php if ($range === 'today' && $yesterdayTotals): ?>
                         <div class="metric-tile"><div class="metric-icon yesterday">📈</div><div class="metric-info"><div class="label">昨日 PV</div><div class="val"><?= $yesterdayTotals['views'] ?? 0 ?></div></div></div>
-                        <div class="metric-tile"><div class="metric-icon yesterday">👥</div><div class="metric-info"><div class="label">昨日 UV</div><div class="val"><?= $yesterdayTotals['uniques'] ?? 0 ?></div></div></div>
                         <div class="metric-tile"><div class="metric-icon yesterday">🌐</div><div class="metric-info"><div class="label">昨日 IP</div><div class="val"><?= $yesterdayTotals['ip_count'] ?? 0 ?></div></div></div>
+                        <div class="metric-tile"><div class="metric-icon yesterday">📲</div><div class="metric-info"><div class="label">昨日移动 PV</div><div class="val"><?= (int)($yesterdayDevices['mobile']['views'] ?? 0) ?></div></div></div>
+                        <div class="metric-tile"><div class="metric-icon yesterday">📶</div><div class="metric-info"><div class="label">昨日移动 IP</div><div class="val"><?= (int)($yesterdayDevices['mobile']['ips'] ?? 0) ?></div></div></div>
                     <?php endif; ?>
                 </div>
             </section>
