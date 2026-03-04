@@ -35,6 +35,7 @@ render_topbar($branding);
 
     {
         max-height: 430px;
+        height: 400px;
     }
     .table-wrap { max-height: 320px; overflow: auto; }
     .trend-controls { display:flex; gap:8px; align-items:center; }
@@ -269,6 +270,7 @@ render_topbar($branding);
                         data: { labels: trendData.labels, datasets },
                         options: {
                             responsive: true,
+                            maintainAspectRatio: false,
                             plugins: { legend: { position: 'top' }, tooltip: { mode: 'index', intersect: false } },
                             scales: {
                                 x: { ticks: { maxRotation: 0 }, grid: { display: false } },
