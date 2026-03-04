@@ -937,26 +937,27 @@ public function recordPageview(string $trackingId, array $payload): void
                 return ['blocked' => true, 'risk' => true, 'score' => 100];
             }
         } catch (Throwable $e) {
-            // ignore
         }
 
+        $networkId = $this->getNetworkIdentifier($ip);
         $nowMs = (int) round(microtime(true) * 1000);
         $profileKey = "proxy:risk:{$uid}";
         $coarseMode = false;
+        
         try {
-            $churnKey = "proxy:uid_churn:{$ip}";
+            $churnKey = "proxy:uid_churn:{$networkId}";
             $churnCount = (int) $this->redis->incr($churnKey);
             if ($churnCount === 1) {
                 $this->redis->expire($churnKey, 1);
             }
             if ($churnCount > 25) {
-                $uid = "ip:{$ip}";
-                $profileKey = "proxy:risk:ip:{$ip}";
+                $uid = "net:{$networkId}";
+                $profileKey = "proxy:risk:net:{$networkId}";
                 $coarseMode = true;
             }
         } catch (Throwable $e) {
-            // ignore
         }
+        
         $sessionKey = $sessionId !== '' ? "proxy:session:{$sessionId}" : '';
 
         $asnValue = trim((string) ($asnMeta['number'] ?? $asnMeta['name'] ?? ''));
@@ -964,7 +965,7 @@ public function recordPageview(string $trackingId, array $payload): void
         $regionValue = trim($region);
         $countryValue = trim($country);
         $isChinaNetwork = $this->isChinaNetwork($countryValue, $asnMeta);
-        $isDataCenterAsn = $this->isDataCenterAsn($asnMeta);
+        $isDataCenterAsn = $this->isDataCenterAsn($asnMeta, $userAgent); // 传入 UA 进行精准判定
         $uaSuspicious = $this->isSuspiciousUserAgent($userAgent);
         $ipChanged = true;
         $score = 0;
@@ -1035,16 +1036,8 @@ public function recordPageview(string $trackingId, array $payload): void
                 $deduct += 5;
             }
             $trustedHosts = [
-                'baidu.com',
-                'sogou.com',
-                'so.com',
-                'google.com',
-                'bing.com',
-                'wechat.com',
-                'douyin.com',
-                'bilibili.com',
-                'weibo.com',
-                'zhihu.com',
+                'baidu.com', 'sogou.com', 'so.com', 'google.com', 'bing.com',
+                'wechat.com', 'douyin.com', 'bilibili.com', 'weibo.com', 'zhihu.com',
             ];
             foreach ($trustedHosts as $trusted) {
                 if ($referrerHost !== '' && $trusted !== '' && (str_ends_with($referrerHost, $trusted))) {
@@ -1099,6 +1092,7 @@ public function recordPageview(string $trackingId, array $payload): void
 
                 $asnChanged = $asnValue !== '' && $lastAsn !== '' && $asnValue !== $lastAsn;
                 $mobileChina = $isMobile && $isChinaNetwork && !$isDataCenterAsn;
+                
                 if ($geoCross && $asnChanged) {
                     $score += $mobileChina ? 4 : 12;
                     $crossRegionHits += 1;
@@ -1239,16 +1233,17 @@ public function recordPageview(string $trackingId, array $payload): void
             $this->redis->expire($profileKey, 1800);
 
             if ($score >= 95 || ($score >= 75 && $highFreqHits >= 2)) {
-                $probationKey = "proxy:probation:{$ip}";
+                $probationKey = "proxy:probation:{$networkId}";
                 $isProbation = (bool) $this->redis->get($probationKey);
+                
                 if (!$isProbation) {
                     $this->redis->setex($probationKey, $this->proxyProbationSeconds, '1');
                     $this->markProxyRiskStatus($ipHash, true);
                     return ['blocked' => false, 'risk' => true, 'score' => $score];
                 }
-
                 $this->rememberBlockedProxyIp($ip);
                 $this->redis->setex($blockedKey, 14400, '1');
+                $this->redis->setex("proxy:blocked_net:{$networkId}", 14400, '1'); 
                 return ['blocked' => true, 'risk' => true, 'score' => $score];
             }
         } catch (Throwable $e) {
@@ -1259,10 +1254,24 @@ public function recordPageview(string $trackingId, array $payload): void
         $this->markProxyRiskStatus($ipHash, $isRisk);
         return ['blocked' => false, 'risk' => $isRisk, 'score' => $score];
     }
-
-    private function isBlockedProxyIp(string $ip): bool
+    
+    private function getNetworkIdentifier(string $ip): string
+    {
+        if (str_contains($ip, ':')) {
+            $blocks = explode(':', $ip);
+            if (count($blocks) >= 4) {
+                return implode(':', array_slice($blocks, 0, 4)) . '::/64';
+            }
+        }
+        return $ip;
+    }
+   private function isBlockedProxyIp(string $ip): bool
     {
         try {
+            $networkId = $this->getNetworkIdentifier($ip);
+            if ($this->redis->get("proxy:blocked_net:{$networkId}")) {
+                return true;
+            }
             $score = $this->redis->zScore('proxy:blocked_ips', $ip);
             if (!$score) {
                 return false;
@@ -1354,56 +1363,63 @@ public function recordPageview(string $trackingId, array $payload): void
         return $processed;
     }
 
-    private function cleanupProxyIpData(string $ip): void
+private function cleanupProxyIpData(string $ip): void
     {
         $ip = trim($ip);
         if ($ip === '') {
             return;
         }
 
-        $statement = $this->db->prepare(
-            'SELECT site_id, MIN(occurred_at) as min_ts, MAX(occurred_at) as max_ts
-             FROM pageviews
-             WHERE ip_address = :ip
-             GROUP BY site_id'
+        $ipHash = hash('sha256', $ip);
+        $stmt = $this->db->prepare(
+            "SELECT site_id, 
+                    DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as bucket_start,
+                    COUNT(*) as bad_pv,
+                    SUM(is_unique) as bad_uv,
+                    COUNT(DISTINCT session_id) as bad_sessions
+             FROM pageviews 
+             WHERE ip_address = :ip AND is_proxy_risk = 0
+             GROUP BY site_id, bucket_start"
         );
-        $statement->execute([':ip' => $ip]);
-        $rows = $statement->fetchAll();
-        if (empty($rows)) {
+        $stmt->execute([':ip' => $ip]);
+        $badTraffic = $stmt->fetchAll();
+
+        if (empty($badTraffic)) {
             return;
         }
 
-        $this->deleteBatched(
-            'DELETE FROM pageviews WHERE ip_address = :ip LIMIT :batch',
-            [':ip' => $ip],
-            50000
-        );
-
-        $ipHash = hash('sha256', $ip);
-        foreach ($rows as $row) {
-            $siteId = (int) ($row['site_id'] ?? 0);
-            if ($siteId <= 0) {
-                continue;
-            }
-
-            $minTs = $row['min_ts'] ? new DateTimeImmutable($row['min_ts']) : null;
-            $maxTs = $row['max_ts'] ? new DateTimeImmutable($row['max_ts']) : null;
-            if (!$minTs || !$maxTs) {
-                continue;
-            }
-
-            $startBucket = $minTs->setTime((int) $minTs->format('H'), 0, 0);
-            $endBucket = $maxTs->setTime((int) $maxTs->format('H'), 0, 0)->modify('+1 hour');
+        $this->db->beginTransaction();
+        try {
+            $updateStmt = $this->db->prepare(
+                'UPDATE pageviews SET is_proxy_risk = 1 WHERE ip_address = :ip AND is_proxy_risk = 0'
+            );
+            $updateStmt->execute([':ip' => $ip]);
 
             $deleteAudience = $this->db->prepare(
-                'DELETE FROM site_ip_audience WHERE site_id = :site_id AND ip_hash = :ip_hash LIMIT 1'
+                'DELETE FROM site_ip_audience WHERE ip_hash = :ip_hash'
             );
-            $deleteAudience->execute([
-                ':site_id' => $siteId,
-                ':ip_hash' => $ipHash,
-            ]);
+            $deleteAudience->execute([':ip_hash' => $ipHash]);
+            $rollupUpdate = $this->db->prepare(
+                "UPDATE pageview_rollups 
+                 SET pv = GREATEST(0, CAST(pv AS SIGNED) - :bad_pv),
+                     uv = GREATEST(0, CAST(uv AS SIGNED) - :bad_uv),
+                     session_count = GREATEST(0, CAST(session_count AS SIGNED) - :bad_sessions)
+                 WHERE site_id = :site_id AND bucket_start = :bucket_start"
+            );
 
-            $this->rebuildRollupRange($siteId, $startBucket, $endBucket);
+            foreach ($badTraffic as $row) {
+                $rollupUpdate->execute([
+                    ':bad_pv' => $row['bad_pv'],
+                    ':bad_uv' => $row['bad_uv'],
+                    ':bad_sessions' => $row['bad_sessions'],
+                    ':site_id' => $row['site_id'],
+                    ':bucket_start' => $row['bucket_start'],
+                ]);
+            }
+            
+            $this->db->commit();
+        } catch (Throwable $e) {
+            $this->db->rollBack();
         }
     }
 
@@ -4278,7 +4294,7 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
         return $width <= 10000 && $height <= 10000;
     }
 
-    private function isDataCenterAsn(array $asnMeta): bool
+   private function isDataCenterAsn(array $asnMeta, string $userAgent = ''): bool
     {
         $asnName = strtolower(trim((string) ($asnMeta['name'] ?? '')));
         $ispName = strtolower(trim((string) ($asnMeta['isp'] ?? '')));
@@ -4287,17 +4303,24 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
             return false;
         }
 
+        if (str_contains($combined, 'apple') || str_contains($combined, 'icloud')) {
+            return false; 
+        }
+
         $needles = [
             'amazon', 'aws', 'amazon web services', 'google', 'gcp', 'microsoft', 'azure',
-            'oracle', 'oracle cloud', 'digitalocean', 'linode', 'vultr', 'hetzner', 'ovh',
-            'leaseweb', 'gcore', 'cloudflare', 'akamai', 'fastly',
-            'alibaba', 'aliyun', 'tencent', 'huawei cloud', 'baidu', 'ucloud', 'qingcloud',
-            'google cloud', 'tencent cloud', 'alibaba cloud', 'baidu cloud', 'huawei',
-            'datacenter', 'data center', 'colo', 'host', 'hosting', 'server', 'cloud',
+            'oracle', 'oracle cloud', 'alibaba', 'aliyun', 'tencent', 'huawei cloud', 'baidu',
+            'digitalocean', 'linode', 'vultr', 'hetzner', 'ovh', 'leaseweb', 'gcore', 
+            'cloudflare', 'akamai', 'fastly', 'ucloud', 'qingcloud',
+            'datacenter', 'data center', 'colo', 'host', 'hosting', 'server', 'cloud', 'network',
+            'xtom', 'zenlayer', 'akile', 'rfchost', 'ipxo', 'larus', 'cogent', 'winspeed', 'lshiy'
         ];
 
         foreach ($needles as $needle) {
             if ($needle !== '' && str_contains($combined, $needle)) {
+                if (str_contains(strtolower($userAgent), 'safari') && str_contains(strtolower($userAgent), 'mobile')) {
+                    return false; 
+                }
                 return true;
             }
         }
