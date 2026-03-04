@@ -7,8 +7,8 @@ function render_head(string $title = '统计后台'): void
     <head>
         <meta charset="utf-8">
         <title><?= htmlspecialchars($title, ENT_QUOTES, 'UTF-8') ?></title>
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/modern-normalize/modern-normalize.css">
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <link rel="stylesheet" href="/t_statics/css/modern-normalize.css">
+        <script src="/t_statics/js/chart.js"></script>
         <style>
             :root {
                 --primary: #1690ff;

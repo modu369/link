@@ -220,8 +220,8 @@ render_topbar($branding);
                 </section>
             </div>
 
-            <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
-            <script src="https://fastly.jsdelivr.net/npm/echarts@5.0.0-alpha.2/map/js/china.js"></script>
+            <script src="/t_statics/js/echarts.min.js"></script>
+            <script src="/t_statics/js/china.js"></script>
             <script>
                 <?php if ($showTrend): ?>
                 const trendData = <?= json_encode($trend, JSON_UNESCAPED_UNICODE) ?>;
