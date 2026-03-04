@@ -1373,10 +1373,7 @@ private function cleanupProxyIpData(string $ip): void
         $ipHash = hash('sha256', $ip);
         $stmt = $this->db->prepare(
             "SELECT site_id, 
-                    DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as bucket_start,
-                    COUNT(*) as bad_pv,
-                    SUM(is_unique) as bad_uv,
-                    COUNT(DISTINCT session_id) as bad_sessions
+                    DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as bucket_start
              FROM pageviews 
              WHERE ip_address = :ip AND is_proxy_risk = 0
              GROUP BY site_id, bucket_start"
@@ -1399,27 +1396,20 @@ private function cleanupProxyIpData(string $ip): void
                 'DELETE FROM site_ip_audience WHERE ip_hash = :ip_hash'
             );
             $deleteAudience->execute([':ip_hash' => $ipHash]);
-            $rollupUpdate = $this->db->prepare(
-                "UPDATE pageview_rollups 
-                 SET pv = GREATEST(0, CAST(pv AS SIGNED) - :bad_pv),
-                     uv = GREATEST(0, CAST(uv AS SIGNED) - :bad_uv),
-                     session_count = GREATEST(0, CAST(session_count AS SIGNED) - :bad_sessions)
-                 WHERE site_id = :site_id AND bucket_start = :bucket_start"
-            );
-
-            foreach ($badTraffic as $row) {
-                $rollupUpdate->execute([
-                    ':bad_pv' => $row['bad_pv'],
-                    ':bad_uv' => $row['bad_uv'],
-                    ':bad_sessions' => $row['bad_sessions'],
-                    ':site_id' => $row['site_id'],
-                    ':bucket_start' => $row['bucket_start'],
-                ]);
-            }
             
             $this->db->commit();
         } catch (Throwable $e) {
             $this->db->rollBack();
+            return; 
+        }
+
+        foreach ($badTraffic as $row) {
+            try {
+                $bucketStartDt = new DateTimeImmutable($row['bucket_start']);
+                $bucketEndDt = $bucketStartDt->modify('+1 hour');
+                $this->rebuildRollupBucket((int)$row['site_id'], $bucketStartDt, $bucketEndDt);
+            } catch (Throwable $e) {
+            }
         }
     }
 
@@ -1458,7 +1448,7 @@ private function cleanupProxyIpData(string $ip): void
             $totalsStmt = $this->db->prepare(
                 "SELECT COUNT(*) as views, SUM(is_unique) as uniques, COUNT(DISTINCT ip_hash) as ips
                  FROM pageviews
-                 WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?"
+                 WHERE site_id = ? AND is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?"
             );
             $totalsStmt->execute([$siteId, $start, $end]);
             $totals = $totalsStmt->fetch() ?: [];
@@ -1470,7 +1460,7 @@ private function cleanupProxyIpData(string $ip): void
                            MAX(page_count) as page_count,
                            CASE WHEN MAX(page_count) <= 1 THEN 1 ELSE 0 END as bounce
                     FROM pageviews
-                    WHERE site_id = ? AND session_id IS NOT NULL
+                    WHERE site_id = ? AND session_id IS NOT NULL AND is_proxy_risk = 0
                       AND occurred_at >= ? AND occurred_at < ?
                     GROUP BY session_id
                  ) t"
@@ -1497,19 +1487,19 @@ private function cleanupProxyIpData(string $ip): void
             $dimensionInserts = [
                 'host' => "SELECT LEFT(COALESCE(canonical_host, '未知域名'), 255) as dimension_value,
                     COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-                    FROM pageviews p WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?
+                    FROM pageviews p WHERE site_id = ? AND is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
                     GROUP BY dimension_value",
                 'host_device' => "SELECT LEFT(CONCAT(COALESCE(canonical_host, '未知域名'), '|', IF(is_mobile = 1, 'mobile', 'desktop')), 255) as dimension_value,
                     COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-                    FROM pageviews p WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?
+                    FROM pageviews p WHERE site_id = ? AND is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
                     GROUP BY dimension_value",
                 'device' => "SELECT IF(is_mobile = 1, 'mobile', 'desktop') as dimension_value,
                     COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-                    FROM pageviews p WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?
+                    FROM pageviews p WHERE site_id = ? AND is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
                     GROUP BY dimension_value",
                 'browser' => "SELECT LEFT(" . $this->browserCase('p') . ", 255) as dimension_value,
                     COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-                    FROM pageviews p WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?
+                    FROM pageviews p WHERE site_id = ? AND is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
                     GROUP BY dimension_value",
                 'referrer_host' => "SELECT dimension_value, pv, uv, ips, sessions, duration_sum, page_sum, bounce_count
                     FROM (
@@ -1524,7 +1514,7 @@ private function cleanupProxyIpData(string $ip): void
                         FROM (
                             SELECT MIN(id) as first_id, session_id
                             FROM pageviews
-                            WHERE site_id = ? AND session_id IS NOT NULL
+                            WHERE site_id = ? AND session_id IS NOT NULL AND is_proxy_risk = 0
                               AND occurred_at >= ? AND occurred_at < ?
                             GROUP BY session_id
                         ) s
@@ -1535,19 +1525,19 @@ private function cleanupProxyIpData(string $ip): void
                     ) t",
                 'search_engine' => "SELECT LEFT(" . $this->searchEngineCase('p') . ", 255) as dimension_value,
                     COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-                    FROM pageviews p WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?
+                    FROM pageviews p WHERE site_id = ? AND is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
                     GROUP BY dimension_value",
                 'keyword_engine' => "SELECT LEFT(CONCAT(COALESCE(keyword,''), '|', " . $this->searchEngineCase('p') . ", '|', COALESCE(canonical_host, host, s.domain, ''), COALESCE(NULLIF(path,''), '/')), 255) as dimension_value,
                     COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
                     FROM pageviews p
                     JOIN sites s ON s.id = p.site_id
-                    WHERE p.site_id = ? AND p.keyword IS NOT NULL AND keyword != '' AND occurred_at >= ? AND occurred_at < ?
+                    WHERE p.site_id = ? AND p.keyword IS NOT NULL AND keyword != '' AND p.is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
                     GROUP BY dimension_value",
                 'audience' => "SELECT LEFT(CASE WHEN a.first_seen >= ? AND a.first_seen < ? THEN 'new' ELSE 'returning' END, 255) as dimension_value,
                     COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT p.ip_hash) as ips
                     FROM pageviews p
                     LEFT JOIN site_ip_audience a ON a.site_id = p.site_id AND a.ip_hash = p.ip_hash
-                    WHERE p.site_id = ? AND p.p.occurred_at >= ? AND p.occurred_at < ?
+                    WHERE p.site_id = ? AND p.is_proxy_risk = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
                     GROUP BY dimension_value",
             ];
 
@@ -1570,7 +1560,7 @@ private function cleanupProxyIpData(string $ip): void
             $geoStmt = $this->db->prepare(
                 "SELECT ip_address, ip_hash, COUNT(*) as pv, SUM(is_unique) as uv
                  FROM pageviews
-                 WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?
+                 WHERE site_id = ? AND is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
                    AND ip_address IS NOT NULL AND ip_address != ''
                  GROUP BY ip_hash, ip_address"
             );
@@ -1656,7 +1646,7 @@ private function cleanupProxyIpData(string $ip): void
                     SELECT LEFT(COALESCE(path,'/'), 512) as path,
                         COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
                     FROM pageviews p
-                    WHERE site_id = ? AND occurred_at >= ? AND occurred_at < ?
+                    WHERE site_id = ? AND is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
                     GROUP BY path
                     ORDER BY ips DESC
                     LIMIT 500
@@ -1677,7 +1667,7 @@ private function cleanupProxyIpData(string $ip): void
                     FROM (
                         SELECT MIN(id) as first_id, session_id
                         FROM pageviews
-                        WHERE site_id = ? AND session_id IS NOT NULL
+                        WHERE site_id = ? AND session_id IS NOT NULL AND is_proxy_risk = 0
                           AND occurred_at >= ? AND occurred_at < ?
                         GROUP BY session_id
                     ) s
