@@ -4,14 +4,18 @@ require __DIR__ . '/layout.php';
 
 $page = max(1, (int) ($_GET['page'] ?? 1));
 $perPage = 50;
-$data = $selectedSite ? $tracker->getIspData($siteId, $range) : null;
-$isps = $data['isps'] ?? [];
-$totalIsps = count($isps);
+
+// 【修改点】：直接将分页参数传递给 Tracker，从数据库层面利用 LIMIT 和 OFFSET 获取数据，极大降低内存损耗
+$data = $selectedSite ? $tracker->getIspData($siteId, $range, $page, $perPage) : null;
+
+// 从返回的数据结构中分离出当前页的列表和总数
+$ispPage = $data['isps'] ?? [];
+$totalIsps = $data['total'] ?? 0;
 $totalPages = max(1, (int) ceil($totalIsps / $perPage));
-if ($page > $totalPages) {
+
+if ($page > $totalPages && $totalPages > 0) {
     $page = $totalPages;
 }
-$ispPage = array_slice($isps, ($page - 1) * $perPage, $perPage);
 
 render_head('运营商分布 - 统计后台');
 render_topbar($branding);
@@ -33,10 +37,13 @@ render_topbar($branding);
             </section>
 
             <section class="card">
-                <div class="section-title"><h3>运营商列表</h3><span class="muted">每页 <?= $perPage ?> 条</span></div>
+                <div class="section-title">
+                    <h3>运营商列表</h3>
+                    <span class="muted">共 <?= $totalIsps ?> 个运营商，当前第 <?= $page ?> / <?= $totalPages ?> 页</span>
+                </div>
                 <div style="margin-bottom:14px; display:flex; justify-content:center;">
                     <div style="max-width:400px; width:100%; text-align:center;">
-                        <div class="muted" style="margin-bottom:6px;">IP 占比（前 8 项）</div>
+                        <div class="muted" style="margin-bottom:6px;">本页 IP 占比（前 8 项）</div>
                         <canvas id="ispPie" height="220"></canvas>
                     </div>
                 </div>
@@ -59,7 +66,8 @@ render_topbar($branding);
             </section>
             <script>
                 (function(){
-                    const isps = <?= json_encode(array_slice($data['isps'] ?? [],0,8), JSON_UNESCAPED_UNICODE) ?>;
+                    // 取当前页的前8项渲染饼图
+                    const isps = <?= json_encode(array_slice($ispPage, 0, 8), JSON_UNESCAPED_UNICODE) ?>;
                     const palette = ['#1690ff','#73c1ff','#4dd0e1','#7c4dff','#ff8a65','#ffd166','#06d6a0','#ef476f'];
                     const el = document.getElementById('ispPie');
                     if(!el || !window.Chart) return;
