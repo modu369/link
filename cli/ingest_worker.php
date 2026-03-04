@@ -100,24 +100,25 @@ do {
         exit(1);
     }
 
-    if (!$loop) {
+if (!$loop) {
         break;
     }
 
-    // 【满载跳过休眠】：如果判定队列里还有未处理完的数据，跳过下面的休眠，立刻开始下一轮拉取
+    // 【满载跳过休眠】：队列满载时持续拉取，不休眠
     if ($hasMoreData) {
         continue;
     }
 
-    // 当所有队列都被彻底抽干（处理数量都小于 batchSize）时，才真正进入休眠
+    // 【动态空闲休眠】：如果三个队列都抽干了，才进入休眠，降低 Redis 压力
     if ($sleepSeconds > 0) {
-        // 计算还需要休眠多久 = 设定的休眠时间 - 最后一轮抽干数据消耗的时间
         $actualSleepSeconds = $sleepSeconds - $elapsed;
-        
-        // 如果处理时间已经超过了设定的 sleep 时间，那就直接进入下一次循环，不休眠
         if ($actualSleepSeconds > 0) {
-            // 取整后进行休眠
-            sleep((int)$actualSleepSeconds);
+            // 如果不足 1 秒，使用 usleep 避免过度占用
+            if ($actualSleepSeconds < 1) {
+                usleep((int)($actualSleepSeconds * 1000000));
+            } else {
+                sleep((int)$actualSleepSeconds);
+            }
         }
     }
 } while (true);
