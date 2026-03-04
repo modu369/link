@@ -23,7 +23,7 @@ $window = $tracker->rangeWindow($range);
 <head>
     <meta charset="utf-8">
     <title>分享统计面板</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/modern-normalize/modern-normalize.css">
+    <link rel="stylesheet" href="/t_statics/css/modern-normalize.css">
     <style>
         body { font-family: 'Inter','PingFang SC',sans-serif; background:#f8fafc; margin:0; color:#0f172a; }
         .wrap { max-width: 1100px; margin: 40px auto; padding: 0 16px; }
