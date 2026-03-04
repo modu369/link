@@ -16,7 +16,7 @@ render_topbar($branding);
     .trend-info { display:flex; flex-direction:column; gap:4px; min-width:0; }
     .trend-info .label { color:var(--muted); font-size:12px; font-weight:400; word-break:break-word; }
     .trend-info .val { font-size:12px; font-weight:400; word-break:break-word; }
-    .trend-canvas { width:100%; height:320px; }
+    .trend-canvas { width:100%; max-height:360px; }
 </style>
 <div class="data-layout">
     <?php render_sidebar($sites, $siteId, $selectedSite, 'trend', $range); ?>
@@ -149,6 +149,7 @@ render_topbar($branding);
             data: { labels: trendSource.labels, datasets },
             options: {
                 responsive: true,
+                maintainAspectRatio: false, // 允许高度自适应容器，而不锁定宽高比
                 plugins: { legend: { position: 'top' }, tooltip: { mode: 'index', intersect: false } },
                 scales: {
                     x: { ticks: { maxRotation: 0 }, grid: { display: false } },
