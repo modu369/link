@@ -135,7 +135,7 @@ $buildPayload = static function (string $baseUrl, string $trackingId): string {
         .site-card code { background: #0f172a; color: #e2e8f0; padding: 10px; display: block; border-radius: 8px; margin: 10px 0; font-size: 12px; word-break: break-all; }
         .site-card .actions { display: flex; justify-content: space-between; align-items: center; margin-top: auto; }
         .site-card .enter { text-decoration: none; color: #1690ff; font-weight: 700; }
-        .filter-btn { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: #deedfb; cursor: pointer; font-weight: 600; color: #1690ff; text-decoration: none; }
+        .filter-btn { padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: #deedfb; cursor: pointer; font-weight: 600; color: #1690ff; text-decoration: none; }
         .pill { padding: 4px 8px; background: #f1f5f9; border-radius: 999px; color: #0f172a; border: 1px solid var(--border); font-size: 12px; }
         @media (min-width: 1200px) {
             .site-card { grid-column: span 2; }
