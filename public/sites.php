@@ -120,7 +120,7 @@ $buildPayload = static function (string $baseUrl, string $trackingId): string {
         .brand { font-size: 20px; font-weight: 700; }
         .muted { color: var(--muted); }
         .card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 12px 30px rgba(22, 144, 255, 0.12); }
-        h1, h2, h3 { margin: 0 0 12px; color: #1690ff; }
+        h1, h2, h3 { margin: 0 0 12px; color: #1690ff;display:inline-block;}
         .form-control { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
         input[type="text"] { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); font-size: 14px; }
         button { padding: 10px 14px; border: none; border-radius: 8px; cursor: pointer; background: #deedfb; color: #1690ff; font-weight: 700; box-shadow: 0 10px 24px rgba(22, 144, 255, 0.18); border: 1px solid var(--border); }
