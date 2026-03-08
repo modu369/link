@@ -156,7 +156,7 @@ $buildPayload = static function (string $baseUrl, string $trackingId): string {
 <div class="sites-layout">
     <section class="card">
         <div class="section-title">
-            <h2>域名列表</h2>
+            <h2>站点列表</h2>
             <span class="pill">登录后默认进入此页，可快速添加与管理</span>
         </div>
         <?php if ($error): ?><p style="color:#ef4444; margin-top:0;">
@@ -199,7 +199,7 @@ $buildPayload = static function (string $baseUrl, string $trackingId): string {
                     <code><?= htmlspecialchars($embedScript, ENT_QUOTES, 'UTF-8') ?></code>
                     <div class="actions">
                         <a class="enter" href="/overview.php?site=<?= (int) $site['id'] ?>">进入数据</a>
-                        <form method="post" style="margin:0;">
+                        <form method="post" style="margin:0;" onsubmit="return confirm('您确定要删除该（<?= htmlspecialchars($site['name'], ENT_QUOTES, 'UTF-8') ?>）站点吗？此操作不可恢复。');">
                             <input type="hidden" name="action" value="delete">
                             <input type="hidden" name="site_id" value="<?= (int) $site['id'] ?>">
                             <button type="submit" class="ghost">删除</button>
@@ -212,7 +212,7 @@ $buildPayload = static function (string $baseUrl, string $trackingId): string {
 
     <section class="card">
         <div class="section-title">
-            <h2>统计分享页</h2>
+            <h2>统计分享列表</h2>
             <span class="pill">生成分享链接，选择要汇总的域名</span>
         </div>
         <?php if ($shareError): ?><p style="color:#ef4444; margin-top:0;"><?= htmlspecialchars($shareError, ENT_QUOTES, 'UTF-8') ?></p><?php endif; ?>
@@ -253,7 +253,7 @@ $buildPayload = static function (string $baseUrl, string $trackingId): string {
                         <div class="meta">链接：<a href="/share.php?token=<?= htmlspecialchars($page['token'], ENT_QUOTES, 'UTF-8') ?>" target="_blank">点击查看</a></div>
                         <div class="actions">
                             <code style="margin:0;">/share.php?token=<?= htmlspecialchars($page['token'], ENT_QUOTES, 'UTF-8') ?></code>
-                            <form method="post" style="margin:0;">
+                            <form method="post" style="margin:0;" onsubmit="return confirm('您确定要删除该（<?= htmlspecialchars($page['name'], ENT_QUOTES, 'UTF-8') ?>）分享页吗？');">
                                 <input type="hidden" name="action" value="share_delete">
                                 <input type="hidden" name="share_id" value="<?= (int) $page['id'] ?>">
                                 <button type="submit" class="ghost">删除</button>
