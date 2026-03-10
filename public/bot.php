@@ -11,10 +11,12 @@ $engineOptions = [
     '谷歌',
     '必应',
     '360',
-    '头条',
+    '头条/抖音',
     '搜狗',
     '神马',
     '华为',
+    '雅虎',
+    'DuckDuckBot',
     '其他',
 ];
 $engineLabels = array_merge(['all'], $engineOptions);
