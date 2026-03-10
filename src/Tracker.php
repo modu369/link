@@ -2887,7 +2887,7 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
         END";
     }
 
-    private function detectSearchEngine(string $referrer, string $userAgent): string
+private function detectSearchEngine(string $referrer, string $userAgent): string
     {
         $ref = strtolower($referrer);
         $ua = strtolower($userAgent);
@@ -2897,10 +2897,13 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
             str_contains($ref, 'google') || str_contains($ua, 'googlebot') => '谷歌',
             str_contains($ref, 'bing.com') || str_contains($ua, 'bingbot') => '必应',
             str_contains($ref, 'so.com') || str_contains($ua, '360spider') => '360',
-            str_contains($ref, 'toutiao.com') || str_contains($ua, 'bytespider') => '头条',
+            str_contains($ref, 'toutiao.com') || str_contains($ua, 'bytespider') || str_contains($ref, 'douyin.com') => '头条/抖音',
             str_contains($ref, 'sogou.com') || str_contains($ua, 'sogou') => '搜狗',
             str_contains($ref, 'sm.cn') || str_contains($ua, 'yisouspider') => '神马',
+            str_contains($ref, 'yahoo.com') || str_contains($ua, 'yahoo') => '雅虎',
+            str_contains($ref, 'duckduckgo.com') || str_contains($ua, 'duckduckbot') => 'DuckDuckBot',
             str_contains($ua, 'petalbot') => '华为',
+            str_contains($ref, 'quark.cn') => '夸克',
             default => '其他',
         };
     }
@@ -4381,7 +4384,7 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
         return false;
     }
 
-    private function isSearchEngineSpider(string $ua): bool
+private function isSearchEngineSpider(string $ua): bool
     {
         $needles = [
             'baiduspider',
@@ -4393,6 +4396,8 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
             'sogouspider',
             'sogou web spider',
             'yisouspider',
+            'yahoo',
+            'duckduckbot',
         ];
 
         foreach ($needles as $needle) {
@@ -5143,7 +5148,7 @@ private function formatHostDeviceBreakdown(array $hosts, array $hostDevices): ar
         return array_merge([$totals], $rows);
     }
 
-    private function identifySearchEngine(?string $ua, ?string $referrer = null): string
+private function identifySearchEngine(?string $ua, ?string $referrer = null): string
     {
         $uaLower = strtolower($ua ?? '');
         $refHost = strtolower(parse_url($referrer ?? '', PHP_URL_HOST) ?? '');
@@ -5157,6 +5162,8 @@ private function formatHostDeviceBreakdown(array $hosts, array $hostDevices): ar
             'sogouspider' => '搜狗蜘蛛',
             'sogou web spider' => '搜狗蜘蛛',
             'yisouspider' => '神马蜘蛛',
+            'yahoo' => '雅虎蜘蛛',
+            'duckduckbot' => 'DuckDuckBot蜘蛛',
         ];
 
         foreach ($spiderMap as $needle => $label) {
@@ -5174,6 +5181,9 @@ private function formatHostDeviceBreakdown(array $hosts, array $hostDevices): ar
             'sogou.com' => '搜狗',
             'sm.cn' => '神马',
             'quark.cn' => '夸克',
+            'yahoo.com' => '雅虎',
+            'duckduckgo.com' => 'DuckDuckGo',
+            'douyin.com' => '抖音',
         ];
 
         foreach ($searchMap as $needle => $label) {
@@ -5185,7 +5195,7 @@ private function formatHostDeviceBreakdown(array $hosts, array $hostDevices): ar
         return '其他来源';
     }
 
-    private function searchEngineCase(string $alias = ''): string
+private function searchEngineCase(string $alias = ''): string
     {
         $prefix = $alias ? $alias . '.' : '';
 
@@ -5194,9 +5204,11 @@ private function formatHostDeviceBreakdown(array $hosts, array $hostDevices): ar
             WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%google%' OR LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%googlebot%' THEN '谷歌'
             WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%bing.com%' OR LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%bingbot%' THEN '必应'
             WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%so.com%' OR LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%360spider%' THEN '360'
-            WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%toutiao.com%' OR LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%bytespider%' THEN '头条'
+            WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%toutiao.com%' OR LOWER(COALESCE({$prefix}referrer,'')) LIKE '%douyin.com%' OR LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%bytespider%' THEN '头条'
             WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%sogou.com%' OR LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%sogouspider%' THEN '搜狗'
             WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%sm.cn%' OR LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%yisouspider%' THEN '神马'
+            WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%yahoo.com%' OR LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%yahoo%' THEN '雅虎'
+            WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%duckduckgo.com%' OR LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%duckduckbot%' THEN 'DuckDuckBot'
             WHEN LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%petalbot%' THEN '华为'
             WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%quark.cn%' THEN '夸克'
             ELSE '其他'
@@ -5247,7 +5259,8 @@ private function getExternalLinks(int $siteId, string $range): array
             [$start, $end] = $this->rollupRangeBounds($range);
             $domains = $this->getAllSiteDomains($siteId);
             
-            $blocked = ['baidu', 'google', 'bing.', 'sm.cn', 'quark.cn', 'so.com', 'sogou', 'bytedance', 'toutiao'];
+            // 加入 'yahoo.com', 'duckduckgo.com', 'douyin.com'
+            $blocked = ['baidu', 'google', 'bing.', 'sm.cn', 'quark.cn', 'so.com', 'sogou', 'bytedance', 'toutiao', 'yahoo.com', 'duckduckgo.com', 'douyin.com'];
             $span = $this->rollupSpanForRange($siteId, $start, $end);
             if (!$span) {
                 return [];
