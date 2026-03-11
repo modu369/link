@@ -24,6 +24,14 @@ render_topbar($branding);
 
             <section class="card">
                 <div class="section-title"><h3>设备类别</h3><span class="muted">按 IP 聚合</span></div>
+                
+                <div style="margin-bottom:14px; display:flex; justify-content:center;">
+                    <div style="max-width:400px; width:100%; text-align:center;">
+                        <div class="muted" style="margin-bottom:6px;">IP 占比</div>
+                        <canvas id="devicePie" height="220"></canvas>
+                    </div>
+                </div>
+
                 <table>
                     <thead><tr><th>类别</th><th>IP</th></tr></thead>
                     <tbody>
@@ -31,23 +39,29 @@ render_topbar($branding);
                         <tr><td>移动端</td><td><?= (int) $data['devices']['mobile']['ips'] ?></td></tr>
                     </tbody>
                 </table>
-                <div style="margin-top:14px; display:flex; justify-content:center;">
-                    <div style="max-width:400px; width:100%; text-align:center;">
-                        <div class="muted" style="margin-bottom:6px;">IP 占比</div>
-                        <canvas id="devicePie" height="220"></canvas>
-                    </div>
-                </div>
             </section>
 
             <section class="card">
-                <div class="section-title"><h3>浏览器类型</h3><span class="muted">前 10</span></div>
+                <div class="section-title"><h3>浏览器类型</h3><span class="muted">前 50</span></div>
+                
+                <div style="margin-bottom:14px; display:flex; justify-content:center;">
+                    <div style="max-width:400px; width:100%; text-align:center;">
+                        <div class="muted" style="margin-bottom:6px;">IP 占比（前 8 项）</div>
+                        <canvas id="browserPie" height="220"></canvas>
+                    </div>
+                </div>
+
                 <table>
                     <thead><tr><th>浏览器</th><th>PV</th><th>IP</th></tr></thead>
                     <tbody>
                     <?php if (empty($data['browsers'])): ?>
                         <tr><td colspan="3" class="muted">暂无数据</td></tr>
                     <?php else: ?>
-                        <?php foreach ($data['browsers'] as $row): ?>
+                        <?php 
+                        // 限制列表最大显示 50 条
+                        $displayBrowsers = array_slice($data['browsers'], 0, 50);
+                        foreach ($displayBrowsers as $row): 
+                        ?>
                             <tr>
                                 <td><?= htmlspecialchars($row['browser'], ENT_QUOTES, 'UTF-8') ?></td>
                                 <td><?= (int) $row['views'] ?></td>
@@ -57,12 +71,6 @@ render_topbar($branding);
                     <?php endif; ?>
                     </tbody>
                 </table>
-                <div style="margin-top:14px; display:flex; justify-content:center;">
-                    <div style="max-width:400px; width:100%; text-align:center;">
-                        <div class="muted" style="margin-bottom:6px;">IP 占比（前 8 项）</div>
-                        <canvas id="browserPie" height="220"></canvas>
-                    </div>
-                </div>
             </section>
             <script>
                 (function(){
@@ -70,7 +78,8 @@ render_topbar($branding);
                         {label:'电脑端', value: Number(<?= (int) $data['devices']['desktop']['ips'] ?>)},
                         {label:'移动端', value: Number(<?= (int) $data['devices']['mobile']['ips'] ?>)}
                     ];
-                    const browserData = <?= json_encode(array_slice($data['browsers'] ?? [],0,8), JSON_UNESCAPED_UNICODE) ?>;
+                    // 饼图依然只取前 8 项展示，避免图表过于拥挤
+                    const browserData = <?= json_encode(array_slice($data['browsers'] ?? [], 0, 8), JSON_UNESCAPED_UNICODE) ?>;
                     const palette = ['#1690ff','#73c1ff','#4dd0e1','#7c4dff','#ff8a65','#ffd166','#06d6a0','#ef476f'];
 
                     function buildPie(canvasId, items){
