@@ -2918,7 +2918,7 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
             str_contains($ref, 'sogou.com') || str_contains($ua, 'sogou') => '搜狗',
             str_contains($ref, 'sm.cn') || str_contains($ua, 'yisouspider') => '神马',
             str_contains($ref, 'yahoo.com') || str_contains($ua, 'yahoo') => '雅虎',
-            str_contains($ref, 'duckduckgo.com') || str_contains($ua, 'duckduckbot') => 'DuckDuckBot',
+            str_contains($ref, 'duckduckgo.com') || str_contains($ua, 'duckduckbot') => 'DuckDuckGo',
             str_contains($ua, 'petalbot') => '华为',
             str_contains($ref, 'quark.cn') => '夸克',
             default => '其他',
@@ -5180,7 +5180,7 @@ private function identifySearchEngine(?string $ua, ?string $referrer = null): st
             'sogou web spider' => '搜狗蜘蛛',
             'yisouspider' => '神马蜘蛛',
             'yahoo' => '雅虎蜘蛛',
-            'duckduckbot' => 'DuckDuckBot蜘蛛',
+            'duckduckbot' => 'DuckDuckGo蜘蛛',
         ];
 
         foreach ($spiderMap as $needle => $label) {
@@ -5225,7 +5225,7 @@ private function searchEngineCase(string $alias = ''): string
             WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%sogou.com%' OR LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%sogouspider%' THEN '搜狗'
             WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%sm.cn%' OR LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%yisouspider%' THEN '神马'
             WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%yahoo.com%' OR LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%yahoo%' THEN '雅虎'
-            WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%duckduckgo.com%' OR LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%duckduckbot%' THEN 'DuckDuckBot'
+            WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%duckduckgo.com%' OR LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%duckduckbot%' THEN 'DuckDuckGo'
             WHEN LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%petalbot%' THEN '华为'
             WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%quark.cn%' THEN '夸克'
             ELSE '其他'
