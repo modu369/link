@@ -1424,7 +1424,7 @@ private function cleanupProxyIpData(string $ip): void
         }
     }
 
-    private function rebuildRollupBucket(int $siteId, DateTimeImmutable $bucketStart, DateTimeImmutable $bucketEnd): void
+    public function rebuildRollupBucket(int $siteId, DateTimeImmutable $bucketStart, DateTimeImmutable $bucketEnd): array
     {
         $bucketKey = $bucketStart->format('Y-m-d H:i:s');
         $start = $bucketStart->format('Y-m-d H:i:s');
@@ -1680,8 +1680,23 @@ private function cleanupProxyIpData(string $ip): void
             $entryStmt->execute([$siteId, $bucketKey, $siteId, $start, $end]);
 
             $this->db->commit();
+
+            return [
+                'site_id' => $siteId,
+                'bucket' => $bucketKey,
+                'pv' => (int) ($totals['views'] ?? 0),
+                'uv' => (int) ($totals['uniques'] ?? 0),
+                'ips' => (int) ($totals['ips'] ?? 0),
+                'sessions' => (int) ($sessions['sessions'] ?? 0),
+            ];
         } catch (Throwable $e) {
             $this->db->rollBack();
+            return [
+                'site_id' => $siteId,
+                'bucket' => $bucketKey,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ];
         }
     }
 
@@ -2843,13 +2858,14 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
         $ua = strtolower($userAgent);
         return match (true) {
             str_contains($ua, 'micromessenger') => 'WeChat',
-            (bool) preg_match('/bytedancewebview|aweme/', $ua) => 'Douyin',
-            str_contains($ua, 'baiduboxapp') => 'Baidu',
+            str_contains($ua, 'baiduboxapp') => '百度',
+            str_contains($ua, 'sogoumse') => '搜狗',
+            str_contains($ua, 'goldbrowser') => '悟空',
             (bool) preg_match('/mqqbrowser|qqbrowser/', $ua) => 'QQ',
             str_contains($ua, 'ucbrowser') => 'UC',
-            str_contains($ua, 'quark') => 'Quark',
-            str_contains($ua, 'xiaomi') || str_contains($ua, 'miuibrowser') => 'Mi',
-            str_contains($ua, 'huawei') => 'Huawei',
+            str_contains($ua, 'quark') => '夸克',
+            str_contains($ua, 'xiaomi') || str_contains($ua, 'miuibrowser') => '小米',
+            str_contains($ua, 'huawei') => '华为',
             str_contains($ua, 'vivobrowser') => 'Vivo',
             str_contains($ua, 'heytapbrowser') || str_contains($ua, 'oppobrowser') => 'OPPO',
             (bool) preg_match('/edg(a|ios)/', $ua) => 'Edge',
@@ -2868,13 +2884,14 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
 
         return "CASE
             WHEN LOWER({$prefix}user_agent) REGEXP 'micromessenger' THEN 'WeChat'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'bytedancewebview|aweme' THEN 'Douyin'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'baiduboxapp' THEN 'Baidu'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'baiduboxapp' THEN '百度'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'sogoumse' THEN '搜狗'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'goldbrowser' THEN '悟空'
             WHEN LOWER({$prefix}user_agent) REGEXP 'mqqbrowser|qqbrowser' THEN 'QQ'
             WHEN LOWER({$prefix}user_agent) REGEXP 'ucbrowser' THEN 'UC'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'quark' THEN 'Quark'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'xiaomi|miuibrowser' THEN 'Mi'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'huawei' THEN 'Huawei'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'quark' THEN '夸克'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'xiaomi|miuibrowser' THEN '小米'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'huawei' THEN '华为'
             WHEN LOWER({$prefix}user_agent) REGEXP 'vivobrowser' THEN 'Vivo'
             WHEN LOWER({$prefix}user_agent) REGEXP 'heytapbrowser|oppobrowser' THEN 'OPPO'
             WHEN LOWER({$prefix}user_agent) REGEXP 'edg(a|ios)' THEN 'Edge'
