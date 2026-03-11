@@ -26,7 +26,7 @@ render_topbar($branding);
                 <div class="section-title"><h3>设备类别</h3><span class="muted">按 IP 聚合</span></div>
                 
                 <div style="margin-bottom:14px; display:flex; justify-content:center;">
-                    <div style="max-width:400px; width:100%; text-align:center;">
+                    <div style="max-width:350px; width:100%; text-align:center;">
                         <div class="muted" style="margin-bottom:6px;">IP 占比</div>
                         <canvas id="devicePie" height="220"></canvas>
                     </div>
