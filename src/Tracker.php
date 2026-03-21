@@ -982,7 +982,6 @@ private function isProxySuspicious(
 
         try {
             $profile = $this->redis->hGetAll($profileKey);
-            // ... [此处获取 profile 数据的逻辑原样保留，为了篇幅省略展示，直接使用您原版的 $profile 赋值] ...
             $score = (int) ($profile['score'] ?? 0);
             $lastIp = (string) ($profile['last_ip'] ?? '');
             $lastAsn = (string) ($profile['last_asn'] ?? '');
@@ -1013,16 +1012,16 @@ private function isProxySuspicious(
             $ipChanged = $lastIp !== '' && $lastIp !== $ip;
 
             // ==========================================
-            // === 核心优化注入点：NAT 指纹多样性识别 ===
+            // = 核心优化 1：NAT 指纹多样性识别与防伪造 =
             // ==========================================
             $uniqueFpCount = 0;
             $isNat = false;
             if ($ip) {
                 $natKey = "proxy:ip_fps:{$ip}";
-                // 防伪造：只有当用户有一定停留时间，或浏览了多页，才认为是人类真实设备
+                // 防伪造校验：只有产生实质性浏览（时长>3秒 或 翻页>1）才算作真实有效设备
                 if ($fingerprint !== '' && ($duration > 3 || $pageCount > 1)) {
                     $this->redis->sAdd($natKey, $fingerprint);
-                    $this->redis->expire($natKey, 3600); // 1小时窗口
+                    $this->redis->expire($natKey, 3600);
                 }
                 $uniqueFpCount = (int) $this->redis->sCard($natKey);
                 $isNat = $uniqueFpCount > 5;
@@ -1053,7 +1052,7 @@ private function isProxySuspicious(
                 $deduct += 5;
             }
             $trustedHosts = [
-                'baidu.com', 'sogou.com', 'so.com', 'google.com', 'bing.com',
+                'baidu.com', 'sogou.com', 'so.com', 'google.com', 'bing.com', 'toutiao.com', 'quark.cn', 'sm.cn',
                 'wechat.com', 'douyin.com', 'bilibili.com', 'weibo.com', 'zhihu.com',
             ];
             foreach ($trustedHosts as $trusted) {
@@ -1076,8 +1075,9 @@ private function isProxySuspicious(
             if ($uidMissing) {
                 $score += 6;
             }
-            // 优化：如果是已知的真实 NAT 网关，豁免 coarseMode (网络级高频跳跃) 的4分惩罚
-            if ($coarseMode && !$isNat) { 
+            
+            // 优化：如果是已知的真实企业 NAT 网关，豁免 coarseMode (网络级高频跳跃) 的4分惩罚
+            if ($coarseMode && !$isNat) {
                 $score += 4;
             }
 
@@ -1100,7 +1100,6 @@ private function isProxySuspicious(
 
             $geoCross = false;
             if ($ipChanged) {
-                // ... [Geo 跨区逻辑原样保留] ...
                 $ipChangeCount += 1;
                 $geoSameRegion = $regionValue !== '' && $regionValue === $lastRegion;
                 $geoSameCity = $cityValue !== '' && $cityValue === $lastCity;
@@ -1158,18 +1157,17 @@ private function isProxySuspicious(
             $identityStable = $uaStable || $fpStable;
 
             // ==========================================
-            // === 核心优化：动态频率上限 (根据真实设备数放宽) ===
+            // = 核心优化 2：根据真实设备数量动态放大容忍度 =
             // ==========================================
-            // 企业专线人越多，允许的 10秒并发、1小时、24小时的总请求量上限应该按比例放大
-            $dynamicMultiplier = $isNat ? max(1, floor($uniqueFpCount / 2)) : 1;
+            $dynamicMultiplier = $isNat ? max(1, (int)floor($uniqueFpCount / 2)) : 1;
+            $windowLimit = $isNat ? (15 + $uniqueFpCount * 2) : 15;
             
-            // 基础并发限制为15，若是NAT，每多一个真实设备多给2个并发额度
-            $windowLimit = $isNat ? (15 + $uniqueFpCount * 2) : 15; 
             if ($windowCount > $windowLimit && $identityStable) {
                 $score += 10;
                 $highFreqHits += 1;
             }
             
+            // 企业网关人越多，允许的 1小时 / 24小时 频率上限按比例放宽
             $hourLimit = 300 * $dynamicMultiplier;
             if ($hourCount > $hourLimit) {
                 $score += 6;
@@ -1180,7 +1178,6 @@ private function isProxySuspicious(
                 $score += 8;
             }
 
-            // ... 后续逻辑原样保留 ...
             $isForeign = $countryValue !== '' && $countryValue !== '中国' && strcasecmp($countryValue, 'China') !== 0;
             if ($isForeign && ($ipChanged || $highFreqHits > 0)) {
                 $score += 6;
@@ -1218,8 +1215,12 @@ private function isProxySuspicious(
                 $this->redis->expire($sessionKey, 1800);
             }
 
-            if ($score < 0) $score = 0;
-            if ($score > 100) $score = 100;
+            if ($score < 0) {
+                $score = 0;
+            }
+            if ($score > 100) {
+                $score = 100;
+            }
 
             if ($deduct > 0) {
                 $remaining = max(0, 40 - $goodScore);
@@ -1237,7 +1238,11 @@ private function isProxySuspicious(
             $this->redis->hMSet($profileKey, [
                 'score' => $score,
                 'last_ip' => $ip,
-                // ... 省略其他写入字段，保持您原版的写入即可 ...
+                'last_asn' => $asnValue,
+                'last_city' => $cityValue,
+                'last_region' => $regionValue,
+                'last_country' => $countryValue,
+                'last_ua' => $userAgent,
                 'last_fp' => $fingerprint,
                 'last_ts' => $nowMs,
                 'ip_change_count' => $ipChangeCount,
