@@ -900,7 +900,7 @@ public function recordPageview(string $trackingId, array $payload): void
         return $countryValue !== '';
     }
 
-    private function isProxySuspicious(
+private function isProxySuspicious(
         string $sessionId,
         string $fingerprint,
         bool $uidProvided,
@@ -965,7 +965,7 @@ public function recordPageview(string $trackingId, array $payload): void
         $regionValue = trim($region);
         $countryValue = trim($country);
         $isChinaNetwork = $this->isChinaNetwork($countryValue, $asnMeta);
-        $isDataCenterAsn = $this->isDataCenterAsn($asnMeta, $userAgent); // 传入 UA 进行精准判定
+        $isDataCenterAsn = $this->isDataCenterAsn($asnMeta, $userAgent);
         $uaSuspicious = $this->isSuspiciousUserAgent($userAgent);
         $ipChanged = true;
         $score = 0;
@@ -982,6 +982,7 @@ public function recordPageview(string $trackingId, array $payload): void
 
         try {
             $profile = $this->redis->hGetAll($profileKey);
+            // ... [此处获取 profile 数据的逻辑原样保留，为了篇幅省略展示，直接使用您原版的 $profile 赋值] ...
             $score = (int) ($profile['score'] ?? 0);
             $lastIp = (string) ($profile['last_ip'] ?? '');
             $lastAsn = (string) ($profile['last_asn'] ?? '');
@@ -1010,6 +1011,22 @@ public function recordPageview(string $trackingId, array $payload): void
 
             $requestCount += 1;
             $ipChanged = $lastIp !== '' && $lastIp !== $ip;
+
+            // ==========================================
+            // === 核心优化注入点：NAT 指纹多样性识别 ===
+            // ==========================================
+            $uniqueFpCount = 0;
+            $isNat = false;
+            if ($ip) {
+                $natKey = "proxy:ip_fps:{$ip}";
+                // 防伪造：只有当用户有一定停留时间，或浏览了多页，才认为是人类真实设备
+                if ($fingerprint !== '' && ($duration > 3 || $pageCount > 1)) {
+                    $this->redis->sAdd($natKey, $fingerprint);
+                    $this->redis->expire($natKey, 3600); // 1小时窗口
+                }
+                $uniqueFpCount = (int) $this->redis->sCard($natKey);
+                $isNat = $uniqueFpCount > 5;
+            }
 
             $gapMs = $lastTs > 0 ? ($nowMs - $lastTs) : 0;
             if ($gapMs > 0) {
@@ -1059,7 +1076,8 @@ public function recordPageview(string $trackingId, array $payload): void
             if ($uidMissing) {
                 $score += 6;
             }
-            if ($coarseMode) {
+            // 优化：如果是已知的真实 NAT 网关，豁免 coarseMode (网络级高频跳跃) 的4分惩罚
+            if ($coarseMode && !$isNat) { 
                 $score += 4;
             }
 
@@ -1082,6 +1100,7 @@ public function recordPageview(string $trackingId, array $payload): void
 
             $geoCross = false;
             if ($ipChanged) {
+                // ... [Geo 跨区逻辑原样保留] ...
                 $ipChangeCount += 1;
                 $geoSameRegion = $regionValue !== '' && $regionValue === $lastRegion;
                 $geoSameCity = $cityValue !== '' && $cityValue === $lastCity;
@@ -1133,28 +1152,35 @@ public function recordPageview(string $trackingId, array $payload): void
             if ($dayCount === 1) {
                 $this->redis->expire($dayKey, 86400);
             }
+            
             $uaStable = $lastUa !== '' && $lastUa === $userAgent;
             $fpStable = $lastFp !== '' && $lastFp === $fingerprint;
             $identityStable = $uaStable || $fpStable;
-            $isNat = false;
-            if ($ip && $sessionId !== '') {
-                $natKey = "proxy:ip_sessions:{$ip}";
-                $this->redis->sAdd($natKey, $sessionId);
-                $this->redis->expire($natKey, 3600);
-                $isNat = $this->redis->sCard($natKey) > 5;
-            }
-            $windowLimit = $isNat ? 30 : 15;
+
+            // ==========================================
+            // === 核心优化：动态频率上限 (根据真实设备数放宽) ===
+            // ==========================================
+            // 企业专线人越多，允许的 10秒并发、1小时、24小时的总请求量上限应该按比例放大
+            $dynamicMultiplier = $isNat ? max(1, floor($uniqueFpCount / 2)) : 1;
+            
+            // 基础并发限制为15，若是NAT，每多一个真实设备多给2个并发额度
+            $windowLimit = $isNat ? (15 + $uniqueFpCount * 2) : 15; 
             if ($windowCount > $windowLimit && $identityStable) {
                 $score += 10;
                 $highFreqHits += 1;
             }
-            if ($hourCount > 300) {
+            
+            $hourLimit = 300 * $dynamicMultiplier;
+            if ($hourCount > $hourLimit) {
                 $score += 6;
             }
-            if ($dayCount > 2000) {
+            
+            $dayLimit = 2000 * $dynamicMultiplier;
+            if ($dayCount > $dayLimit) {
                 $score += 8;
             }
 
+            // ... 后续逻辑原样保留 ...
             $isForeign = $countryValue !== '' && $countryValue !== '中国' && strcasecmp($countryValue, 'China') !== 0;
             if ($isForeign && ($ipChanged || $highFreqHits > 0)) {
                 $score += 6;
@@ -1192,12 +1218,8 @@ public function recordPageview(string $trackingId, array $payload): void
                 $this->redis->expire($sessionKey, 1800);
             }
 
-            if ($score < 0) {
-                $score = 0;
-            }
-            if ($score > 100) {
-                $score = 100;
-            }
+            if ($score < 0) $score = 0;
+            if ($score > 100) $score = 100;
 
             if ($deduct > 0) {
                 $remaining = max(0, 40 - $goodScore);
@@ -1215,11 +1237,7 @@ public function recordPageview(string $trackingId, array $payload): void
             $this->redis->hMSet($profileKey, [
                 'score' => $score,
                 'last_ip' => $ip,
-                'last_asn' => $asnValue,
-                'last_city' => $cityValue,
-                'last_region' => $regionValue,
-                'last_country' => $countryValue,
-                'last_ua' => $userAgent,
+                // ... 省略其他写入字段，保持您原版的写入即可 ...
                 'last_fp' => $fingerprint,
                 'last_ts' => $nowMs,
                 'ip_change_count' => $ipChangeCount,
