@@ -1189,13 +1189,20 @@ private function isProxySuspicious(
                     $sustainedHits += 1;
                 }
             }
-
+// 从配置中动态读取阈值，如果配置未生效则使用默认的放宽参数兜底
+        $riskScoreThreshold = $this->options['ingest']['risk_score_threshold'] ?? 80;
+        $crossRegionThreshold = $this->options['ingest']['cross_region_threshold'] ?? 3;
+        $highFreqThreshold = $this->options['ingest']['high_freq_threshold'] ?? 4;
+        $sustainedFreqThreshold = $this->options['ingest']['sustained_freq_threshold'] ?? 5;
+        $mediumRiskScore = $this->options['ingest']['medium_risk_score'] ?? 60;
             $updateKey = "proxy:risk:update:{$uid}";
             $allowUpdate = $this->redis->setnx($updateKey, '1');
             if ($allowUpdate) {
                 $this->redis->expire($updateKey, 1);
             } else {
-                $isRisk = $score >= 50 || ($crossRegionHits >= 1 && $highFreqHits >= 1);
+                $isRisk = $score >= $riskScoreThreshold 
+            || ($crossRegionHits >= $crossRegionThreshold && $highFreqHits >= $highFreqThreshold) 
+            || ($score >= $mediumRiskScore && $sustainedHits >= $sustainedFreqThreshold);
                 $this->markProxyRiskStatus($ipHash, $isRisk);
                 return ['blocked' => false, 'risk' => $isRisk, 'score' => $score];
             }
@@ -1273,7 +1280,9 @@ private function isProxySuspicious(
             return ['blocked' => false, 'risk' => false, 'score' => 0];
         }
 
-        $isRisk = $score >= 50 || ($crossRegionHits >= 1 && $highFreqHits >= 1);
+        $isRisk = $score >= $riskScoreThreshold 
+            || ($crossRegionHits >= $crossRegionThreshold && $highFreqHits >= $highFreqThreshold) 
+            || ($score >= $mediumRiskScore && $sustainedHits >= $sustainedFreqThreshold);
         $this->markProxyRiskStatus($ipHash, $isRisk);
         return ['blocked' => false, 'risk' => $isRisk, 'score' => $score];
     }
@@ -3864,7 +3873,7 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
                 return [];
             }
 
-            $rollup = $this->aggregateDimensionRollups($siteId, 'keyword_engine', $span['start'], $span['end'], 5000);
+            $rollup = $this->aggregateDimensionRollups($siteId, 'keyword_engine', $span['start'], $span['end'], 6000);
 
             if (!empty($rollup)) {
                 $keywords = [];
