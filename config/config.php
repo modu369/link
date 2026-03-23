@@ -1,9 +1,9 @@
 <?php
 return [
     'db' => [
-        'dsn' => getenv('DB_DSN') ?: 'mysql:host=127.0.0.1;dbname=tjceshi;charset=utf8mb4',
-        'user' => getenv('DB_USER') ?: 'tjceshi',
-        'pass' => getenv('DB_PASS') ?: '123456',
+        'dsn' => getenv('DB_DSN') ?: 'mysql:host=127.0.0.1;dbname=v8tongji;charset=utf8mb4',
+        'user' => getenv('DB_USER') ?: 'v8tongji',
+        'pass' => getenv('DB_PASS') ?: 'pai123456',
     ],
     'redis' => [
         'host' => getenv('REDIS_HOST') ?: '127.0.0.1',
@@ -70,5 +70,11 @@ return [
         'auto_drain_batch' => (int) (getenv('INGEST_AUTO_DRAIN_BATCH') ?: 50),
         // 处理中的数据超过该秒数将重新入队
         'stalled_after' => (int) (getenv('INGEST_STALLED_AFTER') ?: 300),
+        // --- 新增：刷量风险识别阈值配置 ---
+        'risk_score_threshold' => 85,       // 风险总分阈值 (原硬编码为50)
+        'cross_region_threshold' => 3,      // 跨区域次数阈值 (原硬编码为1)
+        'high_freq_threshold' => 4,         // 高频访问次数阈值 (原硬编码为1)
+        'sustained_freq_threshold' => 5,    // 持续高频访问次数阈值
+        'medium_risk_score' => 60,          // 中等风险分数阈值，用于和持续高频进行组合判断
     ],
 ];
