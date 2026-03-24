@@ -60,43 +60,9 @@ $sites = $tracker->getSites();
 $sharePages = $tracker->getSharePages();
 $baseUrl = rtrim($branding['base_url'] ?? $config['app']['base_url'] ?? 'http://localhost', '/');
 
-$encodeEval = static function (string $source): string {
-    $words = array_values(array_unique(preg_split('/\W+/', $source, -1, PREG_SPLIT_NO_EMPTY)));
-    usort($words, static function (string $a, string $b): int {
-        return strlen($b) <=> strlen($a);
-    });
-    $indexMap = [];
-    foreach ($words as $index => $word) {
-        $indexMap[$word] = $index;
-    }
-    $packedSource = preg_replace_callback('/\b\w+\b/', static function (array $matches) use ($indexMap): string {
-        $word = $matches[0];
-        if (!array_key_exists($word, $indexMap)) {
-            return $word;
-        }
-        return base_convert((string) $indexMap[$word], 10, 36);
-    }, $source);
-    $keywordList = implode('|', $words);
-    $base = 36;
-    $count = count($words);
-    $payload = sprintf(
-        ";eval(function(p,a,c,k,e,r){e=function(c){return c.toString(a)};if(!''.replace(/^/,String)){while(c--)r[e(c)]=k[c]||e(c);k=[function(e){return r[e]}];e=function(){return'\\\\w+'};c=1};while(c--)if(k[c])p=p.replace(new RegExp('\\\\b'+e(c)+'\\\\b','g'),k[c]);return p}('%s',%d,%d,'%s'.split('|'),0,{}));",
-        addslashes($packedSource),
-        $base,
-        $count,
-        addslashes($keywordList)
-    );
-    return '<script>' . $payload . '</script>';
-};
-$extractScriptBody = static function (string $script): string {
-    if (preg_match('/<script>(.*)<\\/script>/s', $script, $matches)) {
-        return $matches[1];
-    }
-    return $script;
-};
 $buildPayload = static function (string $baseUrl, string $trackingId): string {
     return sprintf(
-        '(function(w,d){var s=d.createElement("script");s.src="%s/js/?id=%s";s.async=true;(d.head||d.body).appendChild(s);}(window,document));',
+        '<script src="%s/js/?id=%s" async defer></script>',
         $baseUrl,
         $trackingId
     );
@@ -190,11 +156,7 @@ $buildPayload = static function (string $baseUrl, string $trackingId): string {
                     <div class="meta">根域名：<?= htmlspecialchars($site['domain'], ENT_QUOTES, 'UTF-8') ?>（含 www）</div>
                     <div class="meta">Tracking ID：<?= htmlspecialchars($site['tracking_id'], ENT_QUOTES, 'UTF-8') ?></div>
                     <?php
-                        $embedScriptRaw = sprintf(
-                            '<script>%s</script>',
-                            $buildPayload($baseUrl, $site['tracking_id'] ?? '')
-                        );
-                        $embedScript = $encodeEval($extractScriptBody($embedScriptRaw));
+                        $embedScript = $buildPayload($baseUrl, $site['tracking_id'] ?? '');
                     ?>
                     <code><?= htmlspecialchars($embedScript, ENT_QUOTES, 'UTF-8') ?></code>
                     <div class="actions">
