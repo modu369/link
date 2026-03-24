@@ -65,23 +65,169 @@ $clientIp = $extractIp($_SERVER['HTTP_X_REAL_IP'] ?? null)
 
 $userAgent = $sanitizeText($_SERVER['HTTP_USER_AGENT'] ?? '', 512);
 $userAgentLower = strtolower($userAgent);
-$spiderRules = [
-    'baiduspider',
-    'bingbot',
-    'googlebot',
-    'sogouspider',
-    'sogou web spider',
-    'yisouspider',
-    'bytespider',
-    '360spider',
+// 1. 拦截并在 index.php 已经记录过的蜘蛛，直接丢弃避免重复统计（移除 bingbot 和 bytespider）
+$otherSpiders = [
+    'baiduspider', 'googlebot', 'sogouspider', 'sogou web spider',
+    'yisouspider', '360spider', 'petalbot', 'yahoo',
 ];
-foreach ($spiderRules as $needle) {
+foreach ($otherSpiders as $needle) {
     if (str_contains($userAgentLower, $needle)) {
         http_response_code(204);
         exit;
     }
 }
 
+// 2. 专门在 track.php 中验证和记录可能缓存 JS 的蜘蛛（必应、头条）
+$trackSpiders = [
+    'bingbot'    => ['search.msn.com', '必应'],
+    'bytespider' => ['crawl.bytedance.com', '头条'],
+];
+
+$matchedSpider = null;
+foreach ($trackSpiders as $needle => $rule) {
+    if (str_contains($userAgentLower, $needle)) {
+        $matchedSpider = [$needle, $rule[0], $rule[1]];
+        break;
+    }
+}
+
+if ($matchedSpider) {
+    $resolveRdns = static function (string $ip): string {
+        $ip = trim($ip);
+        if ($ip === '') return '';
+        $host = @gethostbyaddr($ip);
+        if (is_string($host) && $host !== $ip) {
+            return strtolower($host);
+        }
+        return '';
+    };
+
+    $siteIdCache = null;
+    $getSiteByTrackingId = static function (string $tid) use ($config, &$siteIdCache): ?int {
+        if ($tid === '') return null;
+        if ($siteIdCache !== null) return $siteIdCache;
+        try {
+            $redis = RedisClient::connection($config['redis']);
+            $cached = $redis->get("site:{$tid}");
+            if ($cached) {
+                $decoded = json_decode($cached, true);
+                if (is_array($decoded) && isset($decoded['id'])) {
+                    return $siteIdCache = (int) $decoded['id'];
+                }
+            }
+        } catch (Throwable $e) {}
+
+        try {
+            $db = Database::connection($config['db']);
+            $stmt = $db->prepare('SELECT id FROM sites WHERE tracking_id = :tracking_id LIMIT 1');
+            $stmt->execute([':tracking_id' => $tid]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (is_array($row) && isset($row['id'])) {
+                $siteIdCache = (int) $row['id'];
+                try {
+                    $redis = RedisClient::connection($config['redis']);
+                    $redis->setex("site:{$tid}", 3600, json_encode(['id' => $siteIdCache, 'tracking_id' => $tid]));
+                } catch (Throwable $e) {}
+                return $siteIdCache;
+            }
+        } catch (Throwable $e) {}
+        return null;
+    };
+
+    [$spiderKey, $spiderRule, $spiderEngine] = $matchedSpider;
+    
+    $isVerifiedSpider = false;
+    $cacheKey = null;
+    
+    // 动态缓存策略：必应使用 C 段缓存，头条使用精确 IP 缓存
+    if ($spiderKey === 'bingbot') {
+        $ipLong = filter_var($clientIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? ip2long($clientIp) : false;
+        if ($ipLong !== false) {
+            $cacheKey = sprintf('bot:rdns:%s:%s', $spiderKey, long2ip($ipLong & -256));
+        } else {
+            $cacheKey = sprintf('bot:rdns:%s:%s', $spiderKey, $clientIp);
+        }
+    } else {
+        // 头条 (bytespider) 采用精确 IP 缓存
+        $cacheKey = sprintf('bot:rdns:%s:%s', $spiderKey, $clientIp);
+    }
+
+    $redis = null;
+    try {
+        $redis = RedisClient::connection($config['redis']);
+    } catch (Throwable $e) {}
+
+    // 检查 Redis 缓存
+    if ($cacheKey && $redis) {
+        $cached = $redis->get($cacheKey);
+        if ($cached === 'ok') {
+            $isVerifiedSpider = true;
+        } elseif ($cached === 'bad') {
+            $isVerifiedSpider = false;
+        }
+    }
+
+    // 缓存未命中，发起 RDNS 查验
+    if (!$isVerifiedSpider && (!isset($cached) || $cached !== 'bad')) {
+        $hostLower = $resolveRdns($clientIp);
+        if ($hostLower !== '' && str_contains($hostLower, $spiderRule)) {
+            $isVerifiedSpider = true;
+        }
+
+        if ($cacheKey && $redis) {
+            $ttl = $isVerifiedSpider ? 60 * 60 * 24 * 30 : 60 * 60 * 12;
+            $redis->setex($cacheKey, $ttl, $isVerifiedSpider ? 'ok' : 'bad');
+        }
+    }
+
+    // 验证通过，写入后台消费队列
+    if ($isVerifiedSpider) {
+        $siteId = $getSiteByTrackingId($trackingId);
+        if ($siteId && $redis) {
+            // 获取真实被抓取的 URL
+            $pageUrl = trim((string) ($_GET['p'] ?? ($_SERVER['HTTP_REFERER'] ?? '')));
+            $referrerUrl = trim((string) ($_GET['r'] ?? ''));
+            $parsed = $pageUrl !== '' ? parse_url($pageUrl) : [];
+            $path = '';
+            $domain = '';
+            
+            if (is_array($parsed)) {
+                $path = (string) ($parsed['path'] ?? '');
+                if (isset($parsed['query']) && $parsed['query'] !== '') {
+                    $path .= '?' . $parsed['query'];
+                }
+                $domain = (string) ($parsed['host'] ?? '');
+            }
+
+            $botPayload = [
+                'site_id' => $siteId,
+                'path' => $path,
+                'referrer' => $referrerUrl,
+                'user_agent' => $userAgent,
+                'ip_address' => $clientIp,
+                'domain' => $domain,
+                'engine' => $spiderEngine,
+            ];
+
+            $record = [
+                'payload' => $botPayload,
+                'received_at' => time(),
+            ];
+
+            $queueKey = $config['ingest']['bot_queue_key'] ?? 'tracker:ingest:bot_logs';
+            $maxLen = max(0, (int) ($config['ingest']['bot_max_queue_length'] ?? 50000));
+            
+            $redis->lPush($queueKey, json_encode($record));
+            if ($maxLen > 0) {
+                $redis->lTrim($queueKey, 0, $maxLen - 1);
+            }
+        }
+    }
+
+    // 处理完毕，阻断程序，防止进入下方普通的访客（PV）逻辑
+    http_response_code(200);
+    exit;
+}
 $cookieParam = (string) ($_GET['ckv'] ?? '');
 $cookieParam = trim($cookieParam);
 if ($cookieParam === '' || !preg_match('/^[a-f0-9]{16,128}$/i', $cookieParam)) {
