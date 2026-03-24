@@ -11,6 +11,10 @@ require __DIR__ . '/../../src/Database.php';
 $config = require __DIR__ . '/../../config/config.php';
 
 header('Content-Type: application/javascript; charset=UTF-8');
+// 新增以下三行：禁止浏览器和蜘蛛缓存此JS文件，强制每次抓取都请求服务器
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
 
 $siteId = null;
 
@@ -91,6 +95,8 @@ $spiderRules = [
     'yisouspider' => ['crawl.sm.cn', '神马'],
     'bytespider' => ['crawl.bytedance.com', '头条'],
     '360spider' => ['360', '360'],
+    'petalbot' => ['aspiegel.com', '华为'],
+    'yahoo' => ['yahoo', '雅虎'],
 ];
 
 $matchedSpider = null;
@@ -251,10 +257,14 @@ if ($matchedSpider && $clientIp) {
     [$spiderKey, $spiderRule, $spiderEngine] = $matchedSpider;
     $cacheKey = null;
     $cacheType = $spiderKey;
-    if (in_array($spiderKey, ['googlebot', 'bingbot'], true)) {
+if (in_array($spiderKey, ['googlebot', 'bingbot'], true)) {
         $ipLong = filter_var($clientIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? ip2long($clientIp) : false;
         if ($ipLong !== false) {
             $cacheKey = sprintf('bot:rdns:%s:%s', $cacheType, long2ip($ipLong & -256));
+        } else {
+            // 新增此处：如果解析为 IPv6 导致 $ipLong 为 false，则直接使用完整 IPv6 地址作为 CacheKey
+            // 防止 $cacheKey 为空导致雪崩式同步 DNS 反查
+            $cacheKey = sprintf('bot:rdns:%s:%s', $cacheType, $clientIp);
         }
     } else {
         $cacheKey = sprintf('bot:rdns:%s:%s', $cacheType, $clientIp);
