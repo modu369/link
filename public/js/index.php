@@ -88,12 +88,12 @@ $userAgent = trim((string) ($_SERVER['HTTP_USER_AGENT'] ?? ''));
 $userAgentLower = strtolower($userAgent);
 $spiderRules = [
     'baiduspider' => ['crawl.baidu.com', '百度'],
-    'bingbot' => ['search.msn.com', '必应'],
+    // 'bingbot' => ['search.msn.com', '必应'],
     'googlebot' => ['googlebot.com', '谷歌'],
     'sogou web spider' => ['crawl.sogou.com', '搜狗'],
     'sogouspider' => ['crawl.sogou.com', '搜狗'],
     'yisouspider' => ['crawl.sm.cn', '神马'],
-    'bytespider' => ['crawl.bytedance.com', '头条'],
+    // 'bytespider' => ['crawl.bytedance.com', '头条'],
     '360spider' => ['360', '360'],
     'petalbot' => ['aspiegel.com', '华为'],
     'yahoo' => ['yahoo', '雅虎'],
@@ -287,7 +287,7 @@ if (in_array($spiderKey, ['googlebot', 'bingbot'], true)) {
         }
     }
 
-    if (!$isVerifiedSpider && $cached !== 'bad') {
+if (!$isVerifiedSpider && $cached !== 'bad') {
         if ($spiderRule === '360') {
             $ranges = [
                 '123.6.49.', '1.192.192.', '1.192.195.', '42.236.10.', '42.236.12.',
@@ -299,6 +299,9 @@ if (in_array($spiderKey, ['googlebot', 'bingbot'], true)) {
                     break;
                 }
             }
+        } elseif ($spiderKey === 'yisouspider') {
+            // 神马蜘蛛不进行 RDNS 反查，只要 UA 匹配即直接放行
+            $isVerifiedSpider = true;
         } else {
             $hostLower = $resolveRdns($clientIp);
             if ($hostLower !== '' && str_contains($hostLower, $spiderRule)) {
