@@ -2946,7 +2946,7 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
             str_contains($ref, 'google') || str_contains($ua, 'googlebot') => '谷歌',
             str_contains($ref, 'bing.com') || str_contains($ua, 'bingbot') => '必应',
             str_contains($ref, 'so.com') || str_contains($ua, '360spider') => '360',
-            str_contains($ref, 'toutiao.com') || str_contains($ua, 'bytespider') || str_contains($ref, 'douyin.com') => '头条/抖音',
+            str_contains($ref, 'toutiao.com') || str_contains($ua, 'bytespider') || str_contains($ref, 'douyin.com') => '头条',
             str_contains($ref, 'sogou.com') || str_contains($ua, 'sogou') => '搜狗',
             str_contains($ref, 'sm.cn') || str_contains($ua, 'yisouspider') => '神马',
             str_contains($ref, 'yahoo.com') || str_contains($ua, 'yahoo') => '雅虎',
