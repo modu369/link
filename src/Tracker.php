@@ -203,11 +203,12 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
         // 查库执行聚合
         $result = $builder();
 
-        // 【动态 TTL 策略】
+     // 【动态 TTL 策略】
         if (str_contains($key, ':yesterday') || str_contains($key, ':day_before')) {
             $computedTtl = max($this->cacheTtl, strtotime('tomorrow') - time()); 
         } else {
-            $computedTtl = $this->cacheTtl; 
+            // 修复：使用传入的 $ttlSeconds，或者在需要时结合 $this->cacheTtl
+            $computedTtl = $ttlSeconds; 
         }
 
         $this->redis->setex($key, $computedTtl, json_encode($result));
@@ -945,6 +946,13 @@ private function isProxySuspicious(
         $coarseMode = false;
         
         try {
+            // 从配置中动态读取阈值，如果配置未生效则使用默认的放宽参数兜底
+            $riskScoreThreshold = $this->options['ingest']['risk_score_threshold'] ?? 80;
+            $crossRegionThreshold = $this->options['ingest']['cross_region_threshold'] ?? 3;
+            $highFreqThreshold = $this->options['ingest']['high_freq_threshold'] ?? 4;
+            $sustainedFreqThreshold = $this->options['ingest']['sustained_freq_threshold'] ?? 5;
+            $mediumRiskScore = $this->options['ingest']['medium_risk_score'] ?? 60;
+
             $churnKey = "proxy:uid_churn:{$networkId}";
             $churnCount = (int) $this->redis->incr($churnKey);
             if ($churnCount === 1) {
@@ -1029,9 +1037,10 @@ private function isProxySuspicious(
 
             $gapMs = $lastTs > 0 ? ($nowMs - $lastTs) : 0;
             if ($gapMs > 0) {
-                $decaySteps = (int) floor($gapMs / 600000);
+                // 【优化修改】加快历史分数的衰减速度：从10分钟降低一次，改为5分钟降低一次，且每次下降25%
+                $decaySteps = (int) floor($gapMs / 300000); 
                 if ($decaySteps > 0) {
-                    $score = (int) round($score * (0.9 ** $decaySteps));
+                    $score = (int) round($score * (0.75 ** $decaySteps)); 
                 }
             }
             $deduct = 0;
@@ -1082,12 +1091,14 @@ private function isProxySuspicious(
             }
 
             if ($uaSuspicious) {
-                $score += 16;
+                // 【优化修改】降低 UA 异常的惩罚权重：16分降为8分
+                $score += 8; 
                 $highFreqHits += 1;
             }
 
             if ($isDataCenterAsn) {
-                $score += 18;
+                // 【优化修改】降低数据中心 ASN 惩罚：18分降为10分
+                $score += 10; 
             }
 
             if ($countryValue === '' || $countryValue === '未知' || str_contains($countryValue, '保留地址')) {
@@ -1130,7 +1141,8 @@ private function isProxySuspicious(
             }
 
             if ($ipChangeCount > 6 && ($nowMs - $windowStart) <= 300000) {
-                $score += 20;
+                // 【优化修改】降低短时间内 IP 剧烈变动惩罚：20分降为10分
+                $score += 10; 
                 if (($nowMs - $windowStart) >= 180000) {
                     $sustainedHits += 1;
                 }
@@ -1189,20 +1201,16 @@ private function isProxySuspicious(
                     $sustainedHits += 1;
                 }
             }
-// 从配置中动态读取阈值，如果配置未生效则使用默认的放宽参数兜底
-        $riskScoreThreshold = $this->options['ingest']['risk_score_threshold'] ?? 80;
-        $crossRegionThreshold = $this->options['ingest']['cross_region_threshold'] ?? 3;
-        $highFreqThreshold = $this->options['ingest']['high_freq_threshold'] ?? 4;
-        $sustainedFreqThreshold = $this->options['ingest']['sustained_freq_threshold'] ?? 5;
-        $mediumRiskScore = $this->options['ingest']['medium_risk_score'] ?? 60;
+
             $updateKey = "proxy:risk:update:{$uid}";
             $allowUpdate = $this->redis->setnx($updateKey, '1');
             if ($allowUpdate) {
                 $this->redis->expire($updateKey, 1);
             } else {
+                // 【已修改】并发锁提前返回时，使用动态阈值判断
                 $isRisk = $score >= $riskScoreThreshold 
-            || ($crossRegionHits >= $crossRegionThreshold && $highFreqHits >= $highFreqThreshold) 
-            || ($score >= $mediumRiskScore && $sustainedHits >= $sustainedFreqThreshold);
+                    || ($crossRegionHits >= $crossRegionThreshold && $highFreqHits >= $highFreqThreshold) 
+                    || ($score >= $mediumRiskScore && $sustainedHits >= $sustainedFreqThreshold);
                 $this->markProxyRiskStatus($ipHash, $isRisk);
                 return ['blocked' => false, 'risk' => $isRisk, 'score' => $score];
             }
@@ -1262,7 +1270,13 @@ private function isProxySuspicious(
             ]);
             $this->redis->expire($profileKey, 1800);
 
-            if ($score >= 95 || ($score >= 75 && $highFreqHits >= 2)) {
+            // 【已修改】在分数落库后，使用统一的动态标准计算 $isRisk
+            $isRisk = $score >= $riskScoreThreshold 
+                || ($crossRegionHits >= $crossRegionThreshold && $highFreqHits >= $highFreqThreshold) 
+                || ($score >= $mediumRiskScore && $sustainedHits >= $sustainedFreqThreshold);
+
+            // 【已修改】完全移除 95/75 的硬编码，隔离期必须遵从上面计算的 $isRisk 判定
+            if ($isRisk) {
                 $probationKey = "proxy:probation:{$networkId}";
                 $isProbation = (bool) $this->redis->get($probationKey);
                 
@@ -1280,11 +1294,9 @@ private function isProxySuspicious(
             return ['blocked' => false, 'risk' => false, 'score' => 0];
         }
 
-        $isRisk = $score >= $riskScoreThreshold 
-            || ($crossRegionHits >= $crossRegionThreshold && $highFreqHits >= $highFreqThreshold) 
-            || ($score >= $mediumRiskScore && $sustainedHits >= $sustainedFreqThreshold);
-        $this->markProxyRiskStatus($ipHash, $isRisk);
-        return ['blocked' => false, 'risk' => $isRisk, 'score' => $score];
+        // 如果代码能正常执行到这里，说明 $isRisk 绝对为 false
+        $this->markProxyRiskStatus($ipHash, false);
+        return ['blocked' => false, 'risk' => false, 'score' => $score];
     }
     
     private function getNetworkIdentifier(string $ip): string
