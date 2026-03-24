@@ -4,46 +4,13 @@ require __DIR__ . '/layout.php';
 
 $trackingId = $selectedSite['tracking_id'] ?? '';
 $baseUrl = rtrim($branding['base_url'] ?? $config['app']['base_url'] ?? 'http://localhost', '/');
+
+// 生成新版 async defer 标准直链代码，对搜索引擎蜘蛛100%可见
 $scriptCode = sprintf(
-    '<script>(function(w,d){var s=d.createElement("script");s.src="%s/js/?id=%s";s.async=true;(d.head||d.body).appendChild(s);}(window,document));</script>',
+    '<script src="%s/js/?id=%s" async defer></script>',
     $baseUrl,
     $trackingId
 );
-$encodeEval = static function (string $source): string {
-    $words = array_values(array_unique(preg_split('/\W+/', $source, -1, PREG_SPLIT_NO_EMPTY)));
-    usort($words, static function (string $a, string $b): int {
-        return strlen($b) <=> strlen($a);
-    });
-    $indexMap = [];
-    foreach ($words as $index => $word) {
-        $indexMap[$word] = $index;
-    }
-    $packedSource = preg_replace_callback('/\b\w+\b/', static function (array $matches) use ($indexMap): string {
-        $word = $matches[0];
-        if (!array_key_exists($word, $indexMap)) {
-            return $word;
-        }
-        return base_convert((string) $indexMap[$word], 10, 36);
-    }, $source);
-    $keywordList = implode('|', $words);
-    $base = 36;
-    $count = count($words);
-    $payload = sprintf(
-        ";eval(function(p,a,c,k,e,r){e=function(c){return c.toString(a)};if(!''.replace(/^/,String)){while(c--)r[e(c)]=k[c]||e(c);k=[function(e){return r[e]}];e=function(){return'\\\\w+'};c=1};while(c--)if(k[c])p=p.replace(new RegExp('\\\\b'+e(c)+'\\\\b','g'),k[c]);return p}('%s',%d,%d,'%s'.split('|'),0,{}));",
-        addslashes($packedSource),
-        $base,
-        $count,
-        addslashes($keywordList)
-    );
-    return '<script>' . $payload . '</script>';
-};
-$extractScriptBody = static function (string $script): string {
-    if (preg_match('/<script>(.*)<\\/script>/s', $script, $matches)) {
-        return $matches[1];
-    }
-    return $script;
-};
-$encodedScript = $encodeEval($extractScriptBody($scriptCode));
 
 render_head('获取代码 - 统计后台');
 render_topbar($branding);
@@ -57,17 +24,19 @@ render_topbar($branding);
             <section class="card">
                 <div class="section-title">
                     <div>
-                        <h2 style="margin:0;">获取统计代码</h2>
-                        <p class="muted" style="margin:2px 0 0;">将以下代码插入到站点页面的 <code>&lt;head&gt;</code> 或 <code>&lt;body&gt;</code> 末尾。</p>
-                        <p class="muted" style="margin:2px 0 0;">浏览器不支持或禁用 Cookie 时将无法记录独立访客等指标，此类流量将不计入报表。</p>
+                        <div style="display:flex; align-items:center; gap: 8px;">
+                            <h2 style="margin:0;">获取统计代码</h2>
+                            <span style="background:#e8f5e9;color:#166534;border:1px solid #bbf7d0;padding:2px 8px;border-radius:12px;font-size:12px;font-weight:600;">推荐使用</span>
+                        </div>
+                        <p class="muted" style="margin:8px 0 0;">将以下代码插入到站点页面的 <code>&lt;head&gt;</code> 或 <code>&lt;body&gt;</code> 末尾。</p>
+                        <p class="muted" style="margin:4px 0 0;">此格式为标准异步加载，<b>完全不影响网站加载速度。</b></p>
                     </div>
                 </div>
-                <div style="display:flex; flex-direction:column; gap:12px;">
-                    <code class="inline" id="trackingCode"><?= htmlspecialchars($scriptCode, ENT_QUOTES, 'UTF-8') ?></code>
-                    <button class="ghost" type="button" id="copyCode">复制代码</button>
-                    <div class="muted" style="margin-top:6px;">Eval 加密版（可选）</div>
-                    <code class="inline" id="trackingCodeEval"><?= htmlspecialchars($encodedScript, ENT_QUOTES, 'UTF-8') ?></code>
-                    <button class="ghost" type="button" id="copyCodeEval">复制加密版</button>
+                <div style="display:flex; flex-direction:column; gap:12px; margin-top:16px;">
+                    <code class="inline" id="trackingCode" style="font-size: 14px; padding: 12px;"><?= htmlspecialchars($scriptCode, ENT_QUOTES, 'UTF-8') ?></code>
+                    <div>
+                        <button class="ghost" type="button" id="copyCode">复制代码</button>
+                    </div>
                 </div>
             </section>
         <?php endif; ?>
@@ -75,7 +44,6 @@ render_topbar($branding);
 </div>
 <script>
     const btn = document.getElementById('copyCode');
-    const btnEval = document.getElementById('copyCodeEval');
     if (btn) {
         btn.addEventListener('click', async () => {
             const text = document.getElementById('trackingCode')?.innerText || '';
@@ -86,19 +54,6 @@ render_topbar($branding);
             } catch (e) {
                 btn.textContent = '复制失败';
                 setTimeout(() => (btn.textContent = '复制代码'), 1500);
-            }
-        });
-    }
-    if (btnEval) {
-        btnEval.addEventListener('click', async () => {
-            const text = document.getElementById('trackingCodeEval')?.innerText || '';
-            try {
-                await navigator.clipboard.writeText(text);
-                btnEval.textContent = '已复制';
-                setTimeout(() => (btnEval.textContent = '复制加密版'), 1500);
-            } catch (e) {
-                btnEval.textContent = '复制失败';
-                setTimeout(() => (btnEval.textContent = '复制加密版'), 1500);
             }
         });
     }
