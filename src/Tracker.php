@@ -862,7 +862,7 @@ public function recordPageview(string $trackingId, array $payload): void
         return false;
     }
 
-   private function isChinaNetwork(string $country, array $asnMeta, string $ispDomain = ''): bool
+private function isChinaNetwork(string $country, array $asnMeta, string $ispDomain = ''): bool
     {
         $countryValue = trim($country);
         if ($countryValue !== '' && !str_contains($countryValue, '中国')) {
@@ -871,12 +871,11 @@ public function recordPageview(string $trackingId, array $payload): void
 
         $asnName = strtolower(trim((string) ($asnMeta['name'] ?? '')));
         $ispName = strtolower(trim((string) ($asnMeta['isp'] ?? '')));
-        // 【关键合并】：将纯真IP库查出的中文 ISP 也拼接到字符串中一起匹配
         $combined = $asnName . ' ' . $ispName . ' ' . strtolower($ispDomain);
 
-     $chinaIsps = [
+        $chinaIsps = [
             'china mobile', 'china unicom', 'china telecom', 'cmcc', 'unicom', 'chinanet', 'cnc', 'ct', 'cernet', 'cstnet',
-            '移动', '联通', '电信', '广电','铁通', '网通', '教育网', '科技网', '长城宽带', '鹏博士',
+            '移动', '联通', '电信', '广电', '铁通', '网通', '教育网', '科技网', '长城宽带', '鹏博士',
             '东方有线', '华数', '天威', '歌华', '方正宽带', '珠江宽带', '聚友', '艾普', '盈科', '视讯宽带', '宽带'
         ];
 
@@ -889,7 +888,7 @@ public function recordPageview(string $trackingId, array $payload): void
         return $countryValue !== '';
     }
 
-   private function isProxySuspicious(
+private function isProxySuspicious(
         string $sessionId,
         string $fingerprint,
         bool $uidProvided,
@@ -922,7 +921,7 @@ public function recordPageview(string $trackingId, array $payload): void
         try {
             $blockedKey = "proxy:blocked_uid:{$uid}";
             if ($this->redis->get($blockedKey)) {
-                // 彻底废除连坐：UID被封禁时直接返回，不再牵连污染当前IP
+                // 彻底移除 rememberBlockedProxyIp，防止设备漫游污染健康基站 IP
                 return ['blocked' => true, 'risk' => true, 'score' => 100];
             }
         } catch (Throwable $e) {
@@ -960,13 +959,9 @@ public function recordPageview(string $trackingId, array $payload): void
         $regionValue = trim($region);
         $countryValue = trim($country);
         
-        // ==========================================
-        // = 新增：提取 qqwry.ipdb 中的中文 ISP 字段 =
-        // ==========================================
         $geoMeta = $ip ? $this->resolveIpMeta($ip) : [];
         $ispDomain = trim($geoMeta['isp_domain'] ?? '');
 
-        // 【应用融合】：将 $ispDomain 传递给鉴定函数
         $isChinaNetwork = $this->isChinaNetwork($countryValue, $asnMeta, $ispDomain);
         $isDataCenterAsn = $this->isDataCenterAsn($asnMeta, $userAgent, $ispDomain);
         
@@ -1156,7 +1151,6 @@ public function recordPageview(string $trackingId, array $payload): void
             $identityStable = $uaStable || $fpStable;
 
             $dynamicMultiplier = $isNat ? max(1, (int)floor($uniqueFpCount / 2)) : 1;
-            // 兼容带有大量静态资源预加载的 SPA 真实用户
             $windowLimit = $isNat ? (35 + $uniqueFpCount * 5) : 35;
             
             if ($windowCount > $windowLimit && $identityStable) {
@@ -1267,13 +1261,25 @@ public function recordPageview(string $trackingId, array $payload): void
                     return ['blocked' => false, 'risk' => true, 'score' => $score];
                 }
                 
-                // 仅对海外IP或明确的机房IP实行 IP级全网封锁
+                // --- 新增：记录完整的拦截日志供后台 UI 读取 ---
+                $blockType = ($isDataCenterAsn || $isForeign) ? 'IP全局封禁 (机房/海外)' : '设备级封禁 (国内基站)';
+                $logData = json_encode([
+                    'ip' => $ip, 
+                    'uid' => $uid, 
+                    'type' => $blockType, 
+                    'time' => date('Y-m-d H:i:s'), 
+                    'score' => $score
+                ], JSON_UNESCAPED_UNICODE);
+                $this->redis->lPush('proxy:recent_blocks_log', $logData);
+                $this->redis->lTrim('proxy:recent_blocks_log', 0, 999);
+                
+                // --- 修复：明确只对海外或机房执行 IP 级连坐封杀 ---
                 if ($isDataCenterAsn || $isForeign) {
                     $this->rememberBlockedProxyIp($ip);
                     $this->redis->setex("proxy:blocked_net:{$networkId}", 14400, '1'); 
                 }
                 
-                // 普通中国网络环境只封锁出问题的设备标识，不牵连其他基站用户
+                // 国内网络仅执行基于设备的拦截
                 $this->redis->setex($blockedKey, 14400, '1'); 
                 return ['blocked' => true, 'risk' => true, 'score' => $score];
             }
@@ -1283,6 +1289,44 @@ public function recordPageview(string $trackingId, array $payload): void
 
         $this->markProxyRiskStatus($ipHash, false);
         return ['blocked' => false, 'risk' => false, 'score' => $score];
+    }
+
+public function getBlockedProxyIps(int $limit = 200, int $offset = 0): array
+    {
+        $limit = max(1, $limit);
+        $offset = max(0, $offset);
+        try {
+            // 改为读取新增的综合拦截日志列队
+            $key = 'proxy:recent_blocks_log';
+            $rows = $this->redis->lRange($key, $offset, $offset + $limit - 1);
+            $results = [];
+            if (is_array($rows)) {
+                foreach ($rows as $row) {
+                    $data = json_decode($row, true);
+                    if ($data) {
+                        $results[] = [
+                            'ip' => $data['ip'] ?? '未知',
+                            'uid' => substr($data['uid'] ?? '', 0, 16) . '...',
+                            'type' => $data['type'] ?? '未知',
+                            'score' => $data['score'] ?? 0,
+                            'detected_at' => $data['time'] ?? '',
+                        ];
+                    }
+                }
+            }
+            return $results;
+        } catch (Throwable $e) {
+            return [];
+        }
+    }
+
+    public function getBlockedProxyIpCount(): int
+    {
+        try {
+            return (int) $this->redis->lLen('proxy:recent_blocks_log');
+        } catch (Throwable $e) {
+            return 0;
+        }
     }
     
     private function getNetworkIdentifier(string $ip): string
@@ -1733,35 +1777,6 @@ private function cleanupProxyIpData(string $ip): void
     private function referrerHostExpr(string $alias): string
     {
         return "COALESCE(NULLIF(SUBSTRING_INDEX(SUBSTRING_INDEX({$alias}.referrer, '/', 3), '//', -1), ''), '直接访问')";
-    }
-
-    public function getBlockedProxyIps(int $limit = 200, int $offset = 0): array
-    {
-        $limit = max(1, $limit);
-        $offset = max(0, $offset);
-        try {
-            $key = 'proxy:blocked_ips';
-            $rows = $this->redis->zRevRange($key, $offset, $offset + $limit - 1, true);
-            $results = [];
-            foreach ($rows as $ip => $score) {
-                $results[] = [
-                    'ip' => (string) $ip,
-                    'detected_at' => date('Y-m-d H:i:s', (int) $score),
-                ];
-            }
-            return $results;
-        } catch (Throwable $e) {
-            return [];
-        }
-    }
-
-    public function getBlockedProxyIpCount(): int
-    {
-        try {
-            return (int) $this->redis->zCard('proxy:blocked_ips');
-        } catch (Throwable $e) {
-            return 0;
-        }
     }
 
     private function splitFilterList(string $filters): array
@@ -4335,33 +4350,28 @@ private function isDataCenterAsn(array $asnMeta, string $userAgent = '', string 
     {
         $asnName = strtolower(trim((string) ($asnMeta['name'] ?? '')));
         $ispName = strtolower(trim((string) ($asnMeta['isp'] ?? '')));
-        // 【关键合并】：将纯真IP库查出的中文 ISP 也拼接到字符串中一起匹配
         $combined = trim($asnName . ' ' . $ispName . ' ' . strtolower($ispDomain));
         
         if ($combined === '') {
             return false;
         }
 
-        // 排除苹果的中转代理（iCloud Private Relay 会被误认为是机房）
         if (str_contains($combined, 'apple') || str_contains($combined, 'icloud')) {
             return false; 
         }
 
         $needles = [
-            // 国际厂商与通用特征
             'amazon', 'aws', 'amazon web services', 'google', 'gcp', 'microsoft', 'azure',
             'oracle', 'oracle cloud', 'alibaba', 'aliyun', 'tencent', 'huawei cloud', 'baidu',
             'digitalocean', 'linode', 'vultr', 'hetzner', 'ovh', 'leaseweb', 'gcore', 
             'cloudflare', 'akamai', 'fastly', 'ucloud', 'qingcloud',
             'datacenter', 'data center', 'colo', 'host', 'hosting', 'server', 'cloud', 'network',
             'xtom', 'zenlayer', 'akile', 'rfchost', 'ipxo', 'larus', 'cogent', 'winspeed', 'lshiy',
-            // 【新增】：国内主流云服务商中文特征，配合 qqwry.ipdb 精准秒杀国内机房刷量
             '阿里云', '腾讯云', '华为云', '百度云', '天翼云', '移动云', '联通云', '金山云', '青云', '优刻得', '数据中心'
         ];
 
         foreach ($needles as $needle) {
             if ($needle !== '' && str_contains($combined, $needle)) {
-                // 如果是移动端 Safari 请求了云端数据，可能被误判，做一层豁免
                 if (str_contains(strtolower($userAgent), 'safari') && str_contains(strtolower($userAgent), 'mobile')) {
                     return false; 
                 }
