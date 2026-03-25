@@ -4406,13 +4406,18 @@ private function isDataCenterAsn(array $asnMeta, string $userAgent = '', string 
             return false; 
         }
 
-        $needles = [
+$needles = [
+            // 国际大厂
             'amazon', 'aws', 'amazon web services', 'google', 'gcp', 'microsoft', 'azure',
             'oracle', 'oracle cloud', 'alibaba', 'aliyun', 'tencent', 'huawei cloud', 'baidu',
+            // 常见 VPS/IDC 厂商
             'digitalocean', 'linode', 'vultr', 'hetzner', 'ovh', 'leaseweb', 'gcore', 
             'cloudflare', 'akamai', 'fastly', 'ucloud', 'qingcloud',
-            'datacenter', 'data center', 'colo', 'host', 'hosting', 'server', 'cloud', 'network',
+            // 剔除了 network, server, host。保留真正代表机房的专属名词
+            'datacenter', 'data center', 'colo', 'hosting', 'cloud computing', 'vps', 
+            // 次级灰黑产常见机房
             'xtom', 'zenlayer', 'akile', 'rfchost', 'ipxo', 'larus', 'cogent', 'winspeed', 'lshiy',
+            // 国内云特征
             '阿里云', '腾讯云', '华为云', '百度云', '天翼云', '移动云', '联通云', '金山云', '青云', '优刻得', '数据中心'
         ];
 
