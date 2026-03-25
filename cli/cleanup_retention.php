@@ -37,7 +37,14 @@ function downloadDatabaseIfNeeded(string $url, string $path, int $refreshHours) 
         $cmd = str_ends_with($url, '.gz') && str_ends_with($path, '.tsv')
             ? "curl -fsSL " . escapeshellarg($url) . " | gzip -dc > " . escapeshellarg($tmp) . " && mv " . escapeshellarg($tmp) . " " . escapeshellarg($path)
             : "curl -fsSL " . escapeshellarg($url) . " -o " . escapeshellarg($tmp) . " && mv " . escapeshellarg($tmp) . " " . escapeshellarg($path);
-        exec($cmd);
+        
+        exec($cmd, $output, $returnCode);
+        if ($returnCode !== 0) {
+            echo "[Maintenance] Error: Failed to download {$url}. Curl return code: {$returnCode}\n";
+            @unlink($tmp); // 清理可能损坏的临时文件
+        } else {
+            echo "[Maintenance] Success: Updated {$path}\n";
+        }
     }
 }
 
@@ -48,12 +55,20 @@ $ipdbUrl = trim((string) ($config['ipdb']['url'] ?? 'https://raw.githubuserconte
 downloadDatabaseIfNeeded($ipdbUrl, $ipdbPath, max(1, (int) ($config['ipdb']['refresh_hours'] ?? 168)));
 
 // 更新 ASN 库
-if (!empty($config['asn']['enabled'])) {
-    $asn = $config['asn'];
-    $defaultPath = __DIR__ . '/../data/asn.ipdb';
-    downloadDatabaseIfNeeded($asn['url'] ?? '', $asn['path'] ?? $defaultPath, $asn['refresh_hours'] ?? 168);
-    downloadDatabaseIfNeeded($asn['url_v4'] ?? '', $asn['path_v4'] ?? $defaultPath, $asn['refresh_hours'] ?? 168);
-    downloadDatabaseIfNeeded($asn['url_v6'] ?? '', $asn['path_v6'] ?? '', $asn['refresh_hours'] ?? 168);
+$asnEnabled = (bool) ($config['asn']['enabled'] ?? true); // 修复：默认开启
+if ($asnEnabled) {
+    $asn = $config['asn'] ?? [];
+    $refreshHours = max(1, (int) ($asn['refresh_hours'] ?? 168)); // 默认 7 天
+    
+    // v4 库 (补充了默认的官方下载地址和路径)
+    $pathV4 = $asn['path_v4'] ?? (__DIR__ . '/../data/ip2asn-v4.tsv');
+    $urlV4 = $asn['url_v4'] ?? 'https://iptoasn.com/data/ip2asn-v4.tsv.gz';
+    downloadDatabaseIfNeeded($urlV4, $pathV4, $refreshHours);
+
+    // v6 库 (补充了默认的官方下载地址和路径)
+    $pathV6 = $asn['path_v6'] ?? (__DIR__ . '/../data/ip2asn-v6.tsv');
+    $urlV6 = $asn['url_v6'] ?? 'https://iptoasn.com/data/ip2asn-v6.tsv.gz';
+    downloadDatabaseIfNeeded($urlV6, $pathV6, $refreshHours);
 }
 
 // ==========================================
