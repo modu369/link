@@ -202,50 +202,78 @@ $resolveRdns = static function (string $ip): string {
   var base = customEndpoint || script.src.replace(/\/js\/[^/]+$/, '/track.php');
   var separator = base.indexOf('?') === -1 ? '?' : '&';
 
-  var sendBeacon = function (query) {
+var sendBeacon = function (query) {
     var img = new Image();
     img.referrerPolicy = 'no-referrer-when-downgrade';
     img.src = base + separator + query;
   };
 
-  if (!navigator.cookieEnabled) {
-    return;
-  }
+  // 1. 移除对 navigator.cookieEnabled 的强制拦截
 
-  var cookieName = 'tracker_ck_' + siteId;
-  try {
-    var cookieValue = null;
-    var cookieMatch = document.cookie.match(new RegExp('(?:^|; )' + cookieName + '=([^;]*)'));
-    if (cookieMatch && cookieMatch[1]) {
-      cookieValue = decodeURIComponent(cookieMatch[1]);
+  var identifierName = 'tracker_ck_' + siteId;
+  var visitorId = null;
+
+  // 2. 抽离高质量随机 ID 生成逻辑（128位）
+  var generateId = function () {
+    if (window.crypto && window.crypto.getRandomValues) {
+      var bytes = new Uint8Array(16);
+      window.crypto.getRandomValues(bytes);
+      return Array.from(bytes).map(function (b) {
+        return b.toString(16).padStart(2, '0');
+      }).join('');
     }
-    var cookieJustSet = false;
-    if (!cookieValue) {
-      if (window.crypto && window.crypto.getRandomValues) {
-        var bytes = new Uint8Array(16);
-        window.crypto.getRandomValues(bytes);
-        cookieValue = Array.from(bytes).map(function (b) {
-          return b.toString(16).padStart(2, '0');
-        }).join('');
-      } else {
-        cookieValue = Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
-      }
-      var sameSite = (window.location && window.location.protocol === 'https:') ? 'SameSite=None; Secure' : 'SameSite=Lax';
-      document.cookie = cookieName + '=' + encodeURIComponent(cookieValue) + '; path=/; max-age=31536000; ' + sameSite;
-      cookieJustSet = true;
+    return Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
+  };
+
+  // 3. 多级缓存读取机制：Cookie -> localStorage -> sessionStorage
+  try {
+    // 优先级 1: Cookie
+    var cookieMatch = document.cookie.match(new RegExp('(?:^|; )' + identifierName + '=([^;]*)'));
+    if (cookieMatch && cookieMatch[1]) {
+      visitorId = decodeURIComponent(cookieMatch[1]);
+    }
+    // 优先级 2: LocalStorage (长期持久化)
+    if (!visitorId && window.localStorage) {
+      visitorId = localStorage.getItem(identifierName);
+    }
+    // 优先级 3: SessionStorage (会话级持久化)
+    if (!visitorId && window.sessionStorage) {
+      visitorId = sessionStorage.getItem(identifierName);
     }
   } catch (e) {
-    return;
-  }
-  if (!cookieValue) {
-    return;
+    // 忽略被浏览器隐私机制拦截导致的 DOM 异常
   }
 
-  params.set('ckv', cookieValue);
-  sendBeacon(params.toString());
-  if (cookieJustSet) {
-    return;
+  var isNewId = false;
+  if (!visitorId) {
+    visitorId = generateId();
+    isNewId = true;
   }
+
+  // 4. 多级缓存写入机制 (只要有一层写入成功即可)
+  if (isNewId) {
+    try {
+      var sameSite = (window.location && window.location.protocol === 'https:') ? 'SameSite=None; Secure' : 'SameSite=Lax';
+      document.cookie = identifierName + '=' + encodeURIComponent(visitorId) + '; path=/; max-age=31536000; ' + sameSite;
+    } catch (e) {}
+    
+    try {
+      if (window.localStorage) { localStorage.setItem(identifierName, visitorId); }
+    } catch (e) {}
+
+    try {
+      if (window.sessionStorage) { sessionStorage.setItem(identifierName, visitorId); }
+    } catch (e) {}
+  }
+
+  // 5. 极端环境兜底格式校验 (确保匹配后端 /^[a-f0-9]{16,128}$/i 正则)
+  if (!visitorId || !/^[a-f0-9]{16,128}$/i.test(visitorId)) {
+    visitorId = generateId();
+  }
+
+  // 6. 无条件上报数据
+  params.set('ckv', visitorId);
+  sendBeacon(params.toString());
 })();
 <?php
 if (function_exists('fastcgi_finish_request')) {
