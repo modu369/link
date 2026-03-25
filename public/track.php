@@ -230,13 +230,16 @@ if ($matchedSpider) {
 }
 $cookieParam = (string) ($_GET['ckv'] ?? '');
 $cookieParam = trim($cookieParam);
+
+// 1. 服务端兜底机制：即使前端传来的标识异常，也不直接 exit，而是服务端生成随机标识放行
+// 依靠 Tracker.php 中的 $fallbackUid (IP+UA的Hash) 依然可以精准计算独立访客
 if ($cookieParam === '' || !preg_match('/^[a-f0-9]{16,128}$/i', $cookieParam)) {
-    http_response_code(204);
-    exit;
+    $cookieParam = bin2hex(random_bytes(16));
 }
 
 $cookieName = 'tracker_ck_' . strtolower($trackingId);
 $cookieValue = isset($_COOKIE[$cookieName]) ? trim((string) $_COOKIE[$cookieName]) : '';
+
 if ($cookieValue === '') {
     $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
         || (($_SERVER['SERVER_PORT'] ?? '') === '443');
@@ -246,10 +249,15 @@ if ($cookieValue === '') {
         'secure' => $isHttps,
         'samesite' => $isHttps ? 'None' : 'Lax',
     ];
-    setcookie($cookieName, $cookieParam, $cookieOptions);
-} elseif (!hash_equals($cookieValue, $cookieParam)) {
-    http_response_code(204);
-    exit;
+    // 使用 @ 抑制因输出头冲突偶尔引发的警告
+    @setcookie($cookieName, $cookieParam, $cookieOptions);
+} else {
+    // 2. 移除原有的 !hash_equals 强制 exit 拦截！
+    // 解决多级缓存（LocalStorage 和 Cookie）不同步时造成的真实访客被无情丢弃的问题
+    // 如果存在后端收到了有效的 Cookie 头，以 Cookie 中的持久化标识为准进行关联
+    if (preg_match('/^[a-f0-9]{16,128}$/i', $cookieValue)) {
+        $cookieParam = $cookieValue;
+    }
 }
 
 $duration = max(0, (int) ($_GET['dur'] ?? 0));
