@@ -1,4 +1,13 @@
 <?php
+$outputGifAndExit = static function () {
+    header('Content-Type: image/gif');
+    header('Cache-Control: no-cache, no-store, must-revalidate');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+    header_remove('Set-Cookie');
+    echo base64_decode('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==');
+    exit;
+};
 $trackingId = trim((string) ($_GET['sid'] ?? ''));
 if ($trackingId === '' || !preg_match('/^[a-f0-9]{16}$/i', $trackingId)) {
     http_response_code(204);
@@ -225,8 +234,7 @@ if ($matchedSpider) {
     }
 
     // 处理完毕，阻断程序，防止进入下方普通的访客（PV）逻辑
-    http_response_code(200);
-    exit;
+$outputGifAndExit();
 }
 $cookieParam = (string) ($_GET['ckv'] ?? '');
 $cookieParam = trim($cookieParam);
@@ -326,10 +334,3 @@ if ($ingestMode === 'queue') {
         exit;
     }
 }
-
-header('Content-Type: image/gif');
-header('Cache-Control: no-cache, no-store, must-revalidate');
-header('Pragma: no-cache');
-header('Expires: 0');
-header_remove('Set-Cookie');
-echo base64_decode('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==');
