@@ -862,7 +862,7 @@ public function recordPageview(string $trackingId, array $payload): void
         return false;
     }
 
-    private function isChinaNetwork(string $country, array $asnMeta): bool
+   private function isChinaNetwork(string $country, array $asnMeta, string $ispDomain = ''): bool
     {
         $countryValue = trim($country);
         if ($countryValue !== '' && !str_contains($countryValue, '中国')) {
@@ -871,25 +871,13 @@ public function recordPageview(string $trackingId, array $payload): void
 
         $asnName = strtolower(trim((string) ($asnMeta['name'] ?? '')));
         $ispName = strtolower(trim((string) ($asnMeta['isp'] ?? '')));
-        $combined = $asnName . ' ' . $ispName;
+        // 【关键合并】：将纯真IP库查出的中文 ISP 也拼接到字符串中一起匹配
+        $combined = $asnName . ' ' . $ispName . ' ' . strtolower($ispDomain);
 
-        $chinaIsps = [
-            'china mobile',
-            'china unicom',
-            'china telecom',
-            'cmcc',
-            'unicom',
-            'chinanet',
-            'cnc',
-            'ct',
-            '移动',
-            '联通',
-            '电信',
-            '铁通',
-            '广电',
-            '教育网',
-            '长城宽带',
-            '鹏博士',
+     $chinaIsps = [
+            'china mobile', 'china unicom', 'china telecom', 'cmcc', 'unicom', 'chinanet', 'cnc', 'ct', 'cernet', 'cstnet',
+            '移动', '联通', '电信', '广电','铁通', '网通', '教育网', '科技网', '长城宽带', '鹏博士',
+            '东方有线', '华数', '天威', '歌华', '方正宽带', '珠江宽带', '聚友', '艾普', '盈科', '视讯宽带', '宽带'
         ];
 
         foreach ($chinaIsps as $isp) {
@@ -901,7 +889,7 @@ public function recordPageview(string $trackingId, array $payload): void
         return $countryValue !== '';
     }
 
-private function isProxySuspicious(
+   private function isProxySuspicious(
         string $sessionId,
         string $fingerprint,
         bool $uidProvided,
@@ -934,7 +922,7 @@ private function isProxySuspicious(
         try {
             $blockedKey = "proxy:blocked_uid:{$uid}";
             if ($this->redis->get($blockedKey)) {
-                $this->rememberBlockedProxyIp($ip);
+                // 彻底废除连坐：UID被封禁时直接返回，不再牵连污染当前IP
                 return ['blocked' => true, 'risk' => true, 'score' => 100];
             }
         } catch (Throwable $e) {
@@ -946,7 +934,6 @@ private function isProxySuspicious(
         $coarseMode = false;
         
         try {
-            // 从配置中动态读取阈值，如果配置未生效则使用默认的放宽参数兜底
             $riskScoreThreshold = $this->options['ingest']['risk_score_threshold'] ?? 80;
             $crossRegionThreshold = $this->options['ingest']['cross_region_threshold'] ?? 3;
             $highFreqThreshold = $this->options['ingest']['high_freq_threshold'] ?? 4;
@@ -972,8 +959,17 @@ private function isProxySuspicious(
         $cityValue = trim($city);
         $regionValue = trim($region);
         $countryValue = trim($country);
-        $isChinaNetwork = $this->isChinaNetwork($countryValue, $asnMeta);
-        $isDataCenterAsn = $this->isDataCenterAsn($asnMeta, $userAgent);
+        
+        // ==========================================
+        // = 新增：提取 qqwry.ipdb 中的中文 ISP 字段 =
+        // ==========================================
+        $geoMeta = $ip ? $this->resolveIpMeta($ip) : [];
+        $ispDomain = trim($geoMeta['isp_domain'] ?? '');
+
+        // 【应用融合】：将 $ispDomain 传递给鉴定函数
+        $isChinaNetwork = $this->isChinaNetwork($countryValue, $asnMeta, $ispDomain);
+        $isDataCenterAsn = $this->isDataCenterAsn($asnMeta, $userAgent, $ispDomain);
+        
         $uaSuspicious = $this->isSuspiciousUserAgent($userAgent);
         $ipChanged = true;
         $score = 0;
@@ -1019,14 +1015,10 @@ private function isProxySuspicious(
             $requestCount += 1;
             $ipChanged = $lastIp !== '' && $lastIp !== $ip;
 
-            // ==========================================
-            // = 核心优化 1：NAT 指纹多样性识别与防伪造 =
-            // ==========================================
             $uniqueFpCount = 0;
             $isNat = false;
             if ($ip) {
                 $natKey = "proxy:ip_fps:{$ip}";
-                // 防伪造校验：只有产生实质性浏览（时长>3秒 或 翻页>1）才算作真实有效设备
                 if ($fingerprint !== '' && ($duration > 3 || $pageCount > 1)) {
                     $this->redis->sAdd($natKey, $fingerprint);
                     $this->redis->expire($natKey, 3600);
@@ -1037,7 +1029,6 @@ private function isProxySuspicious(
 
             $gapMs = $lastTs > 0 ? ($nowMs - $lastTs) : 0;
             if ($gapMs > 0) {
-                // 【优化修改】加快历史分数的衰减速度：从10分钟降低一次，改为5分钟降低一次，且每次下降25%
                 $decaySteps = (int) floor($gapMs / 300000); 
                 if ($decaySteps > 0) {
                     $score = (int) round($score * (0.75 ** $decaySteps)); 
@@ -1085,19 +1076,16 @@ private function isProxySuspicious(
                 $score += 6;
             }
             
-            // 优化：如果是已知的真实企业 NAT 网关，豁免 coarseMode (网络级高频跳跃) 的4分惩罚
             if ($coarseMode && !$isNat) {
                 $score += 4;
             }
 
             if ($uaSuspicious) {
-                // 【优化修改】降低 UA 异常的惩罚权重：16分降为8分
                 $score += 8; 
                 $highFreqHits += 1;
             }
 
             if ($isDataCenterAsn) {
-                // 【优化修改】降低数据中心 ASN 惩罚：18分降为10分
                 $score += 10; 
             }
 
@@ -1141,7 +1129,6 @@ private function isProxySuspicious(
             }
 
             if ($ipChangeCount > 6 && ($nowMs - $windowStart) <= 300000) {
-                // 【优化修改】降低短时间内 IP 剧烈变动惩罚：20分降为10分
                 $score += 10; 
                 if (($nowMs - $windowStart) >= 180000) {
                     $sustainedHits += 1;
@@ -1168,18 +1155,15 @@ private function isProxySuspicious(
             $fpStable = $lastFp !== '' && $lastFp === $fingerprint;
             $identityStable = $uaStable || $fpStable;
 
-            // ==========================================
-            // = 核心优化 2：根据真实设备数量动态放大容忍度 =
-            // ==========================================
             $dynamicMultiplier = $isNat ? max(1, (int)floor($uniqueFpCount / 2)) : 1;
-            $windowLimit = $isNat ? (15 + $uniqueFpCount * 2) : 15;
+            // 兼容带有大量静态资源预加载的 SPA 真实用户
+            $windowLimit = $isNat ? (35 + $uniqueFpCount * 5) : 35;
             
             if ($windowCount > $windowLimit && $identityStable) {
                 $score += 10;
                 $highFreqHits += 1;
             }
             
-            // 企业网关人越多，允许的 1小时 / 24小时 频率上限按比例放宽
             $hourLimit = 300 * $dynamicMultiplier;
             if ($hourCount > $hourLimit) {
                 $score += 6;
@@ -1207,7 +1191,6 @@ private function isProxySuspicious(
             if ($allowUpdate) {
                 $this->redis->expire($updateKey, 1);
             } else {
-                // 【已修改】并发锁提前返回时，使用动态阈值判断
                 $isRisk = $score >= $riskScoreThreshold 
                     || ($crossRegionHits >= $crossRegionThreshold && $highFreqHits >= $highFreqThreshold) 
                     || ($score >= $mediumRiskScore && $sustainedHits >= $sustainedFreqThreshold);
@@ -1270,12 +1253,10 @@ private function isProxySuspicious(
             ]);
             $this->redis->expire($profileKey, 1800);
 
-            // 【已修改】在分数落库后，使用统一的动态标准计算 $isRisk
             $isRisk = $score >= $riskScoreThreshold 
                 || ($crossRegionHits >= $crossRegionThreshold && $highFreqHits >= $highFreqThreshold) 
                 || ($score >= $mediumRiskScore && $sustainedHits >= $sustainedFreqThreshold);
 
-            // 【已修改】完全移除 95/75 的硬编码，隔离期必须遵从上面计算的 $isRisk 判定
             if ($isRisk) {
                 $probationKey = "proxy:probation:{$networkId}";
                 $isProbation = (bool) $this->redis->get($probationKey);
@@ -1285,16 +1266,21 @@ private function isProxySuspicious(
                     $this->markProxyRiskStatus($ipHash, true);
                     return ['blocked' => false, 'risk' => true, 'score' => $score];
                 }
-                $this->rememberBlockedProxyIp($ip);
-                $this->redis->setex($blockedKey, 14400, '1');
-                $this->redis->setex("proxy:blocked_net:{$networkId}", 14400, '1'); 
+                
+                // 仅对海外IP或明确的机房IP实行 IP级全网封锁
+                if ($isDataCenterAsn || $isForeign) {
+                    $this->rememberBlockedProxyIp($ip);
+                    $this->redis->setex("proxy:blocked_net:{$networkId}", 14400, '1'); 
+                }
+                
+                // 普通中国网络环境只封锁出问题的设备标识，不牵连其他基站用户
+                $this->redis->setex($blockedKey, 14400, '1'); 
                 return ['blocked' => true, 'risk' => true, 'score' => $score];
             }
         } catch (Throwable $e) {
             return ['blocked' => false, 'risk' => false, 'score' => 0];
         }
 
-        // 如果代码能正常执行到这里，说明 $isRisk 绝对为 false
         $this->markProxyRiskStatus($ipHash, false);
         return ['blocked' => false, 'risk' => false, 'score' => $score];
     }
@@ -4345,30 +4331,37 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
         return $width <= 10000 && $height <= 10000;
     }
 
-   private function isDataCenterAsn(array $asnMeta, string $userAgent = ''): bool
+private function isDataCenterAsn(array $asnMeta, string $userAgent = '', string $ispDomain = ''): bool
     {
         $asnName = strtolower(trim((string) ($asnMeta['name'] ?? '')));
         $ispName = strtolower(trim((string) ($asnMeta['isp'] ?? '')));
-        $combined = trim($asnName . ' ' . $ispName);
+        // 【关键合并】：将纯真IP库查出的中文 ISP 也拼接到字符串中一起匹配
+        $combined = trim($asnName . ' ' . $ispName . ' ' . strtolower($ispDomain));
+        
         if ($combined === '') {
             return false;
         }
 
+        // 排除苹果的中转代理（iCloud Private Relay 会被误认为是机房）
         if (str_contains($combined, 'apple') || str_contains($combined, 'icloud')) {
             return false; 
         }
 
         $needles = [
+            // 国际厂商与通用特征
             'amazon', 'aws', 'amazon web services', 'google', 'gcp', 'microsoft', 'azure',
             'oracle', 'oracle cloud', 'alibaba', 'aliyun', 'tencent', 'huawei cloud', 'baidu',
             'digitalocean', 'linode', 'vultr', 'hetzner', 'ovh', 'leaseweb', 'gcore', 
             'cloudflare', 'akamai', 'fastly', 'ucloud', 'qingcloud',
             'datacenter', 'data center', 'colo', 'host', 'hosting', 'server', 'cloud', 'network',
-            'xtom', 'zenlayer', 'akile', 'rfchost', 'ipxo', 'larus', 'cogent', 'winspeed', 'lshiy'
+            'xtom', 'zenlayer', 'akile', 'rfchost', 'ipxo', 'larus', 'cogent', 'winspeed', 'lshiy',
+            // 【新增】：国内主流云服务商中文特征，配合 qqwry.ipdb 精准秒杀国内机房刷量
+            '阿里云', '腾讯云', '华为云', '百度云', '天翼云', '移动云', '联通云', '金山云', '青云', '优刻得', '数据中心'
         ];
 
         foreach ($needles as $needle) {
             if ($needle !== '' && str_contains($combined, $needle)) {
+                // 如果是移动端 Safari 请求了云端数据，可能被误判，做一层豁免
                 if (str_contains(strtolower($userAgent), 'safari') && str_contains(strtolower($userAgent), 'mobile')) {
                     return false; 
                 }
