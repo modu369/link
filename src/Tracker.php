@@ -520,11 +520,19 @@ public function recordPageview(string $trackingId, array $payload): void
                 (bool) $isMobile,
                 $canonicalHost ?: $host
             );
+            
             if ($proxyRisk['blocked']) {
                 return;
             }
+            
+            // --- 【关键修复：身份转换】 ---
+            // 如果风控底层通过 RDNS 查出它是伪装的真蜘蛛，立刻强制扭转它的身份！
+            if (!empty($proxyRisk['is_spider'])) {
+                $isBot = true;
+            }
         }
 
+        // 下面紧接着原本就是处理蜘蛛入库的代码，它会被完美接管：
         if ($isBot) {
             $this->insertBotLog(
                 (int) $site['id'],
@@ -533,9 +541,10 @@ public function recordPageview(string $trackingId, array $payload): void
                 $userAgent,
                 $ip,
                 $canonicalHost ?: $host,
-                $this->detectSearchEngine($referrer, $userAgent)
+                // 这里如果它伪装成了普通 UA，引擎可能识别不出，我们可以给一个默认值
+                $this->detectSearchEngine($referrer, $userAgent) ?: '高级渲染蜘蛛' 
             );
-            return;
+            return; // 押入蜘蛛日志后直接返回，绝对不会进入下面的 pageviews 表！
         }
 
         $geo = $geo ?? ($ip ? $this->resolveIpMeta($ip) : []);
@@ -926,6 +935,43 @@ private function isProxySuspicious(
             }
         } catch (Throwable $e) {
         }
+
+        // ==========================================
+        // = 新增：核心搜索引擎 RDNS 免死金牌与身份转换 =
+        // ==========================================
+        try {
+            $rdnsCacheKey = "proxy:whitelist_rdns:{$ip}";
+            $isWhitelisted = $this->redis->get($rdnsCacheKey);
+            
+            if ($isWhitelisted === '1') {
+                // 不仅放行，还要打上 is_spider 标记，告诉上层这是个伪装的蜘蛛
+                return ['blocked' => false, 'risk' => false, 'score' => 0, 'is_spider' => true];
+            }
+            
+            if ($isWhitelisted !== '0') {
+                $hostLower = strtolower(@gethostbyaddr($ip));
+                $isSpider = false;
+                
+                if ($hostLower !== $ip && $hostLower !== '') {
+                    if (str_ends_with($hostLower, 'search.msn.com') ||
+                        str_ends_with($hostLower, 'googlebot.com') ||
+                        str_ends_with($hostLower, 'crawl.bytedance.com') ||
+                        str_ends_with($hostLower, 'crawl.baidu.com')) {
+                        $isSpider = true;
+                    }
+                }
+                
+                if ($isSpider) {
+                    $this->redis->setex($rdnsCacheKey, 2592000, '1'); // 确认真身，缓存 30 天
+                    return ['blocked' => false, 'risk' => false, 'score' => 0, 'is_spider' => true];
+                } else {
+                    // 解析失败或不匹配时，只拉黑 10 分钟（600秒），防止瞬间断网导致的 12 小时冤案
+                    $this->redis->setex($rdnsCacheKey, 600, '0');
+                }
+            }
+        } catch (Throwable $e) {
+        }
+        // ==========================================
 
         $networkId = $this->getNetworkIdentifier($ip);
         $nowMs = (int) round(microtime(true) * 1000);
