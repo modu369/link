@@ -207,7 +207,7 @@ render_topbar($branding);
                                 elseif (stripos($ua, 'MSIE') !== false || stripos($ua, 'Trident') !== false) $browser = 'IE';
                                 elseif (stripos($ua, 'micromessenger') !== false) $browser = 'WeChat';
                                 
-                                $status = (strtotime($row['occurred_at']) > time() - 180) ? 'live' : 'done';
+                                $status = (strtotime($row['updated_at'] ?? $row['occurred_at']) > time() - 180) ? 'live' : 'done';
                                 $entryPath = $row['entry_path'] ?? '-';
                                 $currentPath = $row['path'] ?? '-';
                                 $keyword = $row['keyword'] ?? '-';
