@@ -927,56 +927,46 @@ private function isProxySuspicious(
         }
         $uidMissing = !$uidProvided;
 
+        // ==========================================
+        // = 修改点 1：顶层拦截改为验证 UID 和独立 IP =
+        // ==========================================
         try {
             $blockedKey = "proxy:blocked_uid:{$uid}";
-            if ($this->redis->get($blockedKey)) {
-                // 彻底移除 rememberBlockedProxyIp，防止设备漫游污染健康基站 IP
+            $blockedIpKey = "proxy:blocked_exact_ip:{$ip}"; // 独立 IP 黑名单
+            
+            if ($this->redis->get($blockedKey) || $this->redis->get($blockedIpKey)) {
                 return ['blocked' => true, 'risk' => true, 'score' => 100];
             }
         } catch (Throwable $e) {
         }
 
         // ==========================================
-        // = 新增：核心搜索引擎 RDNS 免死金牌与身份转换 =
+        // = 终极极速版：前置 IP/C段 蜘蛛白名单直通车 =
         // ==========================================
         try {
-            $rdnsCacheKey = "proxy:whitelist_rdns:{$ip}";
-            $isWhitelisted = $this->redis->get($rdnsCacheKey);
+            $cClass = substr($ip, 0, strrpos($ip, '.')) . '.0';
+            $keys = ["proxy:whitelist_rdns:{$ip}"];
             
-            if ($isWhitelisted === '1') {
-                // 不仅放行，还要打上 is_spider 标记，告诉上层这是个伪装的蜘蛛
-                return ['blocked' => false, 'risk' => false, 'score' => 0, 'is_spider' => true];
+            $spiders = ['bingbot', 'googlebot', 'bytespider', 'baiduspider', 'sogou', 'yisouspider', '360spider'];
+            foreach ($spiders as $spider) {
+                $keys[] = "bot:rdns:{$spider}:{$cClass}"; 
+                $keys[] = "bot:rdns:{$spider}:{$ip}";     
             }
             
-            if ($isWhitelisted !== '0') {
-                $hostLower = strtolower(@gethostbyaddr($ip));
-                $isSpider = false;
-                
-                if ($hostLower !== $ip && $hostLower !== '') {
-                    if (str_ends_with($hostLower, 'search.msn.com') ||
-                        str_ends_with($hostLower, 'googlebot.com') ||
-                        str_ends_with($hostLower, 'crawl.bytedance.com') ||
-                        str_ends_with($hostLower, 'crawl.baidu.com')) {
-                        $isSpider = true;
+            $values = $this->redis->mGet($keys);
+            if ($values) {
+                foreach ($values as $val) {
+                    if ($val === '1' || $val === 'ok') {
+                        return ['blocked' => false, 'risk' => false, 'score' => 0, 'is_spider' => true];
                     }
-                }
-                
-                if ($isSpider) {
-                    $this->redis->setex($rdnsCacheKey, 2592000, '1'); // 确认真身，缓存 30 天
-                    return ['blocked' => false, 'risk' => false, 'score' => 0, 'is_spider' => true];
-                } else {
-                    // 解析失败或不匹配时，只拉黑 10 分钟（600秒），防止瞬间断网导致的 12 小时冤案
-                    $this->redis->setex($rdnsCacheKey, 600, '0');
                 }
             }
         } catch (Throwable $e) {
         }
         // ==========================================
 
-        $networkId = $this->getNetworkIdentifier($ip);
         $nowMs = (int) round(microtime(true) * 1000);
         $profileKey = "proxy:risk:{$uid}";
-        $coarseMode = false;
         
         try {
             $riskScoreThreshold = $this->options['ingest']['risk_score_threshold'] ?? 80;
@@ -984,17 +974,6 @@ private function isProxySuspicious(
             $highFreqThreshold = $this->options['ingest']['high_freq_threshold'] ?? 4;
             $sustainedFreqThreshold = $this->options['ingest']['sustained_freq_threshold'] ?? 5;
             $mediumRiskScore = $this->options['ingest']['medium_risk_score'] ?? 60;
-
-            $churnKey = "proxy:uid_churn:{$networkId}";
-            $churnCount = (int) $this->redis->incr($churnKey);
-            if ($churnCount === 1) {
-                $this->redis->expire($churnKey, 1);
-            }
-            if ($churnCount > 25) {
-                $uid = "net:{$networkId}";
-                $profileKey = "proxy:risk:net:{$networkId}";
-                $coarseMode = true;
-            }
         } catch (Throwable $e) {
         }
         
@@ -1010,7 +989,7 @@ private function isProxySuspicious(
 
         $isChinaNetwork = $this->isChinaNetwork($countryValue, $asnMeta, $ispDomain);
         $isDataCenterAsn = $this->isDataCenterAsn($asnMeta, $userAgent, $ispDomain);
-        
+
         $uaSuspicious = $this->isSuspiciousUserAgent($userAgent);
         $ipChanged = true;
         $score = 0;
@@ -1115,10 +1094,6 @@ private function isProxySuspicious(
 
             if ($uidMissing) {
                 $score += 6;
-            }
-            
-            if ($coarseMode && !$isNat) {
-                $score += 4;
             }
 
             if ($uaSuspicious) {
@@ -1238,7 +1213,7 @@ private function isProxySuspicious(
                 return ['blocked' => false, 'risk' => $isRisk, 'score' => $score];
             }
 
-            if ($sessionKey && !$coarseMode) {
+            if ($sessionKey) {
                 $sessionProfile = $this->redis->hGetAll($sessionKey);
                 $sessionUa = (string) ($sessionProfile['ua'] ?? '');
                 $sessionFp = (string) ($sessionProfile['fp'] ?? '');
@@ -1298,7 +1273,10 @@ private function isProxySuspicious(
                 || ($score >= $mediumRiskScore && $sustainedHits >= $sustainedFreqThreshold);
 
             if ($isRisk) {
-                $probationKey = "proxy:probation:{$networkId}";
+                // ==========================================
+                // = 修改点 2：将观察期改为精确基于当前独立 IP =
+                // ==========================================
+                $probationKey = "proxy:probation:{$ip}"; 
                 $isProbation = (bool) $this->redis->get($probationKey);
                 
                 if (!$isProbation) {
@@ -1307,8 +1285,7 @@ private function isProxySuspicious(
                     return ['blocked' => false, 'risk' => true, 'score' => $score];
                 }
                 
-                // --- 新增：记录完整的拦截日志供后台 UI 读取 ---
-                $blockType = ($isDataCenterAsn || $isForeign) ? 'IP全局封禁 (机房/海外)' : '设备级封禁 (国内基站)';
+                $blockType = ($isDataCenterAsn || $isForeign) ? 'IP全局封禁 (独立IP)' : '设备级封禁 (国内基站)';
                 $logData = json_encode([
                     'ip' => $ip, 
                     'uid' => $uid, 
@@ -1319,13 +1296,14 @@ private function isProxySuspicious(
                 $this->redis->lPush('proxy:recent_blocks_log', $logData);
                 $this->redis->lTrim('proxy:recent_blocks_log', 0, 999);
                 
-                // --- 修复：明确只对海外或机房执行 IP 级连坐封杀 ---
+                // ==========================================
+                // = 修改点 3：彻底废弃网段封禁，只封禁当前作恶 IP =
+                // ==========================================
                 if ($isDataCenterAsn || $isForeign) {
                     $this->rememberBlockedProxyIp($ip);
-                    $this->redis->setex("proxy:blocked_net:{$networkId}", 14400, '1'); 
+                    $this->redis->setex("proxy:blocked_exact_ip:{$ip}", 14400, '1'); 
                 }
                 
-                // 国内网络仅执行基于设备的拦截
                 $this->redis->setex($blockedKey, 14400, '1'); 
                 return ['blocked' => true, 'risk' => true, 'score' => $score];
             }
