@@ -8,7 +8,7 @@ $total = $tracker->getBlockedProxyIpCount();
 $totalPages = (int) ceil($total / $perPage);
 $rows = $tracker->getBlockedProxyIps($perPage, ($page - 1) * $perPage);
 
-render_head('全网封禁IP黑名单 - 统计后台');
+render_head('风控拦截明细 - 统计后台');
 render_topbar($branding);
 ?>
 <div class="data-layout">
@@ -17,32 +17,55 @@ render_topbar($branding);
         <section class="card">
             <div class="section-title">
                 <div>
-                    <h2 style="margin:0;">全网封禁 IP 黑名单 (机房 / 海外)</h2>
+                    <h2 style="margin:0;">实时风控拦截明细</h2>
                     <p class="muted" style="margin:4px 0 0;">
-                        基于精准防误杀策略，此处仅展示被执行 <b>IP 级全网封禁</b> 的恶劣机房及海外节点。<br>
-                        <i>注：国内普通基站/宽带触发风控时，系统已在底层实施 <b>设备级 (UID) 精准拦截</b>，为保护同基站真实用户，这些 IP 不会列入此全网黑名单。</i>
+                        展示系统最近拦截的最多 1000 条刷量日志。<br>
+                        <i>注：机房/海外节点采用 <b>IP全局封禁</b>；国内网络采用 <b>设备级精准封禁</b>，绝不牵连误杀同基站其他用户。</i>
                     </p>
                 </div>
-                <span class="pill">总计 <?= (int) $total ?> 条</span>
+                <span class="pill">最近 <?= (int) $total ?> 条</span>
             </div>
             <?php if (empty($rows)): ?>
-                <div class="empty">暂无全局 IP 封禁记录。</div>
+                <div class="empty">暂无拦截记录。</div>
             <?php else: ?>
                 <div class="table-wrap">
                     <table>
                         <thead>
                         <tr>
-                            <th>恶意节点 IP</th>
-                            <th>执行封禁时间</th>
+                            <th>拦截类型</th>
+                            <th>风险 IP</th>
+                            <th>风险设备指纹 (UID)</th>
+                            <th>风险总分</th>
+                            <th>执行拦截时间</th>
                         </tr>
                         </thead>
                         <tbody>
                         <?php foreach ($rows as $row): ?>
                             <tr>
                                 <td>
-                                    <span style="font-family: monospace; font-size: 14px;"><?= htmlspecialchars($row['ip'], ENT_QUOTES, 'UTF-8') ?></span>
-                                    <span class="badge" style="margin-left: 8px; background: #ffebee; color: #d32f2f; padding: 2px 6px; border-radius: 4px; font-size: 12px;">高危节点</span>
+                                    <?php if (str_contains($row['type'], 'IP全局')): ?>
+                                        <span class="badge" style="background: #ffebee; color: #d32f2f; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: normal;"><?= htmlspecialchars($row['type'], ENT_QUOTES, 'UTF-8') ?></span>
+                                    <?php else: ?>
+                                        <span class="badge" style="background: #e3f2fd; color: #1976d2; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: normal;"><?= htmlspecialchars($row['type'], ENT_QUOTES, 'UTF-8') ?></span>
+                                    <?php endif; ?>
                                 </td>
+                                <td><span style="font-family: monospace; font-size: 14px;"><?= htmlspecialchars($row['ip'], ENT_QUOTES, 'UTF-8') ?></span></td>
+                                
+                                <?php 
+                                    // 处理 UID 截断与悬停
+                                    $fullUid = htmlspecialchars($row['uid'], ENT_QUOTES, 'UTF-8');
+                                    // 如果长度超过 20，则截取前 8 位和后 8 位，中间用 ... 代替，视觉效果更好
+                                    $displayUid = mb_strlen($row['uid'], 'UTF-8') > 20 
+                                        ? mb_substr($row['uid'], 0, 8, 'UTF-8') . '...' . mb_substr($row['uid'], -8, null, 'UTF-8') 
+                                        : $fullUid;
+                                ?>
+                                <td title="<?= $fullUid ?>">
+                                    <span style="font-family: monospace; font-size: 12px; color: #666; cursor: pointer;">
+                                        <?= $displayUid ?>
+                                    </span>
+                                </td>
+                                
+                                <td><span style="color: #d32f2f; font-weight: bold;"><?= (int)$row['score'] ?></span></td>
                                 <td><?= htmlspecialchars($row['detected_at'], ENT_QUOTES, 'UTF-8') ?></td>
                             </tr>
                         <?php endforeach; ?>
