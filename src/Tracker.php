@@ -593,40 +593,46 @@ public function recordPageview(string $trackingId, array $payload): void
         $referrerHost = $this->referrerHost($referrer);
         $entryPath = $this->captureEntryPath((int) $site['id'], $sessionId, $path);
 // ===== 新增：异步维护会话（Sessions）表 =====
-        $sessionStmt = $this->db->prepare(
-            'INSERT INTO sessions (
-                site_id, session_id, start_time, updated_at, is_unique, ip_address, 
-                user_agent, entry_path, last_path, referrer, keyword, engine, 
-                country_name, region_name, city_name, duration_seconds, page_count
-            ) VALUES (
-                :site_id, :session_id, :start_time, :start_time, :is_unique, :ip_address,
-                :user_agent, :entry_path, :last_path, :referrer, :keyword, :engine,
-                :country_name, :region_name, :city_name, :duration_seconds, :page_count
-            ) ON DUPLICATE KEY UPDATE
-                last_path = VALUES(last_path),
-                updated_at = VALUES(updated_at),
-                duration_seconds = GREATEST(duration_seconds, VALUES(duration_seconds)),
-                page_count = GREATEST(page_count, VALUES(page_count))'
-        );
-        
-        $sessionStmt->execute([
-            ':site_id' => $site['id'],
-            ':session_id' => $sessionId,
-            ':start_time' => $occurredAtStr,
-            ':is_unique' => $isUnique ? 1 : 0,
-            ':ip_address' => $ip,
-            ':user_agent' => $userAgent,
-            ':entry_path' => $path, // 只有首次 INSERT 写入 entry_path，后续 UPDATE 自动忽略此字段
-            ':last_path' => $path,
-            ':referrer' => $referrer ?: null,
-            ':keyword' => $keyword ?: null,
-            ':engine' => $engine,
-            ':country_name' => $countryName ?: null,
-            ':region_name' => $regionName ?: null,
-            ':city_name' => $cityName ?: null,
-            ':duration_seconds' => $duration,
-            ':page_count' => $pageCount
-        ]);
+        try {
+            $sessionStmt = $this->db->prepare(
+                'INSERT INTO sessions (
+                    site_id, session_id, start_time, updated_at, is_unique, ip_address, 
+                    user_agent, entry_path, last_path, referrer, keyword, engine, 
+                    country_name, region_name, city_name, duration_seconds, page_count
+                ) VALUES (
+                    :site_id, :session_id, :start_time, :updated_at, :is_unique, :ip_address,
+                    :user_agent, :entry_path, :last_path, :referrer, :keyword, :engine,
+                    :country_name, :region_name, :city_name, :duration_seconds, :page_count
+                ) ON DUPLICATE KEY UPDATE
+                    last_path = VALUES(last_path),
+                    updated_at = VALUES(updated_at),
+                    duration_seconds = GREATEST(duration_seconds, VALUES(duration_seconds)),
+                    page_count = GREATEST(page_count, VALUES(page_count))'
+            );
+            
+            $sessionStmt->execute([
+                ':site_id' => $site['id'],
+                ':session_id' => $sessionId,
+                ':start_time' => $occurredAtStr,
+                ':updated_at' => $occurredAtStr, // 👈 修复点：独立绑定 updated_at
+                ':is_unique' => $isUnique ? 1 : 0,
+                ':ip_address' => $ip,
+                ':user_agent' => $userAgent,
+                ':entry_path' => $path, 
+                ':last_path' => $path,
+                ':referrer' => $referrer ?: null,
+                ':keyword' => $keyword ?: null,
+                ':engine' => $engine,
+                ':country_name' => $countryName ?: null,
+                ':region_name' => $regionName ?: null,
+                ':city_name' => $cityName ?: null,
+                ':duration_seconds' => $duration,
+                ':page_count' => $pageCount
+            ]);
+        } catch (\Throwable $e) {
+            // 防御性编程：捕获异常，防止独立表的报错导致系统整个数据处理队列卡死
+            error_log('Sessions 表写入异常: ' . $e->getMessage());
+        }
         // ===== 结束 =====
         // Rollup aggregation is handled by async workers for large-scale accuracy and lower write load.
     }
