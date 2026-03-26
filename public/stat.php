@@ -4,7 +4,6 @@ $outputGifAndExit = static function () {
     header('Cache-Control: no-cache, no-store, must-revalidate');
     header('Pragma: no-cache');
     header('Expires: 0');
-    header_remove('Set-Cookie');
     echo base64_decode('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==');
     exit;
 };
@@ -334,3 +333,4 @@ if ($ingestMode === 'queue') {
         exit;
     }
 }
+$outputGifAndExit();
