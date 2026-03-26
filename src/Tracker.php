@@ -1330,7 +1330,7 @@ public function getBlockedProxyIps(int $limit = 200, int $offset = 0): array
                     if ($data) {
                         $results[] = [
                             'ip' => $data['ip'] ?? '未知',
-                            'uid' => substr($data['uid'] ?? '', 0, 16) . '...',
+                            'uid' => $data['uid'] ?? '',
                             'type' => $data['type'] ?? '未知',
                             'score' => $data['score'] ?? 0,
                             'detected_at' => $data['time'] ?? '',
