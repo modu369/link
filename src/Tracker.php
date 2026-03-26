@@ -592,7 +592,42 @@ public function recordPageview(string $trackingId, array $payload): void
         $engine = $this->detectSearchEngine($referrer, $userAgent);
         $referrerHost = $this->referrerHost($referrer);
         $entryPath = $this->captureEntryPath((int) $site['id'], $sessionId, $path);
-
+// ===== 新增：异步维护会话（Sessions）表 =====
+        $sessionStmt = $this->db->prepare(
+            'INSERT INTO sessions (
+                site_id, session_id, start_time, updated_at, is_unique, ip_address, 
+                user_agent, entry_path, last_path, referrer, keyword, engine, 
+                country_name, region_name, city_name, duration_seconds, page_count
+            ) VALUES (
+                :site_id, :session_id, :start_time, :start_time, :is_unique, :ip_address,
+                :user_agent, :entry_path, :last_path, :referrer, :keyword, :engine,
+                :country_name, :region_name, :city_name, :duration_seconds, :page_count
+            ) ON DUPLICATE KEY UPDATE
+                last_path = VALUES(last_path),
+                updated_at = VALUES(updated_at),
+                duration_seconds = GREATEST(duration_seconds, VALUES(duration_seconds)),
+                page_count = GREATEST(page_count, VALUES(page_count))'
+        );
+        
+        $sessionStmt->execute([
+            ':site_id' => $site['id'],
+            ':session_id' => $sessionId,
+            ':start_time' => $occurredAtStr,
+            ':is_unique' => $isUnique ? 1 : 0,
+            ':ip_address' => $ip,
+            ':user_agent' => $userAgent,
+            ':entry_path' => $path, // 只有首次 INSERT 写入 entry_path，后续 UPDATE 自动忽略此字段
+            ':last_path' => $path,
+            ':referrer' => $referrer ?: null,
+            ':keyword' => $keyword ?: null,
+            ':engine' => $engine,
+            ':country_name' => $countryName ?: null,
+            ':region_name' => $regionName ?: null,
+            ':city_name' => $cityName ?: null,
+            ':duration_seconds' => $duration,
+            ':page_count' => $pageCount
+        ]);
+        // ===== 结束 =====
         // Rollup aggregation is handled by async workers for large-scale accuracy and lower write load.
     }
 
@@ -3724,14 +3759,12 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
 
         foreach ($windows as $minutes) {
             $stmt = $this->db->prepare(
-                "SELECT COUNT(DISTINCT session_id) as sessions
-                 FROM pageviews
-                 WHERE site_id = :site_id AND session_id IS NOT NULL
-                   AND occurred_at >= DATE_SUB(NOW(), INTERVAL {$minutes} MINUTE)"
+                "SELECT COUNT(*) as sessions
+                 FROM sessions
+                 WHERE site_id = :site_id AND updated_at >= DATE_SUB(NOW(), INTERVAL {$minutes} MINUTE)"
             );
             $stmt->execute([':site_id' => $siteId]);
-            $row = $stmt->fetch();
-            $results[$minutes] = (int)($row['sessions'] ?? 0);
+            $results[$minutes] = (int)($stmt->fetchColumn() ?: 0);
         }
 
         return $results;
@@ -3757,7 +3790,7 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
     {
         [$start, $end] = $this->visitFiltersWindow($filters);
 
-        $conditions = ['1=1'];
+        $conditions = ['site_id = :site_id', 'start_time BETWEEN :start AND :end'];
         $params = [
             ':site_id' => $siteId,
             ':start' => $start->format('Y-m-d H:i:s'),
@@ -3765,54 +3798,38 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
         ];
 
         if (!empty($filters['ip'])) {
-            $conditions[] = 'p.ip_address LIKE :ip';
+            $conditions[] = 'ip_address LIKE :ip';
             $params[':ip'] = '%' . $filters['ip'] . '%';
         }
         if (!empty($filters['keyword'])) {
-            $conditions[] = 'p.keyword LIKE :keyword';
+            $conditions[] = 'keyword LIKE :keyword';
             $params[':keyword'] = '%' . $filters['keyword'] . '%';
         }
         if (!empty($filters['entry'])) {
-            $conditions[] = 'entry.path LIKE :entry';
+            $conditions[] = 'entry_path LIKE :entry';
             $params[':entry'] = '%' . $filters['entry'] . '%';
         }
         if (!empty($filters['session'])) {
-            $conditions[] = 'p.session_id LIKE :session';
+            $conditions[] = 'session_id LIKE :session';
             $params[':session'] = '%' . $filters['session'] . '%';
         }
         if (!empty($filters['visitor']) && in_array($filters['visitor'], ['new', 'return'], true)) {
-            $conditions[] = $filters['visitor'] === 'new' ? 'p.is_unique = 1' : 'p.is_unique = 0';
+            $conditions[] = $filters['visitor'] === 'new' ? 'is_unique = 1' : 'is_unique = 0';
         }
-
-        $engineCase = $this->searchEngineCase('p');
-        $engineHaving = '';
         if (!empty($filters['engine'])) {
-            $engineHaving = 'HAVING engine = :engine';
+            $conditions[] = 'engine = :engine';
             $params[':engine'] = $filters['engine'];
         }
+        if (!empty($filters['city'])) {
+            $conditions[] = "COALESCE(NULLIF(city_name,''), NULLIF(region_name,''), '未知') LIKE :city";
+            $params[':city'] = '%' . $filters['city'] . '%';
+        }
 
-        $sql = "SELECT COUNT(*) as total FROM (
-                    SELECT p.session_id, {$engineCase} as engine
-                    FROM (
-                        SELECT MIN(id) as first_id, session_id
-                        FROM pageviews
-                        WHERE site_id = :site_id AND session_id IS NOT NULL
-                          AND occurred_at BETWEEN :start AND :end
-                        GROUP BY session_id
-                    ) s
-                    JOIN pageviews p ON p.id = s.first_id
-                    LEFT JOIN pageviews entry ON entry.id = s.first_id
-                    WHERE " . implode(' AND ', $conditions) . "
-                    {$engineHaving}
-                ) t";
+        $sql = "SELECT COUNT(*) as total FROM sessions WHERE " . implode(' AND ', $conditions);
 
         $stmt = $this->db->prepare($sql);
-        $filtered = $this->filterParams($sql, $params);
-        $filtered[':site_id'] = $siteId;
-        $stmt->execute($filtered);
-        $row = $stmt->fetch();
-
-        return (int)($row['total'] ?? 0);
+        $stmt->execute($params);
+        return (int)(($stmt->fetch())['total'] ?? 0);
     }
 
     private function getVisitDetails(int $siteId, array $filters, int $page = 1, int $perPage = 50): array
@@ -3822,79 +3839,68 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
         $perPage = max(1, $perPage);
         $offset = ($page - 1) * $perPage;
 
-        $conditions = ['1=1'];
+        $conditions = ['site_id = :site_id', 'start_time BETWEEN :start AND :end'];
         $params = [
             ':site_id' => $siteId,
             ':start' => $start->format('Y-m-d H:i:s'),
-            ':end' => $end->format('Y-m-d H:i:s'),
-            ':limit' => $perPage,
-            ':offset' => $offset,
+            ':end' => $end->format('Y-m-d H:i:s')
         ];
 
         if (!empty($filters['ip'])) {
-            $conditions[] = 'p.ip_address LIKE :ip';
+            $conditions[] = 'ip_address LIKE :ip';
             $params[':ip'] = '%' . $filters['ip'] . '%';
         }
         if (!empty($filters['keyword'])) {
-            $conditions[] = 'p.keyword LIKE :keyword';
+            $conditions[] = 'keyword LIKE :keyword';
             $params[':keyword'] = '%' . $filters['keyword'] . '%';
         }
         if (!empty($filters['entry'])) {
-            $conditions[] = 'entry.path LIKE :entry';
+            $conditions[] = 'entry_path LIKE :entry';
             $params[':entry'] = '%' . $filters['entry'] . '%';
         }
         if (!empty($filters['session'])) {
-            $conditions[] = 'p.session_id LIKE :session';
+            $conditions[] = 'session_id LIKE :session';
             $params[':session'] = '%' . $filters['session'] . '%';
         }
         if (!empty($filters['visitor']) && in_array($filters['visitor'], ['new', 'return'], true)) {
-            $conditions[] = $filters['visitor'] === 'new' ? 'p.is_unique = 1' : 'p.is_unique = 0';
+            $conditions[] = $filters['visitor'] === 'new' ? 'is_unique = 1' : 'is_unique = 0';
         }
         if (!empty($filters['city'])) {
-            $conditions[] = "COALESCE(NULLIF(p.city_name,''), NULLIF(p.region_name,''), '未知') LIKE :city";
+            $conditions[] = "COALESCE(NULLIF(city_name,''), NULLIF(region_name,''), '未知') LIKE :city";
             $params[':city'] = '%' . $filters['city'] . '%';
         }
-
-        $engineCase = $this->searchEngineCase('p');
-        $engineSelect = ", {$engineCase} as engine";
-        $engineHaving = '';
         if (!empty($filters['engine'])) {
-            $engineHaving = 'HAVING engine = :engine';
+            $conditions[] = 'engine = :engine';
             $params[':engine'] = $filters['engine'];
         }
 
         $sql = "SELECT
-                    p.occurred_at,
-                    p.session_id,
-                    p.ip_address,
-                    p.is_unique,
-                    p.user_agent,
-                    p.referrer,
-                    p.path,
-                    p.keyword,
-                    p.duration_seconds,
-                    p.page_count,
-                    entry.path as entry_path,
-                    COALESCE(NULLIF(p.city_name,''), NULLIF(p.region_name,''), '未知') as region
-                    {$engineSelect}
-                FROM (
-                    SELECT MIN(id) as first_id, session_id
-                    FROM pageviews
-                    WHERE site_id = :site_id AND session_id IS NOT NULL
-                      AND occurred_at BETWEEN :start AND :end
-                    GROUP BY session_id
-                ) s
-                JOIN pageviews p ON p.id = s.first_id
-                LEFT JOIN pageviews entry ON entry.id = s.first_id
+                    start_time as occurred_at,
+                    updated_at,
+                    session_id,
+                    ip_address,
+                    is_unique,
+                    user_agent,
+                    referrer,
+                    last_path as path,
+                    keyword,
+                    duration_seconds,
+                    page_count,
+                    entry_path,
+                    COALESCE(NULLIF(city_name,''), NULLIF(region_name,''), '未知') as region,
+                    engine
+                FROM sessions
                 WHERE " . implode(' AND ', $conditions) . "
-                {$engineHaving}
-                ORDER BY p.occurred_at DESC
+                ORDER BY start_time DESC
                 LIMIT :limit OFFSET :offset";
 
         $stmt = $this->db->prepare($sql);
-        $filtered = $this->filterParams($sql, $params);
-        $filtered[':site_id'] = $siteId;
-        $stmt->execute($filtered);
+        foreach ($params as $key => $val) {
+            $stmt->bindValue($key, $val);
+        }
+        $stmt->bindValue(':limit', $perPage, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->execute();
 
         return $stmt->fetchAll();
     }
@@ -6126,6 +6132,12 @@ private function getSetting(string $key): ?array
             // Pageviews can be very large; delete in batches to limit lock time and reduce replication lag.
             $this->deleteBatched(
                 'DELETE FROM pageviews WHERE occurred_at < :cutoff LIMIT :batch',
+                [':cutoff' => $pageviewsCutoff],
+                $batchSize
+            );
+            // 新增：连带清理过期的 sessions
+            $this->deleteBatched(
+                'DELETE FROM sessions WHERE start_time < :cutoff LIMIT :batch',
                 [':cutoff' => $pageviewsCutoff],
                 $batchSize
             );
