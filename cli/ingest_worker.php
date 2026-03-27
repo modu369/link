@@ -32,6 +32,15 @@ $loop = array_key_exists('loop', $options);
 $workerIndex = max(1, (int) ($options['worker'] ?? 1));
 $workerCount = max(1, (int) ($options['workers'] ?? 1));
 
+// ==========================================
+// = 生命周期管理初始化 (防止 PHP 内存泄漏) =
+// ==========================================
+$maxRequests = 50000;      // 处理 5 万条记录后重启
+$startTime = time();       // 运行满 1 小时后重启
+$processedTotal = 0;
+
+echo sprintf("[ingest worker %d/%d] Started. Press Ctrl+C to stop.\n", $workerIndex, $workerCount);
+
 do {
     $loopStarted = microtime(true);
 
@@ -46,6 +55,7 @@ do {
     }
 
     $hasMoreData = false;
+    $elapsed = 0;
 
     // 【修改点3】将业务消费逻辑包裹，防止由于查询超时引发的进程假死
     try {
@@ -61,6 +71,9 @@ do {
         $blockedProcessed = (int) $tracker->drainBlockedDomainQueue($batchSize);
         
         $elapsed = microtime(true) - $loopStarted;
+
+        // 累加已处理的数据总数
+        $processedTotal += ($processed + $botProcessed + $blockedProcessed);
 
         echo sprintf(
             "[ingest worker %d/%d] processed=%d batch=%d queue=%d processing=%d bot_processed=%d bot_queue=%d bot_processing=%d blocked_processed=%d blocked_queue=%d blocked_processing=%d elapsed=%.2fs\n",
@@ -90,9 +103,18 @@ do {
             );
         }
 
-        // 【核心逻辑新增】判断本轮处理是否跑满了最大额度
+        // 判断本轮处理是否跑满了最大额度
         // 如果任意一个队列的处理量达到了 batchSize，说明里面很可能还有货，标记为需要继续抽干
         $hasMoreData = ($processed === $batchSize || $botProcessed === $batchSize || $blockedProcessed === $batchSize);
+
+        // ==========================================
+        // = 生命周期管理：优雅退出，防 PHP 内存溢出 =
+        // ==========================================
+        // 由宝塔或 Supervisor 自动在 1 秒内重启它，完成“涅槃重生”
+        if ($loop && ($processedTotal >= $maxRequests || (time() - $startTime) > 3600)) {
+            echo sprintf("[ingest worker %d/%d] Lifecycle limit reached (processed: %d, uptime: %ds). Exiting gracefully to free memory...\n", $workerIndex, $workerCount, $processedTotal, time() - $startTime);
+            exit(0);
+        }
 
     } catch (Throwable $e) {
         // 如果处理中发生未被 Tracker 拦截的致命异常，同样退出进程交由守护程序重启
@@ -100,7 +122,7 @@ do {
         exit(1);
     }
 
-if (!$loop) {
+    if (!$loop) {
         break;
     }
 
