@@ -78,10 +78,7 @@ $extractIp = static function (?string $value): ?string {
     return null;
 };
 
-$clientIp = $extractIp($_SERVER['HTTP_CF_CONNECTING_IP'] ?? null)
-    ?? $extractIp($_SERVER['HTTP_TRUE_CLIENT_IP'] ?? null)
-    ?? $extractIp($_SERVER['HTTP_X_REAL_IP'] ?? null)
-    ?? $extractIp($_SERVER['HTTP_X_FORWARDED_FOR'] ?? null)
+$clientIp = $extractIp($_SERVER['HTTP_X_REAL_IP'] ?? null)
     ?? $extractIp($_SERVER['REMOTE_ADDR'] ?? null);
 
 $userAgent = trim((string) ($_SERVER['HTTP_USER_AGENT'] ?? ''));
