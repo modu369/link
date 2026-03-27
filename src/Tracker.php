@@ -422,11 +422,11 @@ public function recordPageview(string $trackingId, array $payload): void
         $this->processPageview($trackingId, $payload);
     }
 
-    private function processPageview(string $trackingId, array $payload, ?int $receivedAt = null): void
+    private function processPageview(string $trackingId, array $payload, ?int $receivedAt = null, bool $batchMode = false): ?array
     {
         $site = $this->getSiteByTrackingId($trackingId);
         if (!$site) {
-            return;
+            return null;
         }
         $occurredAtStr = $receivedAt ? date('Y-m-d H:i:s', $receivedAt) : date('Y-m-d H:i:s');
         $parsedUrl = $this->parseUrl($payload['path'] ?? null, $site['domain'] ?? null);
@@ -444,7 +444,7 @@ public function recordPageview(string $trackingId, array $payload): void
                 if ($observedHost) {
                     $this->recordBlockedDomain((int) $site['id'], $observedHost);
                 }
-                return;
+                return null;
             }
             // ensure stored canonical host reflects the validated domain
             $canonicalHost = $this->limitText($observedHost, 255, $canonicalHost);
@@ -489,9 +489,10 @@ public function recordPageview(string $trackingId, array $payload): void
         ];
         $fallbackUid = $this->buildFallbackUid($ip, $userAgent, $headerMeta);
         $proxyRisk = ['blocked' => false, 'risk' => false];
+        
         if (!$isBot) {
             if ($this->shouldFilterIngest($ip, $keyword, $path, $referrer, $userAgent)) {
-                return;
+                return null;
             }
 
             $geo = $ip ? $this->resolveIpMeta($ip) : [];
@@ -522,17 +523,15 @@ public function recordPageview(string $trackingId, array $payload): void
             );
             
             if ($proxyRisk['blocked']) {
-                return;
+                return null;
             }
             
             // --- 【关键修复：身份转换】 ---
-            // 如果风控底层通过 RDNS 查出它是伪装的真蜘蛛，立刻强制扭转它的身份！
             if (!empty($proxyRisk['is_spider'])) {
                 $isBot = true;
             }
         }
 
-        // 下面紧接着原本就是处理蜘蛛入库的代码，它会被完美接管：
         if ($isBot) {
             $this->insertBotLog(
                 (int) $site['id'],
@@ -541,10 +540,9 @@ public function recordPageview(string $trackingId, array $payload): void
                 $userAgent,
                 $ip,
                 $canonicalHost ?: $host,
-                // 这里如果它伪装成了普通 UA，引擎可能识别不出，我们可以给一个默认值
                 $this->detectSearchEngine($referrer, $userAgent) ?: '高级渲染蜘蛛' 
             );
-            return; // 押入蜘蛛日志后直接返回，绝对不会进入下面的 pageviews 表！
+            return null; // 押入蜘蛛日志后直接返回，绝对不会进入下面的 pageviews 表
         }
 
         $geo = $geo ?? ($ip ? $this->resolveIpMeta($ip) : []);
@@ -554,87 +552,81 @@ public function recordPageview(string $trackingId, array $payload): void
         $ispName = $ispName ?? $this->limitText($geo['isp_domain'] ?? '', 128);
         $countryCode = $countryCode ?? $this->limitText($geo['country_code'] ?? '', 16);
 
-        if ($ipHash) {
-            [$uvToday, $audienceLabel] = $this->markIpAudienceState((int) $site['id'], $ipHash);
+        // 【核心修改点 1 & 2】：提取持久化 visitor_id 并更新 UV 受众状态
+        $visitorId = $this->limitText($payload['visitor_id'] ?? '', 128);
+        if ($visitorId === '') {
+            $visitorId = $ipHash ?: bin2hex(random_bytes(8));
+        }
+
+        if ($visitorId) {
+            [$uvToday, $audienceLabel] = $this->markVisitorAudienceState((int) $site['id'], $visitorId);
             $isUnique = $uvToday;
         }
 
-        $statement = $this->db->prepare(
-    'INSERT INTO pageviews (site_id, host, canonical_host, path, referrer, user_agent, ip_address, ip_hash, session_id, duration_seconds, page_count, keyword, is_mobile, is_unique, is_proxy_risk, country_name, region_name, city_name, isp_domain, country_code, occurred_at) VALUES
-    (:site_id, :host, :canonical_host, :path, :referrer, :user_agent, :ip_address, :ip_hash, :session_id, :duration_seconds, :page_count, :keyword, :is_mobile, :is_unique, :is_proxy_risk, :country_name, :region_name, :city_name, :isp_domain, :country_code, :occurred_at)'
-);
-        $statement->execute([
-            ':site_id' => $site['id'],
-            ':host' => $host,
-            ':canonical_host' => $canonicalHost,
-            ':path' => $path,
-            ':referrer' => $referrer ?: null,
-            ':user_agent' => $userAgent,
-            ':ip_address' => $ip,
-            ':ip_hash' => $ipHash,
-            ':session_id' => $sessionId,
-            ':duration_seconds' => $duration,
-            ':page_count' => $pageCount,
-            ':keyword' => $keyword ?: null,
-            ':is_mobile' => $isMobile ? 1 : 0,
-            ':is_unique' => $isUnique ? 1 : 0,
-            ':is_proxy_risk' => (int) ($proxyRisk['risk'] ?? false),
-            ':country_name' => $countryName ?: null,
-            ':region_name' => $regionName ?: null,
-            ':city_name' => $cityName ?: null,
-            ':isp_domain' => $ispName ?: null,
-            ':country_code' => $countryCode ?: null,
-            ':occurred_at' => $occurredAtStr,
-        ]);
-
-        $now = new DateTimeImmutable('now');
-        $browser = $this->detectBrowser($userAgent);
         $engine = $this->detectSearchEngine($referrer, $userAgent);
-        $referrerHost = $this->referrerHost($referrer);
-        $entryPath = $this->captureEntryPath((int) $site['id'], $sessionId, $path);
-// ===== 新增：异步维护会话（Sessions）表 =====
-        try {
-            $sessionStmt = $this->db->prepare(
-                'INSERT INTO sessions (
-                    site_id, session_id, start_time, updated_at, is_unique, ip_address, 
-                    user_agent, entry_path, last_path, referrer, keyword, engine, 
-                    country_name, region_name, city_name, duration_seconds, page_count
-                ) VALUES (
-                    :site_id, :session_id, :start_time, :updated_at, :is_unique, :ip_address,
-                    :user_agent, :entry_path, :last_path, :referrer, :keyword, :engine,
-                    :country_name, :region_name, :city_name, :duration_seconds, :page_count
-                ) ON DUPLICATE KEY UPDATE
-                    last_path = VALUES(last_path),
-                    updated_at = VALUES(updated_at),
-                    duration_seconds = GREATEST(duration_seconds, VALUES(duration_seconds)),
-                    page_count = GREATEST(page_count, VALUES(page_count))'
-            );
-            
-            $sessionStmt->execute([
-                ':site_id' => $site['id'],
-                ':session_id' => $sessionId,
-                ':start_time' => $occurredAtStr,
-                ':updated_at' => $occurredAtStr, // 👈 修复点：独立绑定 updated_at
-                ':is_unique' => $isUnique ? 1 : 0,
-                ':ip_address' => $ip,
-                ':user_agent' => $userAgent,
-                ':entry_path' => $path, 
-                ':last_path' => $path,
-                ':referrer' => $referrer ?: null,
-                ':keyword' => $keyword ?: null,
-                ':engine' => $engine,
-                ':country_name' => $countryName ?: null,
-                ':region_name' => $regionName ?: null,
-                ':city_name' => $cityName ?: null,
-                ':duration_seconds' => $duration,
-                ':page_count' => $pageCount
-            ]);
-        } catch (\Throwable $e) {
-            // 防御性编程：捕获异常，防止独立表的报错导致系统整个数据处理队列卡死
-            error_log('Sessions 表写入异常: ' . $e->getMessage());
+        // 维持原有的入口捕获逻辑
+        $this->captureEntryPath((int) $site['id'], $sessionId, $path);
+
+        // 构建需入库的数组映射 (pageviews)
+        $pageviewData = [
+            'site_id' => $site['id'], 
+            'host' => $host, 
+            'canonical_host' => $canonicalHost,
+            'path' => $path, 
+            'referrer' => $referrer ?: null, 
+            'user_agent' => $userAgent,
+            'ip_address' => $ip, 
+            'ip_hash' => $ipHash, 
+            'session_id' => $sessionId,
+            'visitor_id' => $visitorId, // 新增注入
+            'duration_seconds' => $duration, 
+            'page_count' => $pageCount, 
+            'keyword' => $keyword ?: null,
+            'is_mobile' => $isMobile ? 1 : 0, 
+            'is_unique' => $isUnique ? 1 : 0,
+            'is_proxy_risk' => (int) ($proxyRisk['risk'] ?? false),
+            'country_name' => $countryName ?: null, 
+            'region_name' => $regionName ?: null,
+            'city_name' => $cityName ?: null, 
+            'isp_domain' => $ispName ?: null,
+            'country_code' => $countryCode ?: null, 
+            'occurred_at' => $occurredAtStr,
+        ];
+
+        // 构建需入库的数组映射 (sessions)
+        $sessionData = [
+            'site_id' => $site['id'], 
+            'session_id' => $sessionId, 
+            'visitor_id' => $visitorId, // 新增注入
+            'start_time' => $occurredAtStr, 
+            'updated_at' => $occurredAtStr,
+            'is_unique' => $isUnique ? 1 : 0, 
+            'ip_address' => $ip, 
+            'user_agent' => $userAgent,
+            'entry_path' => $path, // 首次 INSERT 时的入口记录
+            'last_path' => $path, 
+            'referrer' => $referrer ?: null,
+            'keyword' => $keyword ?: null, 
+            'engine' => $engine, 
+            'country_name' => $countryName ?: null,
+            'region_name' => $regionName ?: null, 
+            'city_name' => $cityName ?: null,
+            'duration_seconds' => $duration, 
+            'page_count' => $pageCount
+        ];
+
+        // 【核心修改点 3】：Batch Mode 支持 (队列批量消费专用)
+        if ($batchMode) {
+            return ['pageview' => $pageviewData, 'session' => $sessionData];
         }
-        // ===== 结束 =====
-        // Rollup aggregation is handled by async workers for large-scale accuracy and lower write load.
+
+        // 直连模式 (ingestMode = direct) 继续走单条插入
+        $this->executeBulkInsert('pageviews', array_keys($pageviewData), [$pageviewData]);
+        $this->executeBulkInsert('sessions', array_keys($sessionData), [$sessionData], 
+            'ON DUPLICATE KEY UPDATE last_path = VALUES(last_path), updated_at = VALUES(updated_at), duration_seconds = GREATEST(duration_seconds, VALUES(duration_seconds)), page_count = GREATEST(page_count, VALUES(page_count))'
+        );
+        
+        return null;
     }
 
     private function insertBotLog(
@@ -1394,14 +1386,9 @@ public function getBlockedProxyIps(int $limit = 200, int $offset = 0): array
         }
     }
     
-    private function getNetworkIdentifier(string $ip): string
+private function getNetworkIdentifier(string $ip): string
     {
-        if (str_contains($ip, ':')) {
-            $blocks = explode(':', $ip);
-            if (count($blocks) >= 4) {
-                return implode(':', array_slice($blocks, 0, 4)) . '::/64';
-            }
-        }
+        // 彻底废除 IPv6 粗暴截取 /64 网段的逻辑，直接返回精确 IP 进行隔离
         return $ip;
     }
    private function isBlockedProxyIp(string $ip): bool
@@ -1509,13 +1496,13 @@ private function cleanupProxyIpData(string $ip): void
             return;
         }
 
-        $ipHash = hash('sha256', $ip);
+        // 修改点：同时获取受到污染的 visitor_id
         $stmt = $this->db->prepare(
-            "SELECT site_id, 
+            "SELECT site_id, visitor_id,
                     DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as bucket_start
              FROM pageviews 
              WHERE ip_address = :ip AND is_proxy_risk = 0
-             GROUP BY site_id, bucket_start"
+             GROUP BY site_id, visitor_id, bucket_start"
         );
         $stmt->execute([':ip' => $ip]);
         $badTraffic = $stmt->fetchAll();
@@ -1526,15 +1513,20 @@ private function cleanupProxyIpData(string $ip): void
 
         $this->db->beginTransaction();
         try {
+            // 提取该恶意 IP 对应的所有 visitor_id
+            $badVisitors = array_values(array_unique(array_filter(array_column($badTraffic, 'visitor_id'))));
+
             $updateStmt = $this->db->prepare(
                 'UPDATE pageviews SET is_proxy_risk = 1 WHERE ip_address = :ip AND is_proxy_risk = 0'
             );
             $updateStmt->execute([':ip' => $ip]);
 
-            $deleteAudience = $this->db->prepare(
-                'DELETE FROM site_ip_audience WHERE ip_hash = :ip_hash'
-            );
-            $deleteAudience->execute([':ip_hash' => $ipHash]);
+            // 修改点：从新的 visitor 表中删除被污染的 UV 记录
+            if (!empty($badVisitors)) {
+                $placeholders = implode(',', array_fill(0, count($badVisitors), '?'));
+                $deleteAudience = $this->db->prepare("DELETE FROM site_visitor_audience WHERE visitor_id IN ($placeholders)");
+                $deleteAudience->execute($badVisitors);
+            }
             
             $this->db->commit();
         } catch (Throwable $e) {
@@ -1542,11 +1534,17 @@ private function cleanupProxyIpData(string $ip): void
             return; 
         }
 
+        // 重新聚合按小时度量的数据
+        $processedBuckets = [];
         foreach ($badTraffic as $row) {
+            $bucketKey = $row['site_id'] . '_' . $row['bucket_start'];
+            if (isset($processedBuckets[$bucketKey])) continue;
+            
             try {
                 $bucketStartDt = new DateTimeImmutable($row['bucket_start']);
                 $bucketEndDt = $bucketStartDt->modify('+1 hour');
                 $this->rebuildRollupBucket((int)$row['site_id'], $bucketStartDt, $bucketEndDt);
+                $processedBuckets[$bucketKey] = true;
             } catch (Throwable $e) {
             }
         }
@@ -1673,11 +1671,11 @@ private function cleanupProxyIpData(string $ip): void
                     WHERE p.site_id = ? AND p.keyword IS NOT NULL AND keyword != '' AND p.is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
                     GROUP BY dimension_value",
                 'audience' => "SELECT LEFT(CASE WHEN a.first_seen >= ? AND a.first_seen < ? THEN 'new' ELSE 'returning' END, 255) as dimension_value,
-                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT p.ip_hash) as ips
-                    FROM pageviews p
-                    LEFT JOIN site_ip_audience a ON a.site_id = p.site_id AND a.ip_hash = p.ip_hash
-                    WHERE p.site_id = ? AND p.is_proxy_risk = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
-                    GROUP BY dimension_value",
+                COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT p.ip_hash) as ips
+                FROM pageviews p
+                LEFT JOIN site_visitor_audience a ON a.site_id = p.site_id AND a.visitor_id = p.visitor_id
+                WHERE p.site_id = ? AND p.is_proxy_risk = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
+                GROUP BY dimension_value",
             ];
 
             foreach ($dimensionInserts as $dimension => $sql) {
@@ -1891,29 +1889,48 @@ private function cleanupProxyIpData(string $ip): void
     public function drainIngestQueue(int $maxBatch = 500): int
     {
         $processed = 0;
-
         $this->recoverStalledIngestQueue();
+
+        $pageviewsBatch = [];
+        $sessionsBatch = [];
 
         while ($processed < $maxBatch) {
             $raw = $this->redis->rPopLPush($this->ingestQueueKey, $this->ingestProcessingKey);
-
-            if ($raw === false || $raw === null) {
-                break;
-            }
+            if ($raw === false || $raw === null) break;
 
             $decoded = json_decode($raw, true);
-            if (!is_array($decoded) || empty($decoded['tracking_id']) || !isset($decoded['payload']) || !is_array($decoded['payload'])) {
+            if (!is_array($decoded) || empty($decoded['tracking_id']) || !isset($decoded['payload'])) {
                 $this->redis->lRem($this->ingestProcessingKey, $raw, 1);
                 continue;
             }
 
             try {
                 $receivedAt = (int) ($decoded['received_at'] ?? time());
-                $this->processPageview($decoded['tracking_id'], $decoded['payload'], $receivedAt);
+                // 启用 Batch Mode 获取清洗后的数据组
+                $data = $this->processPageview($decoded['tracking_id'], $decoded['payload'], $receivedAt, true);
+                if ($data) {
+                    $pageviewsBatch[] = $data['pageview'];
+                    $sessionsBatch[] = $data['session'];
+                }
                 $this->redis->lRem($this->ingestProcessingKey, $raw, 1);
                 $processed++;
             } catch (Throwable $e) {
-                // Leave the record in processing list for recovery retry.
+                // Ignore, 留存队列以便恢复
+            }
+        }
+
+        // 【最极致的 IO 优化】：事务包裹下的一条巨型 SQL 完成 500 条数据的落地
+        if (!empty($pageviewsBatch)) {
+            $this->db->beginTransaction();
+            try {
+                $this->executeBulkInsert('pageviews', array_keys($pageviewsBatch[0]), $pageviewsBatch);
+                $this->executeBulkInsert('sessions', array_keys($sessionsBatch[0]), $sessionsBatch, 
+                    'ON DUPLICATE KEY UPDATE last_path = VALUES(last_path), updated_at = VALUES(updated_at), duration_seconds = GREATEST(duration_seconds, VALUES(duration_seconds)), page_count = GREATEST(page_count, VALUES(page_count))'
+                );
+                $this->db->commit();
+            } catch (Throwable $e) {
+                $this->db->rollBack();
+                error_log("Bulk Insert Error: " . $e->getMessage());
             }
         }
 
@@ -2943,17 +2960,17 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
         }, $rows);
     }
 
-    private function markIpAudienceState(int $siteId, string $ipHash): array
+private function markVisitorAudienceState(int $siteId, string $visitorId): array
     {
         $stmt = $this->db->prepare(
-            'INSERT INTO site_ip_audience (site_id, ip_hash, first_seen, last_seen_date)
-             VALUES (:site_id, :ip_hash, NOW(), CURRENT_DATE())
+            'INSERT INTO site_visitor_audience (site_id, visitor_id, first_seen, last_seen_date)
+             VALUES (:site_id, :visitor_id, NOW(), CURRENT_DATE())
              ON DUPLICATE KEY UPDATE last_seen_date = VALUES(last_seen_date)'
         );
 
         $stmt->execute([
             ':site_id' => $siteId,
-            ':ip_hash' => $ipHash,
+            ':visitor_id' => $visitorId,
         ]);
 
         $affected = (int) $stmt->rowCount();
@@ -2962,7 +2979,6 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
 
         return [$uvToday, $audienceLabel];
     }
-
     private function detectBrowser(string $userAgent): string
     {
         $ua = strtolower($userAgent);
@@ -4830,6 +4846,7 @@ private function isSearchEngineSpider(string $ua): bool
         $ensureColumn('referrer', 'VARCHAR(2048)');
         $ensureColumn('user_agent', 'VARCHAR(1024)');
         $ensureColumn('session_id', 'VARCHAR(64)');
+        $ensureColumn('visitor_id', 'VARCHAR(128)', 'AFTER session_id');
         $ensureColumn('duration_seconds', 'INT DEFAULT 0');
         $ensureColumn('page_count', 'INT DEFAULT 1');
         $ensureColumn('keyword', 'VARCHAR(255)');
@@ -4907,18 +4924,18 @@ private function isSearchEngineSpider(string $ua): bool
 
         $this->ensureHashPartitioned('pageviews');
 
-        $this->db->exec(
-            "CREATE TABLE IF NOT EXISTS site_ip_audience (
+$this->db->exec(
+            "CREATE TABLE IF NOT EXISTS site_visitor_audience (
                 site_id INT UNSIGNED NOT NULL,
-                ip_hash CHAR(64) NOT NULL,
+                visitor_id VARCHAR(128) NOT NULL,
                 first_seen DATETIME NOT NULL,
                 last_seen_date DATE NOT NULL,
-                PRIMARY KEY (site_id, ip_hash),
+                PRIMARY KEY (site_id, visitor_id),
                 INDEX idx_last_seen_date (last_seen_date)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
         );
 
-        $this->ensureHashPartitioned('site_ip_audience');
+        $this->ensureHashPartitioned('site_visitor_audience');
     }
 
     private function ensureRollupSchema(): void
@@ -6124,7 +6141,7 @@ private function getSetting(string $key): ?array
             );
 
             $this->deleteBatched(
-                'DELETE FROM site_ip_audience WHERE last_seen_date < :cutoff_date LIMIT :batch',
+                'DELETE FROM site_visitor_audience WHERE last_seen_date < :cutoff_date LIMIT :batch',
                 [':cutoff_date' => $rollupCutoffDate],
                 $batchSize
             );
@@ -6348,5 +6365,30 @@ private function getHostDeviceRollupRowsForSites(array $siteIds, DateTimeImmutab
             $statement->execute();
             $deleted = $statement->rowCount();
         } while ($deleted === $batchSize);
+    }
+    
+    private function executeBulkInsert(string $table, array $columns, array $dataRows, string $onDuplicate = ''): void
+    {
+        if (empty($dataRows)) return;
+        
+        $colCount = count($columns);
+        $rowPlaceholders = '(' . implode(',', array_fill(0, $colCount, '?')) . ')';
+        
+        // 每次最多打包 200 条，绝对防止突破 MySQL 65535 占位符上限
+        $chunks = array_chunk($dataRows, 200);
+        foreach ($chunks as $chunk) {
+            $values = [];
+            $params = [];
+            foreach ($chunk as $row) {
+                $values[] = $rowPlaceholders;
+                foreach ($columns as $col) {
+                    $params[] = $row[$col] ?? null;
+                }
+            }
+            
+            $sql = "INSERT INTO {$table} (" . implode(',', $columns) . ") VALUES " . implode(',', $values) . " " . $onDuplicate;
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute($params);
+        }
     }
 }
