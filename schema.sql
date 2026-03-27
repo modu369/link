@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS pageviews (
     ip_address VARCHAR(45),
     ip_hash CHAR(64),
     session_id VARCHAR(64),
+    visitor_id VARCHAR(128),
     duration_seconds INT DEFAULT 0,
     page_count INT DEFAULT 1,
     keyword VARCHAR(255),
@@ -66,16 +67,18 @@ CREATE TABLE IF NOT EXISTS pageviews (
     INDEX idx_site_time (site_id, occurred_at),
     INDEX idx_site_session (site_id, session_id),
     INDEX idx_site_ip (site_id, ip_hash, occurred_at),
-    INDEX idx_site_time_session (site_id, occurred_at, session_id, id)
+    INDEX idx_site_time_session (site_id, occurred_at, session_id, id),
+    INDEX idx_site_visitor (site_id, visitor_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 /*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
 
-CREATE TABLE IF NOT EXISTS site_ip_audience (
+-- 新增：更精确的跨会话/跨IP访客追踪表
+CREATE TABLE IF NOT EXISTS site_visitor_audience (
     site_id INT UNSIGNED NOT NULL,
-    ip_hash CHAR(64) NOT NULL,
+    visitor_id VARCHAR(128) NOT NULL,
     first_seen DATETIME NOT NULL,
     last_seen_date DATE NOT NULL,
-    PRIMARY KEY (site_id, ip_hash),
+    PRIMARY KEY (site_id, visitor_id),
     INDEX idx_last_seen_date (last_seen_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 /*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
@@ -164,39 +167,4 @@ CREATE TABLE IF NOT EXISTS pageview_bot_logs (
     INDEX idx_bot_time (bucket_start),
     INDEX idx_bot_site_time (site_id, occurred_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-/*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
-
-CREATE TABLE IF NOT EXISTS rollup_jobs (
-    site_id INT UNSIGNED NOT NULL PRIMARY KEY,
-    last_rolled_at DATETIME NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS sessions (
-    id BIGINT UNSIGNED AUTO_INCREMENT,
-    site_id INT UNSIGNED NOT NULL,
-    session_id VARCHAR(64) NOT NULL,
-    start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    is_unique TINYINT(1) DEFAULT 0,
-    ip_address VARCHAR(45),
-    user_agent VARCHAR(1024),
-    entry_path VARCHAR(2048),
-    last_path VARCHAR(2048),
-    referrer VARCHAR(2048),
-    keyword VARCHAR(255),
-    engine VARCHAR(64),
-    country_name VARCHAR(128),
-    region_name VARCHAR(128),
-    city_name VARCHAR(128),
-    duration_seconds INT DEFAULT 0,
-    page_count INT DEFAULT 1,
-    PRIMARY KEY (id, site_id),
-    UNIQUE KEY uniq_site_session (site_id, session_id),
-    INDEX idx_site_updated (site_id, updated_at),
-    INDEX idx_site_start (site_id, start_time)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-/*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
--- 初始化默认数据，防止后台读取空表出现潜在的类型警告
-INSERT IGNORE INTO settings (setting_key, setting_value) VALUES 
-('retention', '{"days":0,"pageviews_days":0,"cleanup_hour":3}'),
-('ingest_filters', '{"ip_filters":"","keyword_filters":"","asn_filters":"","ua_filters":""}');
+/*!50100 PARTITION BY HASH (site_id
