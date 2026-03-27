@@ -466,7 +466,7 @@ public function recordPageview(string $trackingId, array $payload): void
         $duration = max(0, (int) ($payload['duration'] ?? 0));
         $pageCount = max(1, (int) ($payload['page_count'] ?? 1));
         $userAgent = $this->limitText($payload['user_agent'] ?? '', 1024);
-        $isBot = $this->isBot($userAgent);
+        $isBot = $this->isBot($userAgent, $payload); // 传入 payload 以验证 JS 能力
         if (!empty($payload['spider_verified'])) {
             $isBot = true;
         }
@@ -1023,7 +1023,7 @@ private function isProxySuspicious(
         $isChinaNetwork = $this->isChinaNetwork($countryValue, $asnMeta, $ispDomain);
         $isDataCenterAsn = $this->isDataCenterAsn($asnMeta, $userAgent, $ispDomain);
 
-        $uaSuspicious = $this->isSuspiciousUserAgent($userAgent);
+        $uaSuspicious = $this->isSuspiciousUserAgent($userAgent, $headerMeta); // 传入 headerMeta
         $ipChanged = true;
         $score = 0;
         $lastTs = 0;
@@ -4439,7 +4439,7 @@ $needles = [
         return false;
     }
 
-    private function isSuspiciousUserAgent(string $userAgent): bool
+    private function isSuspiciousUserAgent(string $userAgent, array $headerMeta = []): bool
     {
         $ua = strtolower(trim($userAgent));
         if ($ua === '') {
@@ -4449,6 +4449,9 @@ $needles = [
         if ($this->isSearchEngineSpider($ua)) {
             return false;
         }
+
+        // 风控侧获取 JS 能力证明
+        $hasJsProof = !empty($headerMeta['showp']);
 
         $needles = [
             'bot', 'spider', 'crawler', 'scrapy', 'headless', 'phantomjs', 'selenium',
@@ -4462,6 +4465,15 @@ $needles = [
 
         foreach ($needles as $needle) {
             if ($needle !== '' && str_contains($ua, $needle)) {
+                if ($hasJsProof) {
+                    $realHeadless = ['headless', 'phantomjs', 'puppeteer', 'playwright', 'selenium', 'chromedriver', 'cypress'];
+                    foreach ($realHeadless as $rh) {
+                        if (str_contains($ua, $rh)) {
+                            return true;
+                        }
+                    }
+                    return false; // 风控评分也对其豁免，不加风险分
+                }
                 return true;
             }
         }
@@ -4469,7 +4481,7 @@ $needles = [
         return strlen($ua) < 20;
     }
 
-    private function isBot(string $userAgent): bool
+    private function isBot(string $userAgent, array $payload = []): bool
     {
         $ua = strtolower(trim($userAgent));
         if ($ua === '') {
@@ -4484,6 +4496,9 @@ $needles = [
             return false;
         }
 
+        // 获取该请求是否具备执行 JS 的能力证明（纯爬虫脚本无法伪造）
+        $hasJsProof = !empty($payload['showp']) && !empty($payload['fingerprint']);
+
         $bots = [
             'bot', 'spider', 'monitor', 'crawler', 'postman', 'curl/', 'wget/',
             'windowspowershell/', 'python-', 'python-requests', 'python-urllib', 'httpclient/',
@@ -4492,13 +4507,29 @@ $needles = [
             'phantomjs', 'axios', 'apachebench', 'wkhtmltopdf', 'playwright', 'puppeteer',
             'chromedriver', 'cypress', 'selenium', 'node-fetch', 'aiohttp', 'httpx',
             'ahrefsbot', 'semrushbot', 'mj12bot', 'dotbot',
-            'masscan', 'nmap', 'sqlmap', 'nessus', 'acunetix',
-            'petalbot'
+            'masscan', 'nmap', 'sqlmap', 'nessus', 'acunetix'
         ];
 
         foreach ($bots as $needle) {
-            if (str_contains($ua, $needle)) {
-                return true;
+            if ($needle !== '' && str_contains($ua, $needle)) {
+                // 【一劳永逸的终极杀招：JS 引擎自证豁免】
+                // 如果命中了底层网络库 (如 okhttp, java, python, curl)，
+                // 但前端成功传来了屏幕分辨率和Canvas指纹，说明它是嵌在真实 APP 里的 WebView！
+                if ($hasJsProof) {
+                    // 但必须无情拦截明确声明自己是“无头测试工具”的高级机器（它们确实能执行JS）
+                    $realHeadless = ['headless', 'phantomjs', 'puppeteer', 'playwright', 'selenium', 'chromedriver', 'cypress'];
+                    $isRealHeadless = false;
+                    foreach ($realHeadless as $rh) {
+                        if (str_contains($ua, $rh)) {
+                            $isRealHeadless = true; 
+                            break;
+                        }
+                    }
+                    if (!$isRealHeadless) {
+                        return false; // 强行豁免！它是一个真实人类的超级 APP
+                    }
+                }
+                return true; // 没有 JS 证明，或者是真 Headless，死刑拦截
             }
         }
 
