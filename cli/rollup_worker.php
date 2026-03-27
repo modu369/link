@@ -52,8 +52,6 @@ function truncateBucketStart(DateTimeImmutable $time): DateTimeImmutable
     return $time->setTime((int) $time->format('H'), 0, 0);
 }
 
-
-
 function processRiskRecoveries(PDO $db, Redis $redis, int $hoursBack, int $batch = 200): void
 {
     $hoursBack = max(1, $hoursBack);
@@ -103,6 +101,10 @@ function processRiskRecoveries(PDO $db, Redis $redis, int $hoursBack, int $batch
     }
 }
 
+// ==========================================
+// = 生命周期管理初始化 (防止 PHP 内存泄漏) =
+// ==========================================
+$workerStartTime = time(); // 记录 Worker 启动时间
 
 do {
     $loopStarted = microtime(true);
@@ -260,6 +262,16 @@ do {
             logLine(sprintf("[rollup worker %d/%d] active cache warmup finished for %d sites (and mapped shares), elapsed=%.2fs", $workerIndex, $workerCount, $warmedSites, $warmupElapsed));
             // =======================================================
         }
+        
+        // ==========================================
+        // = 生命周期管理：优雅退出，防 PHP 内存溢出 =
+        // ==========================================
+        // 运行满 1 小时后，主动退出当前循环。由外部守护进程在一秒内重新拉起干净的进程。
+        if ($loop && (time() - $workerStartTime) > 3600) {
+            logLine(sprintf("[rollup worker %d/%d] Lifecycle limit reached (uptime: %ds). Exiting gracefully to free memory...", $workerIndex, $workerCount, time() - $workerStartTime));
+            exit(0);
+        }
+
     } catch (Throwable $e) {
         logError(sprintf("[rollup worker %d/%d] Execution Error: %s\n%s", $workerIndex, $workerCount, $e->getMessage(), $e->getTraceAsString()));
         exit(1); // 遭遇致命异常（如大段的数据库崩溃），直接退出等待接管重启
