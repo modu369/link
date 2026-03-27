@@ -11,11 +11,11 @@ require __DIR__ . '/../../src/Database.php';
 $config = require __DIR__ . '/../../config/config.php';
 
 header('Content-Type: application/javascript; charset=UTF-8');
-// 新增以下三行：禁止浏览器和蜘蛛缓存此JS文件，强制每次抓取都请求服务器
-header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-header('Pragma: no-cache');
-header('Expires: 0');
-
+// 允许浏览器缓存此 JS 探针 6 小时 (21600秒)，极大提升真实访客二次访问的加载速度
+$maxAge = 21600; 
+header('Cache-Control: public, max-age=' . $maxAge);
+header('Expires: ' . gmdate('D, d M Y H:i:s', time() + $maxAge) . ' GMT');
+header('Pragma: cache');
 $siteId = null;
 
 $getSiteByTrackingId = static function (string $trackingId) use ($config, &$siteId): ?int {
