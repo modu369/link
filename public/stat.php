@@ -292,6 +292,7 @@ $payload = [
     'fingerprint' => $sanitizeText($_GET['fp'] ?? null, 128),
     'duration' => $duration,
     'page_count' => $pageCount,
+    'visitor_id' => $cookieParam,
 ];
 
 $pathLower = strtolower($payload['path'] ?? '');
