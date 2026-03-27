@@ -11,7 +11,8 @@ class RedisClient
         }
 
         $redis = new Redis();
-        $redis->connect($config['host'], (int) $config['port']);
+        // 核心优化：将 connect 改为 pconnect，开启 PHP-FPM 级别的 Redis 长连接
+        $redis->pconnect($config['host'], (int) $config['port']);
 
         if (!empty($config['prefix'])) {
             $redis->setOption(Redis::OPT_PREFIX, $config['prefix']);
