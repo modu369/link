@@ -73,22 +73,19 @@ $clientIp = $extractIp($_SERVER['HTTP_X_REAL_IP'] ?? null)
 
 $userAgent = $sanitizeText($_SERVER['HTTP_USER_AGENT'] ?? '', 512);
 $userAgentLower = strtolower($userAgent);
-// 1. 拦截并在 index.php 已经记录过的蜘蛛，直接丢弃避免重复统计（移除 bingbot 和 bytespider）
-$otherSpiders = [
-    'baiduspider', 'googlebot', 'sogouspider', 'sogou web spider',
-    'yisouspider', '360spider', 'petalbot', 'yahoo',
-];
-foreach ($otherSpiders as $needle) {
-    if (str_contains($userAgentLower, $needle)) {
-        http_response_code(204);
-        exit;
-    }
-}
 
-// 2. 专门在 track.php 中验证和记录可能缓存 JS 的蜘蛛（必应、头条）
+// 统一的蜘蛛规则库
 $trackSpiders = [
-    'bingbot'    => ['search.msn.com', '必应'],
-    'bytespider' => ['crawl.bytedance.com', '头条'],
+    'baiduspider'      => ['crawl.baidu.com', '百度'],
+    'googlebot'        => ['googlebot.com', '谷歌'],
+    'bingbot'          => ['search.msn.com', '必应'],
+    'sogou web spider' => ['crawl.sogou.com', '搜狗'],
+    'sogouspider'      => ['crawl.sogou.com', '搜狗'],
+    'yisouspider'      => ['crawl.sm.cn', '神马'],
+    'bytespider'       => ['crawl.bytedance.com', '头条'],
+    '360spider'        => ['360', '360'],
+    'petalbot'         => ['aspiegel.com', '华为'],
+    'yahoo'            => ['yahoo', '雅虎'],
 ];
 
 $matchedSpider = null;
@@ -147,8 +144,8 @@ if ($matchedSpider) {
     $isVerifiedSpider = false;
     $cacheKey = null;
     
-    // 动态缓存策略：必应使用 C 段缓存，头条使用精确 IP 缓存
-    if ($spiderKey === 'bingbot') {
+    // 动态缓存策略：必应/谷歌使用 C 段缓存，其他使用精确 IP 缓存
+    if (in_array($spiderKey, ['googlebot', 'bingbot'], true)) {
         $ipLong = filter_var($clientIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? ip2long($clientIp) : false;
         if ($ipLong !== false) {
             $cacheKey = sprintf('bot:rdns:%s:%s', $spiderKey, long2ip($ipLong & -256));
@@ -156,7 +153,6 @@ if ($matchedSpider) {
             $cacheKey = sprintf('bot:rdns:%s:%s', $spiderKey, $clientIp);
         }
     } else {
-        // 头条 (bytespider) 采用精确 IP 缓存
         $cacheKey = sprintf('bot:rdns:%s:%s', $spiderKey, $clientIp);
     }
 
@@ -177,9 +173,24 @@ if ($matchedSpider) {
 
     // 缓存未命中，发起 RDNS 查验
     if (!$isVerifiedSpider && (!isset($cached) || $cached !== 'bad')) {
-        $hostLower = $resolveRdns($clientIp);
-        if ($hostLower !== '' && str_contains($hostLower, $spiderRule)) {
-            $isVerifiedSpider = true;
+        if ($spiderRule === '360') {
+            $ranges = [
+                '123.6.49.', '1.192.192.', '1.192.195.', '42.236.10.', '42.236.12.',
+                '42.236.17.', '42.236.101.', '27.115.124.', '180.153.236.', '180.163.220.',
+            ];
+            foreach ($ranges as $prefix) {
+                if (str_starts_with((string) $clientIp, $prefix)) {
+                    $isVerifiedSpider = true;
+                    break;
+                }
+            }
+        } elseif ($spiderKey === 'yisouspider') {
+            $isVerifiedSpider = true; // 神马直接放行
+        } else {
+            $hostLower = $resolveRdns($clientIp);
+            if ($hostLower !== '' && str_contains($hostLower, $spiderRule)) {
+                $isVerifiedSpider = true;
+            }
         }
 
         if ($cacheKey && $redis) {
@@ -188,11 +199,10 @@ if ($matchedSpider) {
         }
     }
 
-    // 验证通过，写入后台消费队列
+    // 如果确认为真蜘蛛，写入队列
     if ($isVerifiedSpider) {
         $siteId = $getSiteByTrackingId($trackingId);
         if ($siteId && $redis) {
-            // 获取真实被抓取的 URL
             $pageUrl = trim((string) ($_GET['p'] ?? ($_SERVER['HTTP_REFERER'] ?? '')));
             $referrerUrl = trim((string) ($_GET['r'] ?? ''));
             $parsed = $pageUrl !== '' ? parse_url($pageUrl) : [];
@@ -232,14 +242,14 @@ if ($matchedSpider) {
         }
     }
 
-    // 处理完毕，阻断程序，防止进入下方普通的访客（PV）逻辑
-$outputGifAndExit();
+    // 只要它自称是蜘蛛（无论真假），处理完毕后强制阻断，绝对不允许进入普通PV统计！
+    $outputGifAndExit();
 }
+
 $cookieParam = (string) ($_GET['ckv'] ?? '');
 $cookieParam = trim($cookieParam);
 
 // 1. 服务端兜底机制：即使前端传来的标识异常，也不直接 exit，而是服务端生成随机标识放行
-// 依靠 Tracker.php 中的 $fallbackUid (IP+UA的Hash) 依然可以精准计算独立访客
 if ($cookieParam === '' || !preg_match('/^[a-f0-9]{16,128}$/i', $cookieParam)) {
     $cookieParam = bin2hex(random_bytes(16));
 }
@@ -256,12 +266,9 @@ if ($cookieValue === '') {
         'secure' => $isHttps,
         'samesite' => $isHttps ? 'None' : 'Lax',
     ];
-    // 使用 @ 抑制因输出头冲突偶尔引发的警告
     @setcookie($cookieName, $cookieParam, $cookieOptions);
 } else {
-    // 2. 移除原有的 !hash_equals 强制 exit 拦截！
-    // 解决多级缓存（LocalStorage 和 Cookie）不同步时造成的真实访客被无情丢弃的问题
-    // 如果存在后端收到了有效的 Cookie 头，以 Cookie 中的持久化标识为准进行关联
+    // 2. 移除原有的 !hash_equals 强制 exit 拦截！解决多级缓存不同步丢数据问题
     if (preg_match('/^[a-f0-9]{16,128}$/i', $cookieValue)) {
         $cookieParam = $cookieValue;
     }
