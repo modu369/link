@@ -6,6 +6,7 @@ $page = max(1, (int) ($_GET['page'] ?? 1));
 $perPage = 50;
 $engine = $_GET['engine'] ?? 'all';
 $domainFilter = $_GET['domain'] ?? 'all';
+
 $engineOptions = [
     '百度',
     '谷歌',
@@ -17,8 +18,10 @@ $engineOptions = [
     '华为',
     '雅虎',
     'DuckDuckBot',
+    '高级渲染蜘蛛', 
     '其他',
 ];
+
 $engineLabels = array_merge(['all'], $engineOptions);
 if (!in_array($engine, $engineLabels, true)) {
     $engine = 'all';
