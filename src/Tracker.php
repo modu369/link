@@ -539,7 +539,6 @@ public function recordPageview(string $trackingId, array $payload): void
                 return null;
             }
             
-            // --- 【关键修复：身份转换】 ---
             if (!empty($proxyRisk['is_spider'])) {
                 $isBot = true;
             }
@@ -555,7 +554,7 @@ public function recordPageview(string $trackingId, array $payload): void
                 $canonicalHost ?: $host,
                 $this->detectSearchEngine($referrer, $userAgent) ?: '高级渲染蜘蛛' 
             );
-            return null; // 押入蜘蛛日志后直接返回，绝对不会进入下面的 pageviews 表
+            return null; 
         }
 
         $geo = $geo ?? ($ip ? $this->resolveIpMeta($ip) : []);
@@ -565,7 +564,6 @@ public function recordPageview(string $trackingId, array $payload): void
         $ispName = $ispName ?? $this->limitText($geo['isp_domain'] ?? '', 128);
         $countryCode = $countryCode ?? $this->limitText($geo['country_code'] ?? '', 16);
 
-        // 【核心修改点 1 & 2】：提取持久化 visitor_id 并更新 UV 受众状态
         $visitorId = $this->limitText($payload['visitor_id'] ?? '', 128);
         if ($visitorId === '') {
             $visitorId = $ipHash ?: bin2hex(random_bytes(8));
@@ -577,10 +575,8 @@ public function recordPageview(string $trackingId, array $payload): void
         }
 
         $engine = $this->detectSearchEngine($referrer, $userAgent);
-        // 维持原有的入口捕获逻辑
         $this->captureEntryPath((int) $site['id'], $sessionId, $path);
 
-        // 构建需入库的数组映射 (pageviews)
         $pageviewData = [
             'site_id' => $site['id'], 
             'host' => $host, 
@@ -591,7 +587,7 @@ public function recordPageview(string $trackingId, array $payload): void
             'ip_address' => $ip, 
             'ip_hash' => $ipHash, 
             'session_id' => $sessionId,
-            'visitor_id' => $visitorId, // 新增注入
+            'visitor_id' => $visitorId, 
             'duration_seconds' => $duration, 
             'page_count' => $pageCount, 
             'keyword' => $keyword ?: null,
@@ -606,7 +602,6 @@ public function recordPageview(string $trackingId, array $payload): void
             'occurred_at' => $occurredAtStr,
         ];
 
-        // 构建需入库的数组映射 (sessions)
         $sessionData = [
             'site_id' => $site['id'], 
             'session_id' => $sessionId, 
@@ -615,7 +610,7 @@ public function recordPageview(string $trackingId, array $payload): void
             'is_unique' => $isUnique ? 1 : 0, 
             'ip_address' => $ip, 
             'user_agent' => $userAgent,
-            'entry_path' => $path, // 首次 INSERT 时的入口记录
+            'entry_path' => $path, 
             'last_path' => $path, 
             'referrer' => $referrer ?: null,
             'keyword' => $keyword ?: null, 
@@ -626,8 +621,8 @@ public function recordPageview(string $trackingId, array $payload): void
             'duration_seconds' => $duration, 
             'page_count' => $pageCount
         ];
-// 【修复 2：HyperLogLog 高性能架构级去重】
-        // 在入库的同时，向 Redis 的 HLL 结构中写入数据
+
+        // 【极客级优化：HLL 架构写入，包含防空判定及独立域名 HLL】
         $todayStr = date('Ymd', strtotime($occurredAtStr));
         $sid = (int) $site['id'];
         
@@ -635,26 +630,34 @@ public function recordPageview(string $trackingId, array $payload): void
         $dailyUvKey = "site:{$sid}:hll_uv:{$todayStr}";
         $device = $isMobile ? 'mobile' : 'desktop';
         $dailyDeviceIpKey = "site:{$sid}:hll_ip_{$device}:{$todayStr}";
+
+        $dimHostVal = $canonicalHost ?: '未知域名';
+        $dimHostDeviceVal = $dimHostVal . '|' . $device;
+        // 使用 MD5 防止域名中的特殊符号破坏 Redis 结构
+        $dailyHostKey = "site:{$sid}:hll_dim:host:" . md5($dimHostVal) . ":{$todayStr}";
+        $dailyHostDeviceKey = "site:{$sid}:hll_dim:host_device:" . md5($dimHostDeviceVal) . ":{$todayStr}";
         
-// 执行并发写入
+        // 严格防空判断，避免污染 HLL
         if ($ipHash) {
             $this->redis->pfAdd($dailyIpKey, [$ipHash]);
             $this->redis->pfAdd($dailyDeviceIpKey, [$ipHash]);
+            $this->redis->pfAdd($dailyHostKey, [$ipHash]);
+            $this->redis->pfAdd($dailyHostDeviceKey, [$ipHash]);
+            
+            $this->redis->expire($dailyIpKey, 86400 * 8);
+            $this->redis->expire($dailyDeviceIpKey, 86400 * 8);
+            $this->redis->expire($dailyHostKey, 86400 * 8);
+            $this->redis->expire($dailyHostDeviceKey, 86400 * 8);
         }
         if ($visitorId) {
             $this->redis->pfAdd($dailyUvKey, [$visitorId]);
+            $this->redis->expire($dailyUvKey, 86400 * 8);
         }
-        
-        // 设置 32 天过期，足够满足 30 天内的数据回溯
-        $this->redis->expire($dailyIpKey, 86400 * 8);
-        $this->redis->expire($dailyUvKey, 86400 * 8);
-        $this->redis->expire($dailyDeviceIpKey, 86400 * 8);
-        // 【核心修改点 3】：Batch Mode 支持 (队列批量消费专用)
+
         if ($batchMode) {
             return ['pageview' => $pageviewData, 'session' => $sessionData];
         }
 
-        // 直连模式 (ingestMode = direct) 继续走单条插入
         $this->executeBulkInsert('pageviews', array_keys($pageviewData), [$pageviewData]);
         $this->executeBulkInsert('sessions', array_keys($sessionData), [$sessionData], 
             'ON DUPLICATE KEY UPDATE last_path = VALUES(last_path), updated_at = VALUES(updated_at), duration_seconds = GREATEST(duration_seconds, VALUES(duration_seconds)), page_count = GREATEST(page_count, VALUES(page_count))'
@@ -2882,6 +2885,34 @@ private function cleanupProxyIpData(string $ip): void
 
         $rows = $statement->fetchAll();
 
+        // 【极客级优化】：在列表展示层用 HLL 精确覆盖 SQL 的虚高累加 (单站)
+        if ($dimension === 'host' || $dimension === 'host_device') {
+            $now = new DateTimeImmutable('now');
+            if ($start->diff($now)->days <= 8) {
+                $dates = [];
+                $current = $span['start'];
+                while ($current < $span['end']) {
+                    $dates[] = $current->format('Ymd');
+                    $current = $current->modify('+1 day')->setTime(0, 0, 0);
+                }
+
+                foreach ($rows as &$row) {
+                    $dimHash = md5($row['dimension_value']);
+                    $keys = [];
+                    foreach ($dates as $ymd) {
+                        $keys[] = "site:{$siteId}:hll_dim:{$dimension}:{$dimHash}:{$ymd}";
+                    }
+                    if (!empty($keys)) {
+                        $hllIp = (int) $this->redis->pfCount($keys);
+                        if ($hllIp > 0) {
+                            $row['ips'] = $hllIp;
+                            $row['ip_count'] = $hllIp;
+                        }
+                    }
+                }
+            }
+        }
+
         return $this->recalcRollupIps([$siteId], $dimension, $span['start'], $span['end'], $rows);
     }
 
@@ -2981,6 +3012,36 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
 
         $statement->execute();
         $rows = $statement->fetchAll();
+
+        // 【极客级优化】：多站聚合底层 HLL 跨站精确拦截 (分享页)
+        if ($dimension === 'host' || $dimension === 'host_device') {
+            $now = new DateTimeImmutable('now');
+            if ($start->diff($now)->days <= 8) {
+                $dates = [];
+                $current = $start;
+                while ($current < $end) {
+                    $dates[] = $current->format('Ymd');
+                    $current = $current->modify('+1 day')->setTime(0, 0, 0);
+                }
+
+                foreach ($rows as &$row) {
+                    $dimHash = md5($row['dimension_value']);
+                    $keys = [];
+                    foreach ($siteIds as $sid) {
+                        foreach ($dates as $ymd) {
+                            $keys[] = "site:{$sid}:hll_dim:{$dimension}:{$dimHash}:{$ymd}";
+                        }
+                    }
+                    if (!empty($keys)) {
+                        $hllIp = (int) $this->redis->pfCount($keys);
+                        if ($hllIp > 0) {
+                            $row['ips'] = $hllIp;
+                            $row['ip_count'] = $hllIp;
+                        }
+                    }
+                }
+            }
+        }
 
         return $this->recalcRollupIps($siteIds, $dimension, $start, $end, $rows);
     }
