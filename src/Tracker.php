@@ -5554,9 +5554,11 @@ public function getDeviceBreakdown(int $siteId, string $range): array
             $mobileViews = 0;
             $mobileIps = 0;
             $totalIps = 0;
+            $desktopIps = 0;
 
             $span = $this->rollupSpanForRange($siteId, $start, $end);
             if ($span) {
+                // 读取基础的 PV 数据 (PV 依然使用 SQL)
                 $rollup = $this->aggregateDimensionRollups($siteId, 'device', $span['start'], $span['end'], 2);
                 $lookup = [];
                 foreach ($rollup as $row) {
@@ -5564,14 +5566,32 @@ public function getDeviceBreakdown(int $siteId, string $range): array
                 }
 
                 $mobileViews = (int) ($lookup['mobile']['views'] ?? 0);
-                $mobileIps = (int) ($lookup['mobile']['ips'] ?? 0);
                 $desktopViews = (int) ($lookup['desktop']['views'] ?? 0);
 
+                // 获取降级兜底用的旧版 IP 数据
+                $mobileIps = (int) ($lookup['mobile']['ips'] ?? 0);
                 $totals = $this->aggregateTotalsWithRollups($siteId, $span['start'], $span['end']);
                 $totalIps = (int) ($totals['ip_count'] ?? 0);
-            }
+                $desktopIps = max(0, $totalIps - $mobileIps);
 
-            $desktopIps = max(0, $totalIps - $mobileIps);
+                // 【关键修复】：使用 HLL 精确覆盖设备拆分数据的 IP
+                $ipKeys = $this->getHllKeysForRange($siteId, 'hll_ip', $range);
+                $mobileIpKeys = $this->getHllKeysForRange($siteId, 'hll_ip_mobile', $range);
+                $desktopIpKeys = $this->getHllKeysForRange($siteId, 'hll_ip_desktop', $range);
+
+                if (!empty($ipKeys)) {
+                    $totalIps = (int) $this->redis->pfCount($ipKeys);
+                }
+                if (!empty($mobileIpKeys)) {
+                    $mobileIps = (int) $this->redis->pfCount($mobileIpKeys);
+                }
+                if (!empty($desktopIpKeys)) {
+                    $desktopIps = (int) $this->redis->pfCount($desktopIpKeys);
+                } else {
+                    // 如果桌面端没有专属 HLL Key，使用总去重 IP 减去移动端去重 IP
+                    $desktopIps = max(0, $totalIps - $mobileIps);
+                }
+            }
 
             return [
                 'desktop' => [
