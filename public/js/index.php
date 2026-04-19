@@ -172,6 +172,22 @@ if ($httpIfNoneMatch === $etag || $httpIfModifiedSince >= $lastModified) {
     visitorId = generateId();
   }
 
-  params.set('ckv', visitorId);
-  sendBeacon(params.toString());
+params.set('ckv', visitorId);
+  
+  var triggerTracker = function() {
+    if (!window._tracker_sent) {
+      sendBeacon(params.toString());
+      window._tracker_sent = true;
+    }
+  };
+
+  if (document.visibilityState === 'visible' || document.visibilityState === undefined) {
+    triggerTracker();
+  } else {
+    document.addEventListener('visibilitychange', function() {
+      if (document.visibilityState === 'visible') {
+        triggerTracker();
+      }
+    });
+  }
 })();
