@@ -610,7 +610,6 @@ public function recordPageview(string $trackingId, array $payload): void
         $sessionData = [
             'site_id' => $site['id'], 
             'session_id' => $sessionId, 
-            'visitor_id' => $visitorId, // 新增注入
             'start_time' => $occurredAtStr, 
             'updated_at' => $occurredAtStr,
             'is_unique' => $isUnique ? 1 : 0, 
@@ -637,12 +636,14 @@ public function recordPageview(string $trackingId, array $payload): void
         $device = $isMobile ? 'mobile' : 'desktop';
         $dailyDeviceIpKey = "site:{$sid}:hll_ip_{$device}:{$todayStr}";
         
-        // 执行并发写入
-        $this->redis->pfAdd($dailyIpKey, [$ipHash]);
+// 执行并发写入
+        if ($ipHash) {
+            $this->redis->pfAdd($dailyIpKey, [$ipHash]);
+            $this->redis->pfAdd($dailyDeviceIpKey, [$ipHash]);
+        }
         if ($visitorId) {
             $this->redis->pfAdd($dailyUvKey, [$visitorId]);
         }
-        $this->redis->pfAdd($dailyDeviceIpKey, [$ipHash]);
         
         // 设置 32 天过期，足够满足 30 天内的数据回溯
         $this->redis->expire($dailyIpKey, 86400 * 8);
@@ -3484,9 +3485,19 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
     }
 private function getHllKeysForRange(int $siteId, string $prefix, string $range): array 
     {
+        // 【关键修复】：如果查询范围是 'all' 或超过 8 天(缓存周期)，放弃 HLL 精确计算，触发外层安全降级
+        if ($range === 'all' || $range === '30d') {
+            return []; 
+        }
+
         [$start, $end] = $this->rollupRangeBounds($range);
+        
+        $now = new DateTimeImmutable('now');
+        if ($start < $now->modify('-8 days')) {
+            return []; // 兜底防御，防止由于自定义时间跨度过大导致数据丢失
+        }
+
         $keys = [];
-        // 遍历范围内的每一天，生成对应的 Redis Key
         $period = new DatePeriod($start, new DateInterval('P1D'), $end);
         foreach ($period as $dt) {
             $keys[] = "site:{$siteId}:{$prefix}:" . $dt->format('Ymd');
@@ -5306,8 +5317,8 @@ public function getMobileBreakdown(int $siteId, string $range): array
                     $ipKeys = $this->getHllKeysForRange($siteId, 'hll_ip', $range);
                     $mobileIpKeys = $this->getHllKeysForRange($siteId, 'hll_ip_mobile', $range);
                     
-                    $globalTotalIps = !empty($ipKeys) ? (int) $this->redis->pfCount($ipKeys) : 0;
-                    $globalMobileIps = !empty($mobileIpKeys) ? (int) $this->redis->pfCount($mobileIpKeys) : 0;
+$globalTotalIps = !empty($ipKeys) ? (int) $this->redis->pfCount($ipKeys) : $result[0]['ips'];
+$globalMobileIps = !empty($mobileIpKeys) ? (int) $this->redis->pfCount($mobileIpKeys) : $result[0]['mobile_ips'];
                     
                     // 构建全局汇总行
                     $globalRow = [
@@ -6406,8 +6417,8 @@ private function getHostDeviceRollupRowsForSites(array $siteIds, DateTimeImmutab
             }
         }
 
-        $globalTotalIps = !empty($allIpKeys) ? (int) $this->redis->pfCount($allIpKeys) : 0;
-        $globalMobileIps = !empty($allMobileIpKeys) ? (int) $this->redis->pfCount($allMobileIpKeys) : 0;
+        $globalTotalIps = !empty($allIpKeys) ? (int) $this->redis->pfCount($allIpKeys) : $result[0]['ips'];
+$globalMobileIps = !empty($allMobileIpKeys) ? (int) $this->redis->pfCount($allMobileIpKeys) : $result[0]['mobile_ips'];
 
         $globalRow = [
             'domain' => '全局汇总',
