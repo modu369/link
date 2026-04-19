@@ -413,14 +413,25 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
     }
 
 public function recordPageview(string $trackingId, array $payload): void
-    {
-        if ($this->ingestMode === 'queue') {
-            $this->enqueuePageview($trackingId, $payload);
-            return;
-        }
+{
+    // 【修复 4】：防抖锁，拦截极短时间内（3秒）同IP/同指纹对同页面的预加载和静默刷新
+    $ip = $payload['ip'] ?? '';
+    $fp = $payload['fingerprint'] ?? '';
+    $path = $payload['path'] ?? '/';
+    $debounceKey = "tracker:debounce:{$trackingId}:" . md5($fp . $ip . $path);
 
-        $this->processPageview($trackingId, $payload);
+    if (!$this->redis->setnx($debounceKey, '1')) {
+        return; // 命中防抖锁，直接丢弃该重复 PV
     }
+    $this->redis->expire($debounceKey, 3); // 锁定 3 秒
+
+    if ($this->ingestMode === 'queue') {
+        $this->enqueuePageview($trackingId, $payload);
+        return;
+    }
+
+    $this->processPageview($trackingId, $payload);
+}
 
     private function processPageview(string $trackingId, array $payload, ?int $receivedAt = null, bool $batchMode = false): ?array
     {
@@ -450,7 +461,9 @@ public function recordPageview(string $trackingId, array $payload): void
             $canonicalHost = $this->limitText($observedHost, 255, $canonicalHost);
         }
         $ip = $this->sanitizeIp($payload['ip'] ?? null);
-        $ipHash = $ip ? hash('sha256', $ip) : null;
+        // 【修复 3 应用】：降级处理 IPv6
+        $effectiveIp = $this->truncateIpv6($ip);
+        $ipHash = $effectiveIp ? hash('sha256', $effectiveIp) : null;
         $audienceLabel = 'returning';
         $uvToday = false;
         $isUnique = false;
@@ -614,7 +627,27 @@ public function recordPageview(string $trackingId, array $payload): void
             'duration_seconds' => $duration, 
             'page_count' => $pageCount
         ];
-
+// 【修复 2：HyperLogLog 高性能架构级去重】
+        // 在入库的同时，向 Redis 的 HLL 结构中写入数据
+        $todayStr = date('Ymd', strtotime($occurredAtStr));
+        $sid = (int) $site['id'];
+        
+        $dailyIpKey = "site:{$sid}:hll_ip:{$todayStr}";
+        $dailyUvKey = "site:{$sid}:hll_uv:{$todayStr}";
+        $device = $isMobile ? 'mobile' : 'desktop';
+        $dailyDeviceIpKey = "site:{$sid}:hll_ip_{$device}:{$todayStr}";
+        
+        // 执行并发写入
+        $this->redis->pfAdd($dailyIpKey, [$ipHash]);
+        if ($visitorId) {
+            $this->redis->pfAdd($dailyUvKey, [$visitorId]);
+        }
+        $this->redis->pfAdd($dailyDeviceIpKey, [$ipHash]);
+        
+        // 设置 32 天过期，足够满足 30 天内的数据回溯
+        $this->redis->expire($dailyIpKey, 86400 * 8);
+        $this->redis->expire($dailyUvKey, 86400 * 8);
+        $this->redis->expire($dailyDeviceIpKey, 86400 * 8);
         // 【核心修改点 3】：Batch Mode 支持 (队列批量消费专用)
         if ($batchMode) {
             return ['pageview' => $pageviewData, 'session' => $sessionData];
@@ -648,7 +681,18 @@ public function recordPageview(string $trackingId, array $payload): void
             'engine' => $engine,
         ]);
     }
-
+private function truncateIpv6(?string $ip): ?string
+{
+    if (!$ip) return $ip;
+    // 【修复 3】：如果是 IPv6，截取前 64 位（通常是同一基站网段），避免隐私扩展导致同一用户 IP 不断变化
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+        $parts = explode(':', $ip);
+        if (count($parts) >= 4) {
+            return implode(':', array_slice($parts, 0, 4)) . '::/64';
+        }
+    }
+    return $ip;
+}
     private function persistBotLog(
         int $siteId,
         string $path,
@@ -3138,7 +3182,24 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
             ':end' => $end->format('Y-m-d H:i:s'),
         ]);
 
-        return $statement->fetchAll();
+        $rows = $statement->fetchAll();
+
+        // 【后续补充】：使用当天的 HLL 精确覆盖图表中的按天 IP/UV
+        foreach ($rows as &$row) {
+            $ymd = date('Ymd', strtotime($row['day']));
+            $ipKey = "site:{$siteId}:hll_ip:{$ymd}";
+            $uvKey = "site:{$siteId}:hll_uv:{$ymd}";
+            
+            // 如果 Redis 中存在 HLL 记录（即升级之后产生的数据），则使用精确值
+            if ($this->redis->exists($ipKey)) {
+                $row['ip_count'] = (int) $this->redis->pfCount($ipKey);
+            }
+            if ($this->redis->exists($uvKey)) {
+                $row['uniques'] = (int) $this->redis->pfCount($uvKey);
+            }
+        }
+
+        return $rows;
     }
 
     private function getRollupHourlyStats(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, bool $allowPartial = false): array
@@ -3421,7 +3482,17 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
             'predictions' => $this->getPredictions($siteId),
         ];
     }
-
+private function getHllKeysForRange(int $siteId, string $prefix, string $range): array 
+    {
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $keys = [];
+        // 遍历范围内的每一天，生成对应的 Redis Key
+        $period = new DatePeriod($start, new DateInterval('P1D'), $end);
+        foreach ($period as $dt) {
+            $keys[] = "site:{$siteId}:{$prefix}:" . $dt->format('Ymd');
+        }
+        return $keys;
+    }
     public function getTotals(int $siteId, string $range): array
     {
         $cacheKey = "totals:{$siteId}:{$range}";
@@ -3429,6 +3500,19 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
             [$start, $end] = $this->rollupRangeBounds($range);
             $rollupTotals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
+
+            // 【后续调整 3】：使用 Redis PFCOUNT 覆盖 SQL 的 SUM() 机械相加
+            $ipKeys = $this->getHllKeysForRange($siteId, 'hll_ip', $range);
+            $uvKeys = $this->getHllKeysForRange($siteId, 'hll_uv', $range);
+            
+            if (!empty($ipKeys)) {
+                $hllIp = (int) $this->redis->pfCount($ipKeys);
+                if ($hllIp > 0) $rollupTotals['ip_count'] = $hllIp;
+            }
+            if (!empty($uvKeys)) {
+                $hllUv = (int) $this->redis->pfCount($uvKeys);
+                if ($hllUv > 0) $rollupTotals['uniques'] = $hllUv;
+            }
 
             return [
                 'views' => $rollupTotals['views'],
@@ -4481,60 +4565,57 @@ $needles = [
         return strlen($ua) < 20;
     }
 
-    private function isBot(string $userAgent, array $payload = []): bool
-    {
-        $ua = strtolower(trim($userAgent));
-        if ($ua === '') {
-            return true;
-        }
+private function isBot(string $userAgent, array $payload = []): bool
+{
+    $ua = strtolower(trim($userAgent));
+    if ($ua === '') {
+        return true;
+    }
 
-        if (str_contains($ua, 'petalbot')) {
-            return true;
-        }
+    if (str_contains($ua, 'petalbot')) {
+        return true;
+    }
 
-        if ($this->isSearchEngineSpider($ua)) {
-            return false;
-        }
+    // 【修复 1】：遇到正常的搜索引擎蜘蛛，直接判定为 bot，不进入正常 PV 统计
+    if ($this->isSearchEngineSpider($ua)) {
+        return true; 
+    }
 
-        // 获取该请求是否具备执行 JS 的能力证明（纯爬虫脚本无法伪造）
-        $hasJsProof = !empty($payload['showp']) && !empty($payload['fingerprint']);
+    // 获取该请求是否具备执行 JS 的能力证明
+    $hasJsProof = !empty($payload['showp']) && !empty($payload['fingerprint']);
 
-        $bots = [
-            'bot', 'spider', 'monitor', 'crawler', 'postman', 'curl/', 'wget/',
-            'windowspowershell/', 'python-', 'python-requests', 'python-urllib', 'httpclient/',
-            'go-http-client/', 'libwww-perl', 'java/', 'okhttp', 'apache-httpclient',
-            'feedburner/', 'headless', 'cloudflare', 'gocolly/', 'scrapy/', 'zgrab/',
-            'phantomjs', 'axios', 'apachebench', 'wkhtmltopdf', 'playwright', 'puppeteer',
-            'chromedriver', 'cypress', 'selenium', 'node-fetch', 'aiohttp', 'httpx',
-            'ahrefsbot', 'semrushbot', 'mj12bot', 'dotbot',
-            'masscan', 'nmap', 'sqlmap', 'nessus', 'acunetix'
-        ];
+    $bots = [
+        'bot', 'spider', 'monitor', 'crawler', 'postman', 'curl/', 'wget/',
+        'windowspowershell/', 'python-', 'python-requests', 'python-urllib', 'httpclient/',
+        'go-http-client/', 'libwww-perl', 'java/', 'okhttp', 'apache-httpclient',
+        'feedburner/', 'headless', 'cloudflare', 'gocolly/', 'scrapy/', 'zgrab/',
+        'phantomjs', 'axios', 'apachebench', 'wkhtmltopdf', 'playwright', 'puppeteer',
+        'chromedriver', 'cypress', 'selenium', 'node-fetch', 'aiohttp', 'httpx',
+        'ahrefsbot', 'semrushbot', 'mj12bot', 'dotbot',
+        'masscan', 'nmap', 'sqlmap', 'nessus', 'acunetix'
+    ];
 
-        foreach ($bots as $needle) {
-            if ($needle !== '' && str_contains($ua, $needle)) {
-                // 【一劳永逸的终极杀招：JS 引擎自证豁免】
-                // 如果命中了底层网络库 (如 okhttp, java, python, curl)，
-                // 但前端成功传来了屏幕分辨率和Canvas指纹，说明它是嵌在真实 APP 里的 WebView！
-                if ($hasJsProof) {
-                    // 但必须无情拦截明确声明自己是“无头测试工具”的高级机器（它们确实能执行JS）
-                    $realHeadless = ['headless', 'phantomjs', 'puppeteer', 'playwright', 'selenium', 'chromedriver', 'cypress'];
-                    $isRealHeadless = false;
-                    foreach ($realHeadless as $rh) {
-                        if (str_contains($ua, $rh)) {
-                            $isRealHeadless = true; 
-                            break;
-                        }
-                    }
-                    if (!$isRealHeadless) {
-                        return false; // 强行豁免！它是一个真实人类的超级 APP
+    foreach ($bots as $needle) {
+        if ($needle !== '' && str_contains($ua, $needle)) {
+            if ($hasJsProof) {
+                $realHeadless = ['headless', 'phantomjs', 'puppeteer', 'playwright', 'selenium', 'chromedriver', 'cypress'];
+                $isRealHeadless = false;
+                foreach ($realHeadless as $rh) {
+                    if (str_contains($ua, $rh)) {
+                        $isRealHeadless = true; 
+                        break;
                     }
                 }
-                return true; // 没有 JS 证明，或者是真 Headless，死刑拦截
+                if (!$isRealHeadless) {
+                    return false; 
+                }
             }
+            return true; 
         }
-
-        return false;
     }
+
+    return false;
+}
 
 private function isSearchEngineSpider(string $ua): bool
     {
@@ -4568,7 +4649,7 @@ private function isSearchEngineSpider(string $ua): bool
         }
 
         $ua = strtolower($userAgent);
-        $needles = ['mobile', 'android', 'iphone', 'ipad', 'ipod', 'micromessenger', 'windows phone', 'harmony', 'huawei'];
+        $needles = ['mobile', 'android', 'iphone', 'ipad', 'ipod', 'micromessenger', 'windows phone'];
         foreach ($needles as $needle) {
             if (str_contains($ua, $needle)) {
                 return true;
@@ -5207,7 +5288,7 @@ $this->db->exec(
         ];
     }
 
-private function getMobileBreakdown(int $siteId, string $range): array
+public function getMobileBreakdown(int $siteId, string $range): array
     {
         $cacheKey = "mobile_breakdown:{$siteId}:{$range}";
 
@@ -5221,28 +5302,22 @@ private function getMobileBreakdown(int $siteId, string $range): array
                 if (!empty($hosts)) {
                     $result = $this->formatHostDeviceBreakdown($hosts, $hostDevices);
                     
-                    // 获取真实的全局去重 IP (无需再查 PV)
-                    $globalTotals = $this->aggregateTotalsWithRollups($siteId, $span['start'], $span['end']);
-                    $deviceRollup = $this->aggregateDimensionRollups($siteId, 'device', $span['start'], $span['end'], 2);
+                    // 【后续调整 4】：利用 HLL 秒级获取全局精准去重的 总IP 和 移动端IP
+                    $ipKeys = $this->getHllKeysForRange($siteId, 'hll_ip', $range);
+                    $mobileIpKeys = $this->getHllKeysForRange($siteId, 'hll_ip_mobile', $range);
                     
-                    $mobileIps = 0;
-                    foreach ($deviceRollup as $dr) {
-                        if (($dr['dimension_value'] ?? '') === 'mobile') {
-                            $mobileIps = (int) ($dr['ips'] ?? 0);
-                            break;
-                        }
-                    }
+                    $globalTotalIps = !empty($ipKeys) ? (int) $this->redis->pfCount($ipKeys) : 0;
+                    $globalMobileIps = !empty($mobileIpKeys) ? (int) $this->redis->pfCount($mobileIpKeys) : 0;
                     
-                    // 构建全局汇总行：PV 与 "汇总" 保持一致，IP 使用全局去重后的值
+                    // 构建全局汇总行
                     $globalRow = [
                         'domain' => '全局汇总',
-                        'views' => $result[0]['views'],               // 保持一致
-                        'mobile_views' => $result[0]['mobile_views'], // 保持一致
-                        'ips' => (int) ($globalTotals['ip_count'] ?? 0),
-                        'mobile_ips' => $mobileIps,
+                        'views' => $result[0]['views'],               
+                        'mobile_views' => $result[0]['mobile_views'], 
+                        'ips' => $globalTotalIps,
+                        'mobile_ips' => $globalMobileIps,
                     ];
                     
-                    // 插入到数组最前面
                     array_unshift($result, $globalRow);
                     return $result;
                 }
@@ -6317,25 +6392,29 @@ private function getHostDeviceRollupRowsForSites(array $siteIds, DateTimeImmutab
         $hostDevices = $this->aggregateDimensionRollupsForSites($siteIds, 'host_device', $start, $end, 1000);
         $result = $this->formatHostDeviceBreakdown($hosts, $hostDevices);
 
-        $placeholders = implode(',', array_fill(0, count($siteIds), '?'));
-        $params = array_merge($siteIds, [$start->format('Y-m-d H:i:s'), $end->format('Y-m-d H:i:s')]);
+        // 【后续补充】：使用 HLL 跨多站点、跨天合并去重
+        $allIpKeys = [];
+        $allMobileIpKeys = [];
+        // 因为 end 可能是次日 0 点，这里兼容 DatePeriod 取值范围
+        $period = new DatePeriod($start, new DateInterval('P1D'), $end);
         
-        // 全局基础 IP（一次性查询）
-        $stmt = $this->db->prepare("SELECT SUM(ip_count) as ips FROM pageview_rollups WHERE site_id IN ($placeholders) AND bucket_start >= ? AND bucket_start < ?");
-        $stmt->execute($params);
-        $globalTotals = $stmt->fetch() ?: [];
+        foreach ($siteIds as $sid) {
+            foreach ($period as $dt) {
+                $ymd = $dt->format('Ymd');
+                $allIpKeys[] = "site:{$sid}:hll_ip:{$ymd}";
+                $allMobileIpKeys[] = "site:{$sid}:hll_ip_mobile:{$ymd}";
+            }
+        }
 
-        // 全局移动端 IP（一次性查询）
-        $stmtDevice = $this->db->prepare("SELECT SUM(ip_count) as ips FROM pageview_dimension_rollups WHERE site_id IN ($placeholders) AND dimension_type = 'device' AND dimension_value = 'mobile' AND bucket_start >= ? AND bucket_start < ?");
-        $stmtDevice->execute($params);
-        $globalMobile = $stmtDevice->fetch() ?: [];
+        $globalTotalIps = !empty($allIpKeys) ? (int) $this->redis->pfCount($allIpKeys) : 0;
+        $globalMobileIps = !empty($allMobileIpKeys) ? (int) $this->redis->pfCount($allMobileIpKeys) : 0;
 
         $globalRow = [
             'domain' => '全局汇总',
             'views' => $result[0]['views'],               
             'mobile_views' => $result[0]['mobile_views'], 
-            'ips' => (int) ($globalTotals['ips'] ?? 0),
-            'mobile_ips' => (int) ($globalMobile['ips'] ?? 0),
+            'ips' => $globalTotalIps,
+            'mobile_ips' => $globalMobileIps,
         ];
 
         array_unshift($result, $globalRow);
