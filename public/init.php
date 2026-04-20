@@ -1,4 +1,7 @@
 <?php
+$lifetime = 604800; 
+session_set_cookie_params($lifetime);
+ini_set('session.gc_maxlifetime', $lifetime);
 session_start();
 
 $config = require __DIR__ . '/../config/config.php';
@@ -67,6 +70,7 @@ $brandingFallback = $config['branding'] ?? [
 ];
 $branding = $tracker->getBrandingSettings($brandingFallback);
 
+// 1. 先默认获取当前登录者（或管理员自己）的站点，用来给没传 site 参数时做兜底
 $sites = $tracker->getSites();
 $siteId = null;
 
@@ -79,13 +83,15 @@ if (isset($_GET['site'])) {
     $siteId = (int) $sites[0]['id'];
 }
 
-$selectedSite = null;
-foreach ($sites as $site) {
-    if ((int) $site['id'] === $siteId) {
-        $selectedSite = $site;
-        break;
-    }
+// 2. 根据获取到的 siteId，查询出当前选中的站点详情
+$selectedSite = $siteId ? $tracker->getSite($siteId) : null;
+
+// 3. 【核心修复位置】现在 $selectedSite 已经有值了，再去判断它并更新侧边栏 $sites
+// 如果是管理员，且正在查看某个普通用户的站点，则将 $sites 切换为该用户的站点列表
+if ($isAdmin && $selectedSite && isset($selectedSite['user_id'])) {
+    $sites = $tracker->getSites((int)$selectedSite['user_id']);
 }
+
 
 $allowedRanges = ['today', 'yesterday', 'day_before', '7d'];
 $range = $_GET['range'] ?? 'today';
