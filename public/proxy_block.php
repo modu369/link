@@ -1,11 +1,9 @@
 <?php
+if (!$GLOBALS['is_admin']) {
+    die('无权访问系统级风控拦截日志。');
+}
 require __DIR__ . '/init.php';
 require __DIR__ . '/layout.php';
-// === 新增：强制水平越权拦截 ===
-if ($siteId > 0 && !$selectedSite) {
-    // 恶意修改 site_id 参数，或者站点已被删除
-    die('您无权访问该站点的数据。');
-}
 // ==================================
 $page = max(1, (int) ($_GET['page'] ?? 1));
 $perPage = 50;
