@@ -6392,10 +6392,27 @@ public function createSharePage(string $name, array $siteIds): array
             throw new InvalidArgumentException('请选择至少一个域名');
         }
 
-        $token = bin2hex(random_bytes(12));
-        $currentUserId = $GLOBALS['current_user_id'] ?? 0; // 新增获取用户ID
+        $isAdmin = $GLOBALS['is_admin'] ?? false;
+        $currentUserId = $GLOBALS['current_user_id'] ?? 0;
 
-        // SQL 加入 user_id
+        // === 新增：安全校验，防止恶意构造表单跨权分享别人的站点 ===
+        if (!$isAdmin) {
+            $placeholders = implode(',', array_fill(0, count($siteIds), '?'));
+            $stmt = $this->db->prepare("SELECT id FROM sites WHERE id IN ($placeholders) AND user_id = ?");
+            $params = $siteIds;
+            $params[] = $currentUserId;
+            $stmt->execute($params);
+            $validIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            
+            // 如果查出属于该用户的站点数量和传入的数量不一致，直接阻断
+            if (count($validIds) !== count($siteIds)) {
+                throw new InvalidArgumentException('越权操作：所选站点中包含您无权访问的站点');
+            }
+        }
+        // ==========================================================
+
+        $token = bin2hex(random_bytes(12));
+
         $statement = $this->db->prepare(
             'INSERT INTO share_pages (name, token, site_ids, user_id, created_at) VALUES (:name, :token, :site_ids, :user_id, NOW())'
         );
@@ -6403,7 +6420,7 @@ public function createSharePage(string $name, array $siteIds): array
             ':name' => $name,
             ':token' => $token,
             ':site_ids' => json_encode($siteIds),
-            ':user_id' => $currentUserId, // 写入 user_id
+            ':user_id' => $currentUserId, 
         ]);
 
         return [
@@ -6414,18 +6431,13 @@ public function createSharePage(string $name, array $siteIds): array
         ];
     }
 
-public function getSharePages(): array
+public function getSharePages(?int $userId = null): array
     {
-        $isAdmin = $GLOBALS['is_admin'] ?? false;
-        $currentUserId = $GLOBALS['current_user_id'] ?? 0;
+        // 统一逻辑：未传 userId 则查询当前身份对应的数据（管理员 0，用户 UID）
+        $uid = ($userId !== null) ? $userId : ($GLOBALS['current_user_id'] ?? 0);
 
-        // 根据身份查询
-        if ($isAdmin) {
-            $query = $this->db->query('SELECT id, name, token, site_ids, created_at FROM share_pages ORDER BY created_at DESC');
-        } else {
-            $query = $this->db->prepare('SELECT id, name, token, site_ids, created_at FROM share_pages WHERE user_id = :uid ORDER BY created_at DESC');
-            $query->execute([':uid' => $currentUserId]);
-        }
+        $query = $this->db->prepare('SELECT id, name, token, site_ids, created_at FROM share_pages WHERE user_id = :uid ORDER BY created_at DESC');
+        $query->execute([':uid' => $uid]);
         $pages = $query->fetchAll();
 
         $idList = [];
