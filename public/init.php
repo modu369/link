@@ -5,6 +5,9 @@ $config = require __DIR__ . '/../config/config.php';
 $GLOBALS['rollup_only'] = (bool) ($config['rollup_only'] ?? true);
 
 if (($_GET['action'] ?? '') === 'logout') {
+    // 【新增】：在销毁 session 前，先记录当前是否为管理员
+    $wasAdmin = $_SESSION['admin_logged_in'] ?? false; 
+
     $entry = $config['security']['login_entry'] ?? 'admin';
     try {
         require_once __DIR__ . '/../src/Database.php';
@@ -20,9 +23,17 @@ if (($_GET['action'] ?? '') === 'logout') {
         }
     } catch (Throwable $e) {
     }
+    
     session_destroy();
-    $redirectEntry = $entry !== '' ? '?entry=' . urlencode($entry) : '';
-    header('Location: /index.php' . $redirectEntry);
+    
+    // 【新增】：根据之前的身份决定跳转去哪里
+    if ($wasAdmin) {
+        $redirectEntry = $entry !== '' ? '?entry=' . urlencode($entry) : '';
+        header('Location: /index.php' . $redirectEntry);
+    } else {
+        // 普通用户直接跳回普通登录页
+        header('Location: /login.php');
+    }
     exit;
 }
 
