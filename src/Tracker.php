@@ -223,47 +223,66 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
 }
 
     public function createSite(string $name, string $domain): array
-    {
-        $trackingId = bin2hex(random_bytes(8));
-        $normalizedDomain = $this->canonicalHost($domain);
-        $statement = $this->db->prepare(
-            'INSERT INTO sites (name, domain, tracking_id, created_at) VALUES (:name, :domain, :tracking_id, NOW())'
-        );
-        $statement->execute([
-            ':name' => $name,
-            ':domain' => $normalizedDomain,
-            ':tracking_id' => $trackingId,
-        ]);
+{
+    $trackingId = bin2hex(random_bytes(8));
+    $normalizedDomain = $this->canonicalHost($domain);
+    $currentUserId = $GLOBALS['current_user_id'] ?? 0; // 获取当前用户ID
 
-        $siteId = (int) $this->db->lastInsertId();
-        if ($normalizedDomain) {
-            $this->addSiteDomain($siteId, $normalizedDomain);
-        }
+    $statement = $this->db->prepare(
+        'INSERT INTO sites (name, domain, tracking_id, user_id, created_at) VALUES (:name, :domain, :tracking_id, :user_id, NOW())'
+    );
+    $statement->execute([
+        ':name' => $name,
+        ':domain' => $normalizedDomain,
+        ':tracking_id' => $trackingId,
+        ':user_id' => $currentUserId,
+    ]);
 
-        return [
-            'id' => $siteId,
-            'name' => $name,
-            'domain' => $normalizedDomain,
-            'tracking_id' => $trackingId,
-        ];
+    $siteId = (int) $this->db->lastInsertId();
+    if ($normalizedDomain) {
+        $this->addSiteDomain($siteId, $normalizedDomain);
     }
 
-    public function getSites(): array
-    {
+    return [
+        'id' => $siteId,
+        'name' => $name,
+        'domain' => $normalizedDomain,
+        'tracking_id' => $trackingId,
+    ];
+}
+public function getSites(): array
+{
+    $isAdmin = $GLOBALS['is_admin'] ?? false;
+    $currentUserId = $GLOBALS['current_user_id'] ?? 0;
+
+    if ($isAdmin) {
         $query = $this->db->query('SELECT id, name, domain, tracking_id, created_at FROM sites ORDER BY created_at DESC');
-
         return $query->fetchAll();
+    } else {
+        // 普通用户只看自己的
+        $statement = $this->db->prepare('SELECT id, name, domain, tracking_id, created_at FROM sites WHERE user_id = :user_id ORDER BY created_at DESC');
+        $statement->execute([':user_id' => $currentUserId]);
+        return $statement->fetchAll();
     }
+}
 
-    public function getSite(int $id): ?array
-    {
+// --- 修改后 ---
+public function getSite(int $id): ?array
+{
+    $isAdmin = $GLOBALS['is_admin'] ?? false;
+    $currentUserId = $GLOBALS['current_user_id'] ?? 0;
+
+    if ($isAdmin) {
         $statement = $this->db->prepare('SELECT id, name, domain, tracking_id, created_at FROM sites WHERE id = :id LIMIT 1');
         $statement->execute([':id' => $id]);
-
-        $site = $statement->fetch();
-
-        return $site ?: null;
+    } else {
+        $statement = $this->db->prepare('SELECT id, name, domain, tracking_id, created_at FROM sites WHERE id = :id AND user_id = :user_id LIMIT 1');
+        $statement->execute([':id' => $id, ':user_id' => $currentUserId]);
     }
+    
+    $site = $statement->fetch();
+    return $site ?: null;
+}
 
     public function getSiteByTrackingId(string $trackingId): ?array
     {
