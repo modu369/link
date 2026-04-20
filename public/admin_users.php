@@ -38,14 +38,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'delete_user') {
         $uid = (int)($_POST['uid'] ?? 0);
         if ($uid > 0) {
+            // 注意：删除用户建议先检查其下是否有站点，或者在数据库设置级联删除
             $db->prepare('DELETE FROM users WHERE id = ?')->execute([$uid]);
             $message = "用户已删除";
         }
     }
 }
 
-// 获取用户列表
-$users = $db->query('SELECT id, username, nickname, created_at FROM users ORDER BY id DESC')->fetchAll(PDO::FETCH_ASSOC);
+// 【修改点】：使用子查询统计每个用户的站点数量
+$users = $db->query('
+    SELECT u.id, u.username, u.nickname, u.created_at, 
+           (SELECT COUNT(*) FROM sites WHERE user_id = u.id) as site_count 
+    FROM users u 
+    ORDER BY u.id DESC
+')->fetchAll(PDO::FETCH_ASSOC);
 
 render_head('用户管理 - 统计后台');
 render_topbar($branding);
@@ -83,24 +89,28 @@ render_topbar($branding);
                         <th>ID</th>
                         <th>用户名</th>
                         <th>昵称</th>
+                        <th>站点数</th>
                         <th>创建时间</th>
                         <th style="text-align:right;">操作</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (empty($users)): ?>
-                        <tr><td colspan="5" class="empty">暂无普通用户</td></tr>
+                        <tr><td colspan="6" class="empty">暂无普通用户</td></tr>
                     <?php else: foreach ($users as $u): ?>
                         <tr>
                             <td><?= $u['id'] ?></td>
                             <td><?= htmlspecialchars($u['username']) ?></td>
                             <td><?= htmlspecialchars($u['nickname'] ?? '-') ?></td>
+                            <td><span class="pill"><?= (int)$u['site_count'] ?></span></td>
                             <td><?= $u['created_at'] ?></td>
-                            <td style="text-align:right;">
+                            <td style="text-align:right; display:flex; gap:8px; justify-content:flex-end;">
+                                <a href="/admin_view_user_sites.php?uid=<?= $u['id'] ?>" class="filter-btn" style="padding:4px 10px; font-size:12px; text-decoration:none;">查看站点</a>
+                                
                                 <form method="post" style="margin:0;" onsubmit="return confirm('确定删除该用户吗？');">
                                     <input type="hidden" name="action" value="delete_user">
                                     <input type="hidden" name="uid" value="<?= $u['id'] ?>">
-                                    <button type="submit" class="ghost" style="padding:4px 8px;">删除</button>
+                                    <button type="submit" class="ghost" style="padding:4px 8px; font-size:12px; color:#ef4444; border-color:#fca5a5;">删除</button>
                                 </form>
                             </td>
                         </tr>
