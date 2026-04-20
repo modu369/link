@@ -26,11 +26,21 @@ if (($_GET['action'] ?? '') === 'logout') {
     exit;
 }
 
-if (!($_SESSION['admin_logged_in'] ?? false)) {
+// --- 修改后 ---
+$isAdmin = $_SESSION['admin_logged_in'] ?? false;
+$isUser = $_SESSION['user_logged_in'] ?? false;
+$currentUserId = (int)($_SESSION['user_id'] ?? 0);
+
+if (!$isAdmin && !$isUser) {
     http_response_code(403);
     echo '<!doctype html><html><head><meta charset="utf-8"><title>Forbidden</title></head><body><h1 style="text-align:center;font-family:Helvetica Neue, Helvetica, PingFang SC, Hiragino Sans GB, Microsoft YaHei, 微软雅黑, Arial, sans-serif;">403 Forbidden</h1></body></html>';
     exit;
 }
+
+// 注入全局变量供后续查询使用
+$GLOBALS['is_admin'] = $isAdmin;
+$GLOBALS['is_user'] = $isUser;
+$GLOBALS['current_user_id'] = $currentUserId;
 
 require __DIR__ . '/../src/Database.php';
 require __DIR__ . '/../src/RedisClient.php';
