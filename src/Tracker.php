@@ -250,33 +250,29 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
         'tracking_id' => $trackingId,
     ];
 }
-public function getSites(): array
+// --- 修改 1：getSites 增加可选参数 $userId ---
+public function getSites(?int $userId = null): array
 {
-    $isAdmin = $GLOBALS['is_admin'] ?? false;
-    $currentUserId = $GLOBALS['current_user_id'] ?? 0;
+    // 如果传了 $userId 则查该用户的；没传则根据当前身份查（管理员为0，普通用户为UID）
+    $uid = ($userId !== null) ? $userId : ($GLOBALS['current_user_id'] ?? 0);
 
-    if ($isAdmin) {
-        $query = $this->db->query('SELECT id, name, domain, tracking_id, created_at FROM sites ORDER BY created_at DESC');
-        return $query->fetchAll();
-    } else {
-        // 普通用户只看自己的
-        $statement = $this->db->prepare('SELECT id, name, domain, tracking_id, created_at FROM sites WHERE user_id = :user_id ORDER BY created_at DESC');
-        $statement->execute([':user_id' => $currentUserId]);
-        return $statement->fetchAll();
-    }
+    $statement = $this->db->prepare('SELECT id, name, domain, tracking_id, created_at FROM sites WHERE user_id = :user_id ORDER BY created_at DESC');
+    $statement->execute([':user_id' => $uid]);
+    return $statement->fetchAll();
 }
 
-// --- 修改后 ---
+// --- 修改 2：getSite 必须查询 user_id 字段 ---
 public function getSite(int $id): ?array
 {
     $isAdmin = $GLOBALS['is_admin'] ?? false;
     $currentUserId = $GLOBALS['current_user_id'] ?? 0;
 
     if ($isAdmin) {
-        $statement = $this->db->prepare('SELECT id, name, domain, tracking_id, created_at FROM sites WHERE id = :id LIMIT 1');
+        // 【关键】：这里一定要加上 user_id 字段
+        $statement = $this->db->prepare('SELECT id, name, domain, tracking_id, user_id, created_at FROM sites WHERE id = :id LIMIT 1');
         $statement->execute([':id' => $id]);
     } else {
-        $statement = $this->db->prepare('SELECT id, name, domain, tracking_id, created_at FROM sites WHERE id = :id AND user_id = :user_id LIMIT 1');
+        $statement = $this->db->prepare('SELECT id, name, domain, tracking_id, user_id, created_at FROM sites WHERE id = :id AND user_id = :user_id LIMIT 1');
         $statement->execute([':id' => $id, ':user_id' => $currentUserId]);
     }
     
