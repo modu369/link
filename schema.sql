@@ -167,7 +167,7 @@ CREATE TABLE IF NOT EXISTS pageview_bot_logs (
     INDEX idx_bot_time (bucket_start),
     INDEX idx_bot_site_time (site_id, occurred_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-/*!50100 PARTITION BY HASH (site_id */;
+/*!50100 PARTITION BY HASH (site_id */
 -- 新增普通用户表
 CREATE TABLE IF NOT EXISTS users (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
