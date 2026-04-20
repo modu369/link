@@ -1,4 +1,7 @@
 <?php
+$lifetime = 604800; 
+session_set_cookie_params($lifetime);
+ini_set('session.gc_maxlifetime', $lifetime);
 // public/login.php
 session_start();
 $config = require __DIR__ . '/../config/config.php';
@@ -12,7 +15,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
 
     try {
         $db = Database::connection($config['db']);
-        $stmt = $db->prepare('SELECT id, username, password_hash FROM users WHERE username = :username LIMIT 1');
+// 加入 nickname 字段
+        $stmt = $db->prepare('SELECT id, username, nickname, password_hash FROM users WHERE username = :username LIMIT 1');
         $stmt->execute([':username' => $username]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -21,7 +25,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
             $_SESSION['user_logged_in'] = true;
             $_SESSION['user_id'] = $user['id'];
             $_SESSION['username'] = $user['username'];
-            $_SESSION['role'] = 'user'; // 标记角色
+            $_SESSION['nickname'] = $user['nickname']; // <--- 新增：保存昵称到 Session
+            $_SESSION['role'] = 'user';
             
             session_write_close();
             header('Location: /sites.php', true, 303);
