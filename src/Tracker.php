@@ -304,6 +304,11 @@ public function getSite(int $id): ?array
 
     public function updateSite(int $id, string $name, string $domain): void
     {
+        // === 新增：严格越权拦截 ===
+        if (!$this->getSite($id)) {
+            throw new RuntimeException('越权操作：无权修改该站点或站点不存在');
+        }
+        // ==========================
         $normalizedDomain = $this->canonicalHost($domain);
         $statement = $this->db->prepare('SELECT tracking_id FROM sites WHERE id = :id LIMIT 1');
         $statement->execute([':id' => $id]);
@@ -6554,6 +6559,11 @@ $globalMobileIps = !empty($allMobileIpKeys) ? (int) $this->redis->pfCount($allMo
     }
     public function deleteSite(int $siteId): void
     {
+        // === 新增：严格越权拦截，验证该站点是否属于当前操作者 ===
+        if (!$this->getSite($siteId)) {
+            throw new RuntimeException('越权操作：无权删除该站点或站点不存在');
+        }
+        // ========================================================
         $this->db->beginTransaction();
         try {
             $deleteStats = $this->db->prepare('DELETE FROM pageviews WHERE site_id = :id');
