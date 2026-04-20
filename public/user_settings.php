@@ -22,6 +22,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         $stmt = $db->prepare('UPDATE users SET nickname = :nickname WHERE id = :id');
         $stmt->execute([':nickname' => $nickname, ':id' => $userId]);
+        $_SESSION['nickname'] = $nickname;
         $msg = '资料更新成功';
     }
 }
