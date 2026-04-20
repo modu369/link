@@ -1,80 +1,53 @@
 <?php
 require __DIR__ . '/init.php';
 require __DIR__ . '/layout.php';
+// === 新增：强制水平越权拦截 ===
+if ($siteId > 0 && !$selectedSite) {
+    // 恶意修改 site_id 参数，或者站点已被删除
+    die('您无权访问该站点的数据。');
+}
+// ==================================
+$blockedRange = in_array($range, ['today', 'yesterday'], true) ? $range : 'today';
+$blockedRows = $selectedSite ? $tracker->getBlockedDomains($siteId, $blockedRange) : [];
 
-$page = max(1, (int) ($_GET['page'] ?? 1));
-$perPage = 50;
-$total = $tracker->getBlockedProxyIpCount();
-$totalPages = (int) ceil($total / $perPage);
-$rows = $tracker->getBlockedProxyIps($perPage, ($page - 1) * $perPage);
-
-render_head('风控拦截明细 - 统计后台');
+render_head('被拦截域名 - 统计后台');
 render_topbar($branding);
 ?>
 <div class="data-layout">
-    <?php render_sidebar($sites, $siteId, $selectedSite, 'proxy_block', $range); ?>
+    <?php render_sidebar($sites, $siteId, $selectedSite, 'blocked_domains', $range); ?>
     <main class="content">
-        <section class="card">
-            <div class="section-title">
-                <div>
-                    <h2 style="margin:0;">实时风控拦截明细</h2>
-                    <p class="muted" style="margin:4px 0 0;">
-                        展示系统最近拦截的最多 1000 条刷量日志。<br>
-                        <i>注：机房/海外节点采用 <b>IP全局封禁</b>；国内网络采用 <b>设备级精准封禁</b>，绝不牵连误杀同基站其他用户。</i>
-                    </p>
+        <?php if (!$selectedSite): ?>
+            <div class="card empty">请选择站点后查看被拦截域名。</div>
+        <?php else: ?>
+            <section class="card">
+                <div class="section-title" style="gap:12px;flex-wrap:wrap;align-items:flex-start;">
+                    <div>
+                        <h2 style="margin:0;">被拦截域名</h2>
+                        <p class="muted" style="margin:2px 0 0;">记录统计代码来源域名不在可统计域名列表中的访问（仅保留今天与昨天）</p>
+                    </div>
+                    <div class="filters">
+                        <span class="muted" style="font-size:13px;">日期</span>
+                        <a class="filter-btn <?= $blockedRange === 'today' ? 'active' : '' ?>" href="/blocked_domains.php?site=<?= (int) $siteId ?>&range=today">今日</a>
+                        <a class="filter-btn <?= $blockedRange === 'yesterday' ? 'active' : '' ?>" href="/blocked_domains.php?site=<?= (int) $siteId ?>&range=yesterday">昨日</a>
+                    </div>
                 </div>
-                <span class="pill">最近 <?= (int) $total ?> 条</span>
-            </div>
-            <?php if (empty($rows)): ?>
-                <div class="empty">暂无拦截记录。</div>
-            <?php else: ?>
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                        <tr>
-                            <th>拦截类型</th>
-                            <th>风险 IP</th>
-                            <th>风险设备指纹 (UID)</th>
-                            <th>风险总分</th>
-                            <th>执行拦截时间</th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        <?php foreach ($rows as $row): ?>
+                <table>
+                    <thead><tr><th>域名</th><th>PV</th></tr></thead>
+                    <tbody>
+                    <?php if (empty($blockedRows)): ?>
+                        <tr><td colspan="2" class="muted">暂无被拦截域名记录</td></tr>
+                    <?php else: ?>
+                        <?php foreach ($blockedRows as $row): ?>
                             <tr>
-                                <td>
-                                    <?php if (str_contains($row['type'], 'IP全局')): ?>
-                                        <span class="badge" style="background: #ffebee; color: #d32f2f; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: normal;"><?= htmlspecialchars($row['type'], ENT_QUOTES, 'UTF-8') ?></span>
-                                    <?php else: ?>
-                                        <span class="badge" style="background: #e3f2fd; color: #1976d2; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: normal;"><?= htmlspecialchars($row['type'], ENT_QUOTES, 'UTF-8') ?></span>
-                                    <?php endif; ?>
-                                </td>
-                                <td><span style="font-family: monospace; font-size: 14px;"><?= htmlspecialchars($row['ip'], ENT_QUOTES, 'UTF-8') ?></span></td>
-                                
-                                <?php 
-                                    // 处理 UID 截断与悬停
-                                    $fullUid = htmlspecialchars($row['uid'], ENT_QUOTES, 'UTF-8');
-                                    // 如果长度超过 20，则截取前 8 位和后 8 位，中间用 ... 代替，视觉效果更好
-                                    $displayUid = mb_strlen($row['uid'], 'UTF-8') > 20 
-                                        ? mb_substr($row['uid'], 0, 8, 'UTF-8') . '...' . mb_substr($row['uid'], -8, null, 'UTF-8') 
-                                        : $fullUid;
-                                ?>
-                                <td title="<?= $fullUid ?>">
-                                    <span style="font-family: monospace; font-size: 12px; color: #666; cursor: pointer;">
-                                        <?= $displayUid ?>
-                                    </span>
-                                </td>
-                                
-                                <td><span style="color: #d32f2f; font-weight: bold;"><?= (int)$row['score'] ?></span></td>
-                                <td><?= htmlspecialchars($row['detected_at'], ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><?= htmlspecialchars($row['domain'], ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><?= (int) $row['pv'] ?></td>
                             </tr>
                         <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-                <?php render_pagination($page, $totalPages, '/proxy_block.php', ['site' => (int) $siteId, 'range' => $range]); ?>
-            <?php endif; ?>
-        </section>
+                    <?php endif; ?>
+                    </tbody>
+                </table>
+            </section>
+        <?php endif; ?>
     </main>
 </div>
 <?php render_footer(); ?>
