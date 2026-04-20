@@ -1,7 +1,12 @@
 <?php
 require __DIR__ . '/init.php';
 require __DIR__ . '/layout.php';
-
+// === 新增：强制水平越权拦截 ===
+if ($siteId > 0 && !$selectedSite) {
+    // 恶意修改 site_id 参数，或者站点已被删除
+    die('您无权访问该站点的数据。');
+}
+// ==================================
 $filters = [
     'date' => $_GET['date'] ?? date('Y-m-d'),
     'visitor' => $_GET['visitor'] ?? 'all',
