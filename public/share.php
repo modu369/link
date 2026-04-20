@@ -2,12 +2,6 @@
 require __DIR__ . '/../src/Database.php';
 require __DIR__ . '/../src/RedisClient.php';
 require __DIR__ . '/../src/Tracker.php';
-// === 新增：强制水平越权拦截 ===
-if ($siteId > 0 && !$selectedSite) {
-    // 恶意修改 site_id 参数，或者站点已被删除
-    die('您无权访问该站点的数据。');
-}
-// ==================================
 $config = require __DIR__ . '/../config/config.php';
 $db = Database::connection($config['db']);
 $redis = RedisClient::connection($config['redis']);
