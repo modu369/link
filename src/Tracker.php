@@ -6384,7 +6384,7 @@ private function getSetting(string $key): ?array
         }
     }
 
-    public function createSharePage(string $name, array $siteIds): array
+public function createSharePage(string $name, array $siteIds): array
     {
         $siteIds = array_values(array_unique(array_filter(array_map('intval', $siteIds))));
         if (empty($siteIds)) {
@@ -6392,13 +6392,17 @@ private function getSetting(string $key): ?array
         }
 
         $token = bin2hex(random_bytes(12));
+        $currentUserId = $GLOBALS['current_user_id'] ?? 0; // 新增获取用户ID
+
+        // SQL 加入 user_id
         $statement = $this->db->prepare(
-            'INSERT INTO share_pages (name, token, site_ids, created_at) VALUES (:name, :token, :site_ids, NOW())'
+            'INSERT INTO share_pages (name, token, site_ids, user_id, created_at) VALUES (:name, :token, :site_ids, :user_id, NOW())'
         );
         $statement->execute([
             ':name' => $name,
             ':token' => $token,
             ':site_ids' => json_encode($siteIds),
+            ':user_id' => $currentUserId, // 写入 user_id
         ]);
 
         return [
@@ -6409,9 +6413,18 @@ private function getSetting(string $key): ?array
         ];
     }
 
-    public function getSharePages(): array
+public function getSharePages(): array
     {
-        $query = $this->db->query('SELECT id, name, token, site_ids, created_at FROM share_pages ORDER BY created_at DESC');
+        $isAdmin = $GLOBALS['is_admin'] ?? false;
+        $currentUserId = $GLOBALS['current_user_id'] ?? 0;
+
+        // 根据身份查询
+        if ($isAdmin) {
+            $query = $this->db->query('SELECT id, name, token, site_ids, created_at FROM share_pages ORDER BY created_at DESC');
+        } else {
+            $query = $this->db->prepare('SELECT id, name, token, site_ids, created_at FROM share_pages WHERE user_id = :uid ORDER BY created_at DESC');
+            $query->execute([':uid' => $currentUserId]);
+        }
         $pages = $query->fetchAll();
 
         $idList = [];
@@ -6439,10 +6452,18 @@ private function getSetting(string $key): ?array
         return $pages;
     }
 
-    public function deleteSharePage(int $id): void
+public function deleteSharePage(int $id): void
     {
-        $stmt = $this->db->prepare('DELETE FROM share_pages WHERE id = :id');
-        $stmt->execute([':id' => $id]);
+        $isAdmin = $GLOBALS['is_admin'] ?? false;
+        $currentUserId = $GLOBALS['current_user_id'] ?? 0;
+
+        if ($isAdmin) {
+            $stmt = $this->db->prepare('DELETE FROM share_pages WHERE id = :id');
+            $stmt->execute([':id' => $id]);
+        } else {
+            $stmt = $this->db->prepare('DELETE FROM share_pages WHERE id = :id AND user_id = :uid');
+            $stmt->execute([':id' => $id, ':uid' => $currentUserId]);
+        }
     }
 
     public function getShareByToken(string $token): ?array
