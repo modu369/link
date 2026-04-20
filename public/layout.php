@@ -144,7 +144,7 @@ function render_topbar(array $branding): void
     $isAdmin = $GLOBALS['is_admin'] ?? false;
     $displayName = $isAdmin 
         ? ($_SESSION['admin_user'] ?? '管理员') 
-        : ($_SESSION['nickname'] ?? $_SESSION['username'] ?? '用户');
+        : (!empty($_SESSION['nickname']) ? $_SESSION['nickname'] : ($_SESSION['username'] ?? '用户'));
     ?>
     <header>
         <a href="/sites.php" style="text-decoration:none; color:inherit;">
