@@ -33,7 +33,7 @@ function render_head(string $title = '统计后台'): void
             .logout { color: #ef4444; text-decoration: none; font-weight: 600; }
             .sites-layout { padding: 22px 24px 32px; display: grid; gap: 16px; }
             .site-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
-            .site-card { border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: #fff; position: relative; min-height: 240px; display: flex; flex-direction: column; }
+            .site-card { border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: #fff; position: relative; display: flex; flex-direction: column; }
             .site-card .name { font-weight: 700; margin-bottom: 6px; }
             .site-card .meta { color: var(--muted); font-size: 12px; }
             .site-card code { background: #0f172a; color: #e2e8f0; padding: 10px; display: block; border-radius: 8px; margin: 10px 0; font-size: 12px; word-break: break-all; max-height: 120px; overflow: auto; }
@@ -92,6 +92,47 @@ function render_head(string $title = '统计后台'): void
                 .data-layout { grid-template-columns: 1fr; }
                 .nav { position: static; top: auto; }
             }
+            /* 下拉菜单基础样式 */
+.user-menu { position: relative; display: inline-block; margin-left: 15px; }
+.user-trigger { 
+    color: #0f172a; text-decoration: none; font-weight: 700; 
+    cursor: pointer; display: flex; align-items: center; gap: 6px;
+    padding: 8px 12px; border-radius: 8px; transition: background 0.2s;
+}
+.user-trigger:hover { background: #f1f5f9; }
+.user-trigger::after { content: '▼'; font-size: 10px; color: var(--muted); }
+
+.dropdown-content {
+    display: none; position: absolute; right: 0; top: 100%;
+    background: #fff; min-width: 160px; border-radius: 12px;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.1); border: 1px solid var(--border);
+    z-index: 100; padding: 6px 0; margin-top: 8px;
+}
+
+/* 修复悬停死区：用透明内容填补按钮与菜单之间的缝隙 */
+.dropdown-content::before {
+    content: '';
+    position: absolute;
+    top: -15px; /* 向上延伸覆盖间距 */
+    left: 0;
+    right: 0;
+    height: 15px;
+    background: transparent;
+}
+
+.dropdown-content a {
+    color: #0f172a; padding: 10px 16px; text-decoration: none;
+    display: block; font-size: 14px; font-weight: 500;
+}
+.dropdown-content a:hover { background: #f8fbff; color: var(--primary); }
+.dropdown-content .divider { height: 1px; background: #f1f5f9; margin: 4px 0; }
+.dropdown-content a.logout-link { color: #ef4444; }
+
+/* 鼠标悬停显示 */
+.user-menu:hover .dropdown-content { display: block; }
+@media (min-width: 1200px) {
+    .site-card { grid-column: span 2; }
+}
         </style>
     </head>
     <body>
@@ -100,6 +141,10 @@ function render_head(string $title = '统计后台'): void
 
 function render_topbar(array $branding): void
 {
+    $isAdmin = $GLOBALS['is_admin'] ?? false;
+    $displayName = $isAdmin 
+        ? ($_SESSION['admin_user'] ?? '管理员') 
+        : ($_SESSION['nickname'] ?? $_SESSION['username'] ?? '用户');
     ?>
     <header>
         <a href="/sites.php" style="text-decoration:none; color:inherit;">
@@ -107,13 +152,23 @@ function render_topbar(array $branding): void
             <div class="muted"><?= htmlspecialchars($branding['brand_subtitle'] ?? '', ENT_QUOTES, 'UTF-8') ?></div>
         </a>
         <div class="top-bar">
-            <a class="logout" style="color:#0f172a;text-decoration:none;font-weight:700;" href="/user.php"><?= htmlspecialchars($_SESSION['admin_user'] ?? '管理员', ENT_QUOTES, 'UTF-8') ?></a>
-            <a class="logout" href="?action=logout">退出</a>
+            <div class="user-menu">
+                <div class="user-trigger"><?= htmlspecialchars($displayName, ENT_QUOTES, 'UTF-8') ?></div>
+                <div class="dropdown-content">
+                    <?php if ($isAdmin): ?>
+                        <a href="/user.php">系统设置</a>
+                        <a href="/admin_users.php">用户管理</a>
+                    <?php else: ?>
+                        <a href="/user_settings.php">个人设置</a>
+                    <?php endif; ?>
+                    <div class="divider"></div>
+                    <a href="?action=logout" class="logout-link">退出登录</a>
+                </div>
+            </div>
         </div>
     </header>
     <?php
 }
-
 function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string $active, string $range): void
 {
     ?>
@@ -159,15 +214,16 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
                     ['key' => 'entry', 'label' => '入口页', 'href' => "/entry.php?site={$siteId}&range={$range}"],
                 ],
             ],
-            'config' => [
-                'title' => '配置',
-                'items' => [
-                    ['key' => 'config', 'label' => '配置修改', 'href' => "/config.php?site={$siteId}&range={$range}"],
-                    ['key' => 'blocked_domains', 'label' => '拦截域名', 'href' => "/blocked_domains.php?site={$siteId}&range={$range}"],
-                    ['key' => 'code', 'label' => '获取代码', 'href' => "/code.php?site={$siteId}&range={$range}"],
-                    ['key' => 'proxy_block', 'label' => '风控拦截', 'href' => "/proxy_block.php?site={$siteId}&range={$range}"],
-                ],
-            ],
+'config' => [
+    'title' => '配置',
+    'items' => array_values(array_filter([
+        ['key' => 'config', 'label' => '配置修改', 'href' => "/config.php?site={$siteId}&range={$range}"],
+        ['key' => 'blocked_domains', 'label' => '拦截域名', 'href' => "/blocked_domains.php?site={$siteId}&range={$range}"],
+        ['key' => 'code', 'label' => '获取代码', 'href' => "/code.php?site={$siteId}&range={$range}"],
+        // 仅限管理员显示
+        $GLOBALS['is_admin'] ? ['key' => 'proxy_block', 'label' => '风控拦截', 'href' => "/proxy_block.php?site={$siteId}&range={$range}"] : null,
+    ])),
+],
         ];
 
         foreach ($sections as $sectionKey => $section):
