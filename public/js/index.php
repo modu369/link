@@ -4,7 +4,18 @@ if ($trackingId === '' || !preg_match('/^[a-f0-9]{16}$/i', $trackingId)) {
     http_response_code(404);
     exit;
 }
+// === 新增：服务器端蜘蛛拦截器 (终极蜘蛛捕获)
+$userAgent = strtolower($_SERVER['HTTP_USER_AGENT'] ?? '');
 
+// 只要带有这些特征，立刻移交 stat.php 记录，跳过 JS 下发
+if (preg_match('/(baiduspider|googlebot|bingbot|sogou web spider|sogouspider|yisouspider|bytespider|360spider|petalbot|yahoo)/i', $userAgent)) {
+    $_GET['sid'] = $trackingId;
+    require __DIR__ . '/../stat.php';
+    // stat.php 处理完毕后会自动输出 1x1 GIF 并 exit，
+    // 蜘蛛收到 GIF 会直接丢弃，不影响它的正常爬取，但我们已经成功记录了它！
+    exit;
+}
+// ==========================================
 // 允许浏览器缓存此 JS 探针 6 小时 (21600秒)，极大提升真实访客二次访问的加载速度
 $maxAge = 21600; 
 $lastModified = filemtime(__FILE__);
@@ -180,14 +191,5 @@ params.set('ckv', visitorId);
       window._tracker_sent = true;
     }
   };
-
-  if (document.visibilityState === 'visible' || document.visibilityState === undefined) {
-    triggerTracker();
-  } else {
-    document.addEventListener('visibilitychange', function() {
-      if (document.visibilityState === 'visible') {
-        triggerTracker();
-      }
-    });
-  }
+  triggerTracker();
 })();
