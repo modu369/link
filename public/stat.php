@@ -33,6 +33,7 @@ if ($method !== 'GET') {
     http_response_code(405);
     exit;
 }
+
 $sanitizeText = static function (?string $value, int $maxLen): string {
     $value = trim((string) $value);
     if ($value === '') {
@@ -41,7 +42,7 @@ $sanitizeText = static function (?string $value, int $maxLen): string {
 
     $value = preg_replace('/[\\x00-\\x1F\\x7F]/u', '', $value);
     if ($value === null) {
-        $value = '';
+        return '';
     }
 
     if (function_exists('mb_substr')) {
@@ -139,17 +140,17 @@ if ($matchedSpider) {
         return null;
     };
 
-[$spiderKey, $spiderRule, $spiderEngine] = $matchedSpider;
+    [$spiderKey, $spiderRule, $spiderEngine] = $matchedSpider;
     
     $isVerifiedSpider = false;
 
-    // === 新增：1. 提前连接 Redis ===
+    // === 1. 提前连接 Redis ===
     $redis = null;
     try {
         $redis = RedisClient::connection($config['redis']);
     } catch (Throwable $e) {}
 
-    // === 新增：2. IPv4/IPv6 CIDR 匹配算法 ===
+    // === 2. IPv4/IPv6 CIDR 匹配算法 ===
     $ipInNetwork = static function (string $ip, string $range): bool {
         if (!str_contains($range, '/')) return $ip === $range;
         [$subnet, $bits] = explode('/', $range, 2);
@@ -171,13 +172,14 @@ if ($matchedSpider) {
         return false;
     };
 
-// === 新增：3. 蜘蛛 IP 池极速匹配 ===
+    // === 3. 蜘蛛 IP 池极速匹配 ===
+    $allowedRangesText = '';
     if ($redis) {
         $spiderIpsJson = $redis->get('cfg:spider_ips');
         if ($spiderIpsJson) {
             $spiderIps = json_decode($spiderIpsJson, true) ?? [];
             
-            // 增加映射表，将 $spiderEngine（中文名）映射回 user.php 中的键名
+            // 映射表：将中文名映射回 user.php 中的键名
             $cfgKeyMap = [
                 '百度' => 'baidu',
                 '谷歌' => 'google',
@@ -197,7 +199,7 @@ if ($matchedSpider) {
                 foreach ($allowedRanges as $range) {
                     if ($range !== '' && $ipInNetwork($clientIp, $range)) {
                         $isVerifiedSpider = true;
-                        break; // 命中配置的蜘蛛IP段，直接判定为真蜘蛛
+                        break;
                     }
                 }
             }
@@ -206,7 +208,7 @@ if ($matchedSpider) {
 
     $cacheKey = null;
 
-    // === 新增：4. 如果 IP 库没有命中，作为兜底继续走原有的 RDNS 动态缓存与验证逻辑 ===
+    // === 4. 如果 IP 库没有命中，走原有的 RDNS 动态缓存与验证逻辑 ===
     if (!$isVerifiedSpider) {
         // 动态缓存策略：必应/谷歌使用 C 段缓存，其他使用精确 IP 缓存
         if (in_array($spiderKey, ['googlebot', 'bingbot'], true)) {
@@ -230,21 +232,20 @@ if ($matchedSpider) {
             }
         }
     }
-// 缓存未命中，发起 RDNS 查验
+
+    // 缓存未命中，发起 RDNS 查验兜底
     if (!$isVerifiedSpider && (!isset($cached) || $cached !== 'bad')) {
         
-        // 检查你在后台是否为当前引擎配置了自定义 IP 段
         $hasConfiguredIps = !empty($allowedRangesText);
 
         if ($spiderKey === 'yisouspider' || $spiderKey === '360spider') {
             // 360和神马不支持官方 RDNS
-            // 逻辑：如果后台配了IP库但没命中，说明肯定是假的（直接拦截）
-            // 只有当后台完全没配IP库时，为了防止误杀才做兜底放行
+            // 如果后台没配IP库，为了防止误杀做兜底放行；如果配了但没命中，则是假蜘蛛
             if (!$hasConfiguredIps) {
                 $isVerifiedSpider = true;
             }
         } else {
-            // 其他搜索引擎（如谷歌、百度、搜狗等），尝试走官方 RDNS 查验兜底
+            // 其他搜索引擎走官方 RDNS 查验
             $hostLower = $resolveRdns($clientIp);
             if ($hostLower !== '' && str_contains($hostLower, $spiderRule)) {
                 $isVerifiedSpider = true;
@@ -257,57 +258,69 @@ if ($matchedSpider) {
         }
     }
 
-    // 如果确认为真蜘蛛，写入队列
+    // 如果确认为真蜘蛛，进行去重后写入队列
     if ($isVerifiedSpider) {
         $siteId = $getSiteByTrackingId($trackingId);
         if ($siteId && $redis) {
+// --- 提取当前爬取的 URL ---
             $pageUrl = trim((string) ($_GET['p'] ?? ($_SERVER['HTTP_REFERER'] ?? '')));
-            $referrerUrl = trim((string) ($_GET['r'] ?? ''));
-            $parsed = $pageUrl !== '' ? parse_url($pageUrl) : [];
-            $path = '';
-            $domain = '';
             
-            if (is_array($parsed)) {
-                $path = (string) ($parsed['path'] ?? '');
-                if (isset($parsed['query']) && $parsed['query'] !== '') {
-                    $path .= '?' . $parsed['query'];
+            // --- 60 秒双端去重锁，加入 $pageUrl 实现按页面精准去重 ---
+            $dedupKey = "bot_dedup:{$siteId}:" . md5($clientIp . $spiderEngine . $pageUrl);
+            if ($redis->setnx($dedupKey, '1')) {
+                $redis->expire($dedupKey, 60);
+
+                $referrerUrl = trim((string) ($_GET['r'] ?? ''));
+                $parsed = $pageUrl !== '' ? parse_url($pageUrl) : [];
+                $path = '';
+                $domain = '';
+                
+                if (is_array($parsed)) {
+                    $path = (string) ($parsed['path'] ?? '');
+                    if (isset($parsed['query']) && $parsed['query'] !== '') {
+                        $path .= '?' . $parsed['query'];
+                    }
+                    $domain = (string) ($parsed['host'] ?? '');
                 }
-                $domain = (string) ($parsed['host'] ?? '');
-            }
 
-            $botPayload = [
-                'site_id' => $siteId,
-                'path' => $path,
-                'referrer' => $referrerUrl,
-                'user_agent' => $userAgent,
-                'ip_address' => $clientIp,
-                'domain' => $domain,
-                'engine' => $spiderEngine,
-            ];
+                $botPayload = [
+                    'site_id' => $siteId,
+                    'path' => $path,
+                    'referrer' => $referrerUrl,
+                    'user_agent' => $userAgent,
+                    'ip_address' => $clientIp,
+                    'domain' => $domain,
+                    'engine' => $spiderEngine,
+                ];
 
-            $record = [
-                'payload' => $botPayload,
-                'received_at' => time(),
-            ];
+                $record = [
+                    'payload' => $botPayload,
+                    'received_at' => time(),
+                ];
 
-            $queueKey = $config['ingest']['bot_queue_key'] ?? 'tracker:ingest:bot_logs';
-            $maxLen = max(0, (int) ($config['ingest']['bot_max_queue_length'] ?? 50000));
-            
-            $redis->lPush($queueKey, json_encode($record));
-            if ($maxLen > 0) {
-                $redis->lTrim($queueKey, 0, $maxLen - 1);
+                $queueKey = $config['ingest']['bot_queue_key'] ?? 'tracker:ingest:bot_logs';
+                $maxLen = max(0, (int) ($config['ingest']['bot_max_queue_length'] ?? 50000));
+                
+                $redis->lPush($queueKey, json_encode($record));
+                if ($maxLen > 0) {
+                    $redis->lTrim($queueKey, 0, $maxLen - 1);
+                }
             }
         }
     }
 
-    // 只要它自称是蜘蛛（无论真假），处理完毕后强制阻断，绝对不允许进入普通PV统计！
+    // 只要它自称是蜘蛛（无论真假），处理完毕后强制阻断，绝对不允许进入普通 PV 统计！
     $outputGifAndExit();
 }
+
+// ============================================
+// 以下是普通真实人类访客的 PV 记录逻辑
+// ============================================
 
 $cookieParam = (string) ($_GET['ckv'] ?? '');
 $cookieParam = trim($cookieParam);
 
-// 1. 服务端兜底机制：即使前端传来的标识异常，也不直接 exit，而是服务端生成随机标识放行
+// 服务端兜底机制
 if ($cookieParam === '' || !preg_match('/^[a-f0-9]{16,128}$/i', $cookieParam)) {
     $cookieParam = bin2hex(random_bytes(16));
 }
@@ -326,7 +339,6 @@ if ($cookieValue === '') {
     ];
     @setcookie($cookieName, $cookieParam, $cookieOptions);
 } else {
-    // 2. 移除原有的 !hash_equals 强制 exit 拦截！解决多级缓存不同步丢数据问题
     if (preg_match('/^[a-f0-9]{16,128}$/i', $cookieValue)) {
         $cookieParam = $cookieValue;
     }
