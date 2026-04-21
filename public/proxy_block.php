@@ -1,5 +1,5 @@
 <?php
-if (!$GLOBALS['is_admin']) {
+if (isset($is_admin) && $is_admin) {
     die('无权访问系统级风控拦截日志。');
 }
 require __DIR__ . '/init.php';
