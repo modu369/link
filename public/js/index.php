@@ -9,6 +9,9 @@ $userAgent = strtolower($_SERVER['HTTP_USER_AGENT'] ?? '');
 
 // 只要带有这些特征，立刻移交 stat.php 记录，跳过 JS 下发
 if (preg_match('/(baiduspider|googlebot|bingbot|sogou web spider|sogouspider|yisouspider|bytespider|360spider|petalbot|yahoo)/i', $userAgent)) {
+    header('Cache-Control: no-cache, no-store, must-revalidate');
+    header('Pragma: no-cache');
+    header('Expires: 0');
     $_GET['sid'] = $trackingId;
     require __DIR__ . '/../stat.php';
     // stat.php 处理完毕后会自动输出 1x1 GIF 并 exit，
