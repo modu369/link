@@ -25,7 +25,7 @@ if (preg_match('/(baiduspider|googlebot|bingbot|sogou web spider|360spider|yisou
         $spiderNameRaw = $matches[1];
         $engineMap = [
             'baiduspider' => '百度', 'googlebot' => '谷歌', 'bingbot' => '必应', 
-            'sogou' => '搜狗', '360spider' => '360', 'yisouspider' => '神马', 
+            'sogou web spider' => '搜狗', '360spider' => '360', 'yisouspider' => '神马', 
             'bytespider' => '头条', 'petalbot' => '华为', 'yahoo' => '雅虎'
         ];
         $spiderEngine = $engineMap[$spiderNameRaw] ?? $spiderNameRaw;
