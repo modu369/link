@@ -139,38 +139,83 @@ if ($matchedSpider) {
         return null;
     };
 
-    [$spiderKey, $spiderRule, $spiderEngine] = $matchedSpider;
+[$spiderKey, $spiderRule, $spiderEngine] = $matchedSpider;
     
     $isVerifiedSpider = false;
-    $cacheKey = null;
-    
-    // 动态缓存策略：必应/谷歌使用 C 段缓存，其他使用精确 IP 缓存
-    if (in_array($spiderKey, ['googlebot', 'bingbot'], true)) {
-        $ipLong = filter_var($clientIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? ip2long($clientIp) : false;
-        if ($ipLong !== false) {
-            $cacheKey = sprintf('bot:rdns:%s:%s', $spiderKey, long2ip($ipLong & -256));
-        } else {
-            $cacheKey = sprintf('bot:rdns:%s:%s', $spiderKey, $clientIp);
-        }
-    } else {
-        $cacheKey = sprintf('bot:rdns:%s:%s', $spiderKey, $clientIp);
-    }
 
+    // === 新增：1. 提前连接 Redis ===
     $redis = null;
     try {
         $redis = RedisClient::connection($config['redis']);
     } catch (Throwable $e) {}
 
-    // 检查 Redis 缓存
-    if ($cacheKey && $redis) {
-        $cached = $redis->get($cacheKey);
-        if ($cached === 'ok') {
-            $isVerifiedSpider = true;
-        } elseif ($cached === 'bad') {
-            $isVerifiedSpider = false;
+    // === 新增：2. IPv4/IPv6 CIDR 匹配算法 ===
+    $ipInNetwork = static function (string $ip, string $range): bool {
+        if (!str_contains($range, '/')) return $ip === $range;
+        [$subnet, $bits] = explode('/', $range, 2);
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && filter_var($subnet, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $mask = -1 << (32 - (int)$bits);
+            return (ip2long($ip) & $mask) === (ip2long($subnet) & $mask);
+        }
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) && filter_var($subnet, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+            $ipBin = inet_pton($ip); $subnetBin = inet_pton($subnet);
+            if ($ipBin === false || $subnetBin === false) return false;
+            $bytes = (int)($bits / 8); $leftoverBits = (int)$bits % 8;
+            if (strncmp($ipBin, $subnetBin, $bytes) !== 0) return false;
+            if ($leftoverBits > 0) {
+                $mask = (int)(0xff00 >> $leftoverBits) & 0xff;
+                if ((ord($ipBin[$bytes]) & $mask) !== (ord($subnetBin[$bytes]) & $mask)) return false;
+            }
+            return true;
+        }
+        return false;
+    };
+
+    // === 新增：3. 蜘蛛 IP 池极速匹配 ===
+    if ($redis) {
+        $spiderIpsJson = $redis->get('cfg:spider_ips');
+        if ($spiderIpsJson) {
+            $spiderIps = json_decode($spiderIpsJson, true) ?? [];
+            $allowedRangesText = $spiderIps[$spiderKey] ?? '';
+            
+            if ($allowedRangesText !== '') {
+                $allowedRanges = array_filter(array_map('trim', explode("\n", $allowedRangesText)));
+                foreach ($allowedRanges as $range) {
+                    if ($range !== '' && $ipInNetwork($clientIp, $range)) {
+                        $isVerifiedSpider = true;
+                        break; // 命中配置的蜘蛛IP段，直接判定为真蜘蛛
+                    }
+                }
+            }
         }
     }
 
+    $cacheKey = null;
+
+    // === 新增：4. 如果 IP 库没有命中，作为兜底继续走原有的 RDNS 动态缓存与验证逻辑 ===
+    if (!$isVerifiedSpider) {
+        // 动态缓存策略：必应/谷歌使用 C 段缓存，其他使用精确 IP 缓存
+        if (in_array($spiderKey, ['googlebot', 'bingbot'], true)) {
+            $ipLong = filter_var($clientIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? ip2long($clientIp) : false;
+            if ($ipLong !== false) {
+                $cacheKey = sprintf('bot:rdns:%s:%s', $spiderKey, long2ip($ipLong & -256));
+            } else {
+                $cacheKey = sprintf('bot:rdns:%s:%s', $spiderKey, $clientIp);
+            }
+        } else {
+            $cacheKey = sprintf('bot:rdns:%s:%s', $spiderKey, $clientIp);
+        }
+
+        // 检查 Redis 缓存
+        if ($cacheKey && $redis) {
+            $cached = $redis->get($cacheKey);
+            if ($cached === 'ok') {
+                $isVerifiedSpider = true;
+            } elseif ($cached === 'bad') {
+                $isVerifiedSpider = false;
+            }
+        }
+    }
     // 缓存未命中，发起 RDNS 查验
     if (!$isVerifiedSpider && (!isset($cached) || $cached !== 'bad')) {
         if ($spiderRule === '360') {
