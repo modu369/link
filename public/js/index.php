@@ -9,7 +9,7 @@ if ($trackingId === '' || !preg_match('/^[a-f0-9]{16}$/i', $trackingId)) {
 $userAgent = strtolower($_SERVER['HTTP_USER_AGENT'] ?? '');
 $isSpider = false; // 增加蜘蛛状态标记
 
-if (preg_match('/(baiduspider|googlebot|bingbot|sogou|360spider|yisouspider|bytespider|petalbot|yahoo)/i', $userAgent, $matches)) {
+if (preg_match('/(baiduspider|googlebot|bingbot|sogou web spider|360spider|yisouspider|bytespider|petalbot|yahoo)/i', $userAgent, $matches)) {
     $isSpider = true; // 确认为蜘蛛
     try {
         // 注意文件层级：js 文件夹需要回退两层才能访问到 config 和 src
