@@ -171,12 +171,26 @@ if ($matchedSpider) {
         return false;
     };
 
-    // === 新增：3. 蜘蛛 IP 池极速匹配 ===
+// === 新增：3. 蜘蛛 IP 池极速匹配 ===
     if ($redis) {
         $spiderIpsJson = $redis->get('cfg:spider_ips');
         if ($spiderIpsJson) {
             $spiderIps = json_decode($spiderIpsJson, true) ?? [];
-            $allowedRangesText = $spiderIps[$spiderKey] ?? '';
+            
+            // 增加映射表，将 $spiderEngine（中文名）映射回 user.php 中的键名
+            $cfgKeyMap = [
+                '百度' => 'baidu',
+                '谷歌' => 'google',
+                '必应' => 'bing',
+                '360' => '360',
+                '搜狗' => 'sogou',
+                '神马' => 'sm',
+                '头条' => 'toutiao',
+                '雅虎' => 'yahoo'
+            ];
+            
+            $cfgKey = $cfgKeyMap[$spiderEngine] ?? '';
+            $allowedRangesText = $spiderIps[$cfgKey] ?? '';
             
             if ($allowedRangesText !== '') {
                 $allowedRanges = array_filter(array_map('trim', explode("\n", $allowedRangesText)));
@@ -216,22 +230,21 @@ if ($matchedSpider) {
             }
         }
     }
-    // 缓存未命中，发起 RDNS 查验
+// 缓存未命中，发起 RDNS 查验
     if (!$isVerifiedSpider && (!isset($cached) || $cached !== 'bad')) {
-        if ($spiderRule === '360') {
-            $ranges = [
-                '123.6.49.', '1.192.192.', '1.192.195.', '42.236.10.', '42.236.12.',
-                '42.236.17.', '42.236.101.', '27.115.124.', '180.153.236.', '180.163.220.',
-            ];
-            foreach ($ranges as $prefix) {
-                if (str_starts_with((string) $clientIp, $prefix)) {
-                    $isVerifiedSpider = true;
-                    break;
-                }
+        
+        // 检查你在后台是否为当前引擎配置了自定义 IP 段
+        $hasConfiguredIps = !empty($allowedRangesText);
+
+        if ($spiderKey === 'yisouspider' || $spiderKey === '360spider') {
+            // 360和神马不支持官方 RDNS
+            // 逻辑：如果后台配了IP库但没命中，说明肯定是假的（直接拦截）
+            // 只有当后台完全没配IP库时，为了防止误杀才做兜底放行
+            if (!$hasConfiguredIps) {
+                $isVerifiedSpider = true;
             }
-        } elseif ($spiderKey === 'yisouspider') {
-            $isVerifiedSpider = true; // 神马直接放行
         } else {
+            // 其他搜索引擎（如谷歌、百度、搜狗等），尝试走官方 RDNS 查验兜底
             $hostLower = $resolveRdns($clientIp);
             if ($hostLower !== '' && str_contains($hostLower, $spiderRule)) {
                 $isVerifiedSpider = true;
