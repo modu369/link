@@ -1396,7 +1396,7 @@ private function isProxySuspicious(
                 ], JSON_UNESCAPED_UNICODE);
                 $this->redis->lPush('proxy:recent_blocks_log', $logData);
                 $this->redis->lTrim('proxy:recent_blocks_log', 0, 999);
-                
+                $this->redis->incr('proxy:total_blocks_count');
                 // ==========================================
                 // = 修改点 3：彻底废弃网段封禁，只封禁当前作恶 IP =
                 // ==========================================
@@ -1445,10 +1445,22 @@ public function getBlockedProxyIps(int $limit = 200, int $offset = 0): array
         }
     }
 
-    public function getBlockedProxyIpCount(): int
+public function getBlockedProxyIpCount(): int
     {
         try {
             return (int) $this->redis->lLen('proxy:recent_blocks_log');
+        } catch (Throwable $e) {
+            return 0;
+        }
+    }
+
+    // === 新增：获取历史拦截总次数的方法 ===
+    public function getTotalBlockedCount(): int
+    {
+        try {
+            $total = (int) $this->redis->get('proxy:total_blocks_count');
+            // 兼容老数据：如果计数器还没开始跑，降级返回列表长度
+            return $total > 0 ? $total : $this->getBlockedProxyIpCount();
         } catch (Throwable $e) {
             return 0;
         }
