@@ -7,8 +7,9 @@ require __DIR__ . '/layout.php';
 // ==================================
 $page = max(1, (int) ($_GET['page'] ?? 1));
 $perPage = 50;
-$total = $tracker->getBlockedProxyIpCount();
-$totalPages = (int) ceil($total / $perPage);
+$listTotal = $tracker->getBlockedProxyIpCount();   // 物理条数（用于确保底部分页组件不越界计算）
+$absoluteTotal = $tracker->getTotalBlockedCount(); // 历史总数（用于展示）
+$totalPages = (int) ceil($listTotal / $perPage);
 $rows = $tracker->getBlockedProxyIps($perPage, ($page - 1) * $perPage);
 
 render_head('风控拦截明细 - 统计后台');
@@ -26,7 +27,11 @@ render_topbar($branding);
                         <i>注：机房/海外节点采用 <b>IP全局封禁</b>；国内网络采用 <b>设备级精准封禁</b>，绝不牵连误杀同基站其他用户。</i>
                     </p>
                 </div>
-                <span class="pill">最近 <?= (int) $total ?> 条</span>
+<?php if ($absoluteTotal > 1000): ?>
+    <span class="pill">总共 <?= (int) $absoluteTotal ?> 条，仅显示近1000条</span>
+<?php else: ?>
+    <span class="pill">最近 <?= (int) $absoluteTotal ?> 条</span>
+<?php endif; ?>
             </div>
             <?php if (empty($rows)): ?>
                 <div class="empty">暂无拦截记录。</div>
