@@ -143,17 +143,20 @@ if ($isSpider) {
     ntime: Math.floor(Date.now() / 1000).toString()
   });
 
-  try {
+try {
     var storageKey = 'tracker_' + siteId;
-    var sessionData = JSON.parse(sessionStorage.getItem(storageKey) || '{}');
-    if (!sessionData.id) {
+    var now = Date.now();
+    var sessionData = JSON.parse(localStorage.getItem(storageKey) || '{}');
+    if (!sessionData.id || !sessionData.lastActive || (now - sessionData.lastActive > 1800000)) {
       sessionData.id = Math.random().toString(16).slice(2);
-      sessionData.started = Date.now();
+      sessionData.started = now;
       sessionData.pages = 0;
     }
+    
     sessionData.pages += 1;
-    sessionData.duration = Math.max(0, Math.round((Date.now() - sessionData.started) / 1000));
-    sessionStorage.setItem(storageKey, JSON.stringify(sessionData));
+    sessionData.lastActive = now;
+    sessionData.duration = Math.max(0, Math.round((now - sessionData.started) / 1000));
+    localStorage.setItem(storageKey, JSON.stringify(sessionData));
 
     params.set('sid2', sessionData.id);
     params.set('dur', sessionData.duration);
