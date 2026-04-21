@@ -4,22 +4,84 @@ if ($trackingId === '' || !preg_match('/^[a-f0-9]{16}$/i', $trackingId)) {
     http_response_code(404);
     exit;
 }
-// === 新增：服务器端蜘蛛拦截器 (终极蜘蛛捕获)
-$userAgent = strtolower($_SERVER['HTTP_USER_AGENT'] ?? '');
 
-// 只要带有这些特征，立刻移交 stat.php 记录，跳过 JS 下发
-if (preg_match('/(baiduspider|googlebot|bingbot|sogou web spider|sogouspider|yisouspider|bytespider|360spider|petalbot|yahoo)/i', $userAgent)) {
-    header('Cache-Control: no-cache, no-store, must-revalidate');
-    header('Pragma: no-cache');
-    header('Expires: 0');
-    $_GET['sid'] = $trackingId;
-    require __DIR__ . '/../stat.php';
-    // stat.php 处理完毕后会自动输出 1x1 GIF 并 exit，
-    // 蜘蛛收到 GIF 会直接丢弃，不影响它的正常爬取，但我们已经成功记录了它！
-    exit;
+// === 新增：极速原生 Redis 蜘蛛捕捉 (0 网络延迟，耗时 1ms) ===
+$userAgent = strtolower($_SERVER['HTTP_USER_AGENT'] ?? '');
+if (preg_match('/(baiduspider|googlebot|bingbot|sogou|360spider|yisouspider|bytespider|petalbot|yahoo)/i', $userAgent, $matches)) {
+    try {
+        // 注意文件层级：js 文件夹需要回退两层才能访问到 config 和 src
+        $config = require __DIR__ . '/../../config/config.php';
+        require_once __DIR__ . '/../../src/RedisClient.php';
+        require_once __DIR__ . '/../../src/Database.php';
+
+        $redis = RedisClient::connection($config['redis']);
+        $clientIp = $_SERVER['HTTP_X_REAL_IP'] ?? $_SERVER['REMOTE_ADDR'] ?? '';
+        $referer = $_SERVER['HTTP_REFERER'] ?? ''; // 蜘蛛抓取 JS 时，Referer 通常是客户网页
+
+        // 统一引擎名称
+        $spiderNameRaw = $matches[1];
+        $engineMap = [
+            'baiduspider' => '百度', 'googlebot' => '谷歌', 'bingbot' => '必应', 
+            'sogou' => '搜狗', '360spider' => '360', 'yisouspider' => '神马', 
+            'bytespider' => '头条', 'petalbot' => '华为', 'yahoo' => '雅虎'
+        ];
+        $spiderEngine = $engineMap[$spiderNameRaw] ?? $spiderNameRaw;
+
+        // 1. 极速获取 Site ID (优先查 Redis 缓存)
+        $siteId = null;
+        $cachedSite = $redis->get("site:{$trackingId}");
+        if ($cachedSite) {
+            $siteId = json_decode($cachedSite, true)['id'] ?? null;
+        } else {
+            $db = Database::connection($config['db']);
+            $stmt = $db->prepare('SELECT id FROM sites WHERE tracking_id = :tid LIMIT 1');
+            $stmt->execute([':tid' => $trackingId]);
+            $siteId = $stmt->fetchColumn();
+            if ($siteId) {
+                $redis->setex("site:{$trackingId}", 3600, json_encode(['id' => $siteId]));
+            }
+        }
+
+        // 2. 去重并直接压入统计队列
+        if ($siteId) {
+            $dedupKey = "bot_dedup:{$siteId}:" . md5($clientIp . $spiderEngine . $referer);
+            
+            // setnx 加锁：60秒内同一只蜘蛛只记录一次
+            if ($redis->setnx($dedupKey, '1')) {
+                $redis->expire($dedupKey, 60);
+
+                $domain = '';
+                if ($referer !== '') {
+                    $domain = parse_url($referer, PHP_URL_HOST) ?? '';
+                }
+
+                $botPayload = [
+                    'site_id' => $siteId,
+                    'path' => $referer,
+                    'referrer' => '', 
+                    'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? '',
+                    'ip_address' => $clientIp,
+                    'domain' => $domain,
+                    'engine' => $spiderEngine,
+                ];
+
+                $record = ['payload' => $botPayload, 'received_at' => time()];
+                $queueKey = $config['ingest']['bot_queue_key'] ?? 'tracker:ingest:bot_logs';
+                $maxLen = max(0, (int) ($config['ingest']['bot_max_queue_length'] ?? 50000));
+                
+                $redis->lPush($queueKey, json_encode($record));
+                if ($maxLen > 0) {
+                    $redis->lTrim($queueKey, 0, $maxLen - 1);
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        // 遇到任何波动都静默忽略，保证下方 JS 正常输出
+    }
 }
-// ==========================================
-// 允许浏览器缓存此 JS 探针 6 小时 (21600秒)，极大提升真实访客二次访问的加载速度
+// =================================================
+
+// 以下是普通的 JS 输出逻辑（允许浏览器缓存，保证秒开）
 $maxAge = 21600; 
 $lastModified = filemtime(__FILE__);
 $etag = md5('v8_tracker_' . $lastModified);
@@ -112,7 +174,6 @@ if ($httpIfNoneMatch === $etag || $httpIfModifiedSince >= $lastModified) {
       params.set('fp', fp);
     }
   } catch (e) {
-    // 忽略无痕模式或禁用 sessionStorage 的异常
   }
 
   var customEndpoint = script.getAttribute('data-endpoint');
@@ -121,13 +182,11 @@ if ($httpIfNoneMatch === $etag || $httpIfModifiedSince >= $lastModified) {
 
   var sendBeacon = function (query) {
     var url = base + separator + query;
-    
     if (window.fetch) {
         fetch(url, {
             method: 'GET',
             keepalive: true
-        }).catch(function(err) {
-        });
+        }).catch(function(err) {});
     } else {
         var img = new Image();
         img.referrerPolicy = 'no-referrer-when-downgrade';
@@ -173,11 +232,9 @@ if ($httpIfNoneMatch === $etag || $httpIfModifiedSince >= $lastModified) {
       var sameSite = (window.location && window.location.protocol === 'https:') ? 'SameSite=None; Secure' : 'SameSite=Lax';
       document.cookie = identifierName + '=' + encodeURIComponent(visitorId) + '; path=/; max-age=31536000; ' + sameSite;
     } catch (e) {}
-    
     try {
       if (window.localStorage) { localStorage.setItem(identifierName, visitorId); }
     } catch (e) {}
-
     try {
       if (window.sessionStorage) { sessionStorage.setItem(identifierName, visitorId); }
     } catch (e) {}
@@ -186,7 +243,7 @@ if ($httpIfNoneMatch === $etag || $httpIfModifiedSince >= $lastModified) {
     visitorId = generateId();
   }
 
-params.set('ckv', visitorId);
+  params.set('ckv', visitorId);
   
   var triggerTracker = function() {
     if (!window._tracker_sent) {
