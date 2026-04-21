@@ -7,7 +7,10 @@ if ($trackingId === '' || !preg_match('/^[a-f0-9]{16}$/i', $trackingId)) {
 
 // === 新增：极速原生 Redis 蜘蛛捕捉 (0 网络延迟，耗时 1ms) ===
 $userAgent = strtolower($_SERVER['HTTP_USER_AGENT'] ?? '');
+$isSpider = false; // 增加蜘蛛状态标记
+
 if (preg_match('/(baiduspider|googlebot|bingbot|sogou|360spider|yisouspider|bytespider|petalbot|yahoo)/i', $userAgent, $matches)) {
+    $isSpider = true; // 确认为蜘蛛
     try {
         // 注意文件层级：js 文件夹需要回退两层才能访问到 config 和 src
         $config = require __DIR__ . '/../../config/config.php';
@@ -81,22 +84,32 @@ if (preg_match('/(baiduspider|googlebot|bingbot|sogou|360spider|yisouspider|byte
 }
 // =================================================
 
-// 以下是普通的 JS 输出逻辑（允许浏览器缓存，保证秒开）
-$maxAge = 21600; 
-$lastModified = filemtime(__FILE__);
-$etag = md5('v8_tracker_' . $lastModified);
-
+// 必须输出的内容类型
 header('Content-Type: application/javascript; charset=UTF-8');
-header('Cache-Control: public, max-age=' . $maxAge);
-header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $lastModified) . ' GMT');
-header('Etag: "' . $etag . '"');
 
-$httpIfNoneMatch = isset($_SERVER['HTTP_IF_NONE_MATCH']) ? trim($_SERVER['HTTP_IF_NONE_MATCH'], '"') : '';
-$httpIfModifiedSince = isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) ? strtotime($_SERVER['HTTP_IF_MODIFIED_SINCE']) : 0;
+// === 核心逻辑：头部信息智能分流 ===
+if ($isSpider) {
+    // 蜘蛛专属：强制不缓存
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+} else {
+    // 普通人类访客：正常缓存 6 小时
+    $maxAge = 21600; 
+    $lastModified = filemtime(__FILE__);
+    $etag = md5('v8_tracker_' . $lastModified);
 
-if ($httpIfNoneMatch === $etag || $httpIfModifiedSince >= $lastModified) {
-    http_response_code(304);
-    exit;
+    header('Cache-Control: public, max-age=' . $maxAge);
+    header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $lastModified) . ' GMT');
+    header('Etag: "' . $etag . '"');
+
+    $httpIfNoneMatch = isset($_SERVER['HTTP_IF_NONE_MATCH']) ? trim($_SERVER['HTTP_IF_NONE_MATCH'], '"') : '';
+    $httpIfModifiedSince = isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) ? strtotime($_SERVER['HTTP_IF_MODIFIED_SINCE']) : 0;
+
+    if ($httpIfNoneMatch === $etag || $httpIfModifiedSince >= $lastModified) {
+        http_response_code(304);
+        exit;
+    }
 }
 ?>
 (function () {
@@ -251,5 +264,6 @@ if ($httpIfNoneMatch === $etag || $httpIfModifiedSince >= $lastModified) {
       window._tracker_sent = true;
     }
   };
+
   triggerTracker();
 })();
