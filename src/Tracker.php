@@ -1454,13 +1454,11 @@ public function getBlockedProxyIpCount(): int
         }
     }
 
-    // === 新增：获取历史拦截总次数的方法 ===
-    public function getTotalBlockedCount(): int
+public function getTotalBlockedCount(): int
     {
         try {
-            $total = (int) $this->redis->get('proxy:total_blocks_count');
-            // 兼容老数据：如果计数器还没开始跑，降级返回列表长度
-            return $total > 0 ? $total : $this->getBlockedProxyIpCount();
+            // 直接获取计数器的值，如果不存在或发生异常，直接返回 0
+            return (int) $this->redis->get('proxy:total_blocks_count');
         } catch (Throwable $e) {
             return 0;
         }
