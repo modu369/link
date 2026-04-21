@@ -159,7 +159,20 @@ render_topbar($branding);
             <div><button type="submit">保存品牌</button></div>
         </form>
     </section>
-
+    <section class="card">
+        <div class="section-title">
+            <h2>安全：隐蔽入口设置</h2>
+            <span class="pill">设置管理员专属登录路径</span>
+        </div>
+        <form method="post" style="display:flex;gap:12px;align-items:end;">
+            <input type="hidden" name="action" value="update_login_entry">
+            <div class="form-control" style="margin:0; flex:1; max-width: 400px;">
+                <label>入口路径 (对应 /index.php?entry=...)</label>
+                <input type="text" name="login_entry" value="<?= htmlspecialchars($loginEntrySetting['entry'] ?? 'admin') ?>" required>
+            </div>
+            <div><button type="submit">保存入口</button></div>
+        </form>
+    </section>
     <section class="card">
         <div class="section-title">
             <h2>数据保留与自动清理</h2>
@@ -182,23 +195,37 @@ render_topbar($branding);
             <div><button type="submit">保存策略</button></div>
         </form>
     </section>
-
     <section class="card">
         <div class="section-title">
             <h2>全局过滤规则</h2>
-            <span class="pill">符合规则的流量将不计入统计</span>
+            <span class="pill">符合规则的流量将不计入统计 (每行一条)</span>
         </div>
         <form method="post" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;align-items:start;">
             <input type="hidden" name="action" value="update_ingest_filters">
+            
             <div class="form-control" style="margin:0;">
-                <label>IP 过滤 (每行一条)</label>
-                <textarea name="ip_filters" rows="4"><?= htmlspecialchars($ingestFilters['ip_filters']) ?></textarea>
+                <label>IP 过滤 (支持通配符/CIDR)</label>
+                <textarea name="ip_filters" rows="4"><?= htmlspecialchars($ingestFilters['ip_filters'] ?? '') ?></textarea>
             </div>
+            
             <div class="form-control" style="margin:0;">
-                <label>UA 特征过滤</label>
-                <textarea name="ua_filters" rows="4"><?= htmlspecialchars($ingestFilters['ua_filters']) ?></textarea>
+                <label>ASN 过滤 (支持编号或名称)</label>
+                <textarea name="asn_filters" rows="4"><?= htmlspecialchars($ingestFilters['asn_filters'] ?? '') ?></textarea>
             </div>
-            <div style="align-self:end;"><button type="submit">保存过滤</button></div>
+            
+            <div class="form-control" style="margin:0;">
+                <label>UA 特征过滤 (支持包含匹配)</label>
+                <textarea name="ua_filters" rows="4"><?= htmlspecialchars($ingestFilters['ua_filters'] ?? '') ?></textarea>
+            </div>
+            
+            <div class="form-control" style="margin:0;">
+                <label>关键词/路径过滤 (包含匹配)</label>
+                <textarea name="keyword_filters" rows="4"><?= htmlspecialchars($ingestFilters['keyword_filters'] ?? '') ?></textarea>
+            </div>
+            
+            <div style="grid-column: 1 / -1; text-align: right;">
+                <button type="submit">保存过滤规则</button>
+            </div>
         </form>
     </section>
 </div>
