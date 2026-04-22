@@ -265,14 +265,12 @@ if ($matchedSpider) {
         if ($siteId && $redis) {
 // --- 提取当前爬取的 URL ---
             $pageUrl = trim((string) ($getParam('p') ?? ($_SERVER['HTTP_REFERER'] ?? '')));
-$referrerUrl = trim((string) ($getParam('r') ?? ''));
+            $referrerUrl = trim((string) ($getParam('r') ?? ''));
             
             // --- 60 秒双端去重锁，加入 $pageUrl 实现按页面精准去重 ---
             $dedupKey = "bot_dedup:{$siteId}:" . md5($clientIp . $spiderEngine . $pageUrl);
             if ($redis->setnx($dedupKey, '1')) {
                 $redis->expire($dedupKey, 60);
-
-                $referrerUrl = trim((string) ($_GET['r'] ?? ''));
                 $parsed = $pageUrl !== '' ? parse_url($pageUrl) : [];
                 $path = '';
                 $domain = '';
