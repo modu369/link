@@ -113,7 +113,6 @@ if ($isSpider) {
 }
 ?>
 (function () {
-  // 1. 防止网站重复引入统计代码导致数据翻倍
   if (window._v6_tracker_initialized) return;
   window._v6_tracker_initialized = true;
 
@@ -135,7 +134,6 @@ if ($isSpider) {
   }
   if (!siteId) return;
 
-  // === 51la 级黑科技 1：Iframe 溯源穿透 ===
   var getRealReferrer = function() {
     var ref = '';
     try { ref = window.top.document.referrer; } catch(e) {
@@ -146,7 +144,6 @@ if ($isSpider) {
     return ref;
   };
 
-  // === 51la 级黑科技 2：TDK 标题提取 ===
   var getPageTitle = function() {
     return document.title ? document.title.substring(0, 200) : '';
   };
@@ -274,14 +271,17 @@ if ($isSpider) {
       var separator = base.indexOf('?') === -1 ? '?' : '&';
       var targetUrl = base + separator + params.toString();
 
-      var sendData = function(isPing) {
+var sendData = function(isPing) {
           if (isPing) params.set('ping', '1'); 
           
           try {
               var storageKey = 'tracker_' + siteId;
               var sessionData = JSON.parse(localStorage.getItem(storageKey) || '{}');
               if (sessionData.started) {
-                  sessionData.duration = Math.max(0, Math.round((Date.now() - sessionData.started) / 1000));
+                  var now = Date.now();
+                  sessionData.duration = Math.max(0, Math.round((now - sessionData.started) / 1000));
+                  sessionData.lastActive = now; 
+                  
                   params.set('dur', sessionData.duration);
                   localStorage.setItem(storageKey, JSON.stringify(sessionData));
               }
@@ -340,7 +340,6 @@ var bindSPA = function() {
           var orig = window.history[type];
           return function() {
               var rv = orig.apply(this, arguments);
-              // 从 setTimeout 50 改为 300，给 Vue/React 足够的时间更新 DOM Title
               setTimeout(trackPageView, 300); 
               return rv;
           };
@@ -348,7 +347,6 @@ var bindSPA = function() {
       if (window.history && window.history.pushState) window.history.pushState = _wr('pushState');
       if (window.history && window.history.replaceState) window.history.replaceState = _wr('replaceState');
       window.addEventListener('popstate', function() { setTimeout(trackPageView, 300); });
-      // 也可以加上对 document.title 变更的独立观测...
   };
   
   bindSPA();
