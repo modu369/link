@@ -81,7 +81,7 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
             'visitor' => [
                 'title' => '访问者信息',
                 'items' => [
-                    ['key' => 'env', 'label' => '系统环境概览', 'href' => "/env.php?site={$siteId}&range={$range}"],
+                    ['key' => 'env', 'label' => '系统环境', 'href' => "/env.php?site={$siteId}&range={$range}"],
                     ['key' => 'region', 'label' => '地域分布', 'href' => "/region.php?site={$siteId}&range={$range}"],
                     ['key' => 'isp', 'label' => '运营商', 'href' => "/isp.php?site={$siteId}&range={$range}"],
                     ['key' => 'audience', 'label' => '新老访客', 'href' => "/audience.php?site={$siteId}&range={$range}"],
