@@ -435,10 +435,12 @@ public function getSite(int $id): ?array
 public function recordPageview(string $trackingId, array $payload): void
 {
     // 【修复 4】：防抖锁，拦截极短时间内（3秒）同IP/同指纹对同页面的预加载和静默刷新
-    $ip = $payload['ip'] ?? '';
-    $fp = $payload['fingerprint'] ?? '';
-    $path = $payload['path'] ?? '/';
-    $debounceKey = "tracker:debounce:{$trackingId}:" . md5($fp . $ip . $path);
+$ip = $payload['ip'] ?? '';
+$fp = $payload['fingerprint'] ?? '';
+$path = $payload['path'] ?? '/';
+// 将 is_ping 状态加入防抖哈希中，防止跳出率高的用户离开时丢弃 ping 信号
+$isPingStr = !empty($payload['is_ping']) ? '1' : '0';
+$debounceKey = "tracker:debounce:{$trackingId}:" . md5($fp . $ip . $path . $isPingStr);
 
     if (!$this->redis->setnx($debounceKey, '1')) {
         return; // 命中防抖锁，直接丢弃该重复 PV
