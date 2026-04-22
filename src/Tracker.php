@@ -643,7 +643,13 @@ public function recordPageview(string $trackingId, array $payload): void
             'duration_seconds' => $duration, 
             'page_count' => $pageCount
         ];
-
+if (!empty($payload['is_ping'])) {
+            // 我们只将最精确的停留时长 Update 到 sessions 表，绝不计入 pageviews 和 Redis HLL
+            $this->executeBulkInsert('sessions', array_keys($sessionData), [$sessionData], 
+                'ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at), duration_seconds = GREATEST(duration_seconds, VALUES(duration_seconds)), page_count = GREATEST(page_count, VALUES(page_count))'
+            );
+            return null; // 直接阻断，防止刷新 PV 和 UV 计数
+        }
         // 【极客级优化：HLL 架构写入，包含防空判定及独立域名 HLL】
         $todayStr = date('Ymd', strtotime($occurredAtStr));
         $sid = (int) $site['id'];
