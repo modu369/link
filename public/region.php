@@ -29,9 +29,29 @@ render_topbar($branding);
                     </div>
                     <?php render_range_filters($allowedRanges, $range, 'region', (int) $selectedSite['id']); ?>
                 </div>
-            </section>
+</section>
+            <div class="view-tabs">
+                <button class="active" onclick="switchRegionView('world', this)">全球热力</button>
+                <button onclick="switchRegionView('china', this)">中国区域</button>
+            </div>
 
-            <section class="card">
+            <script>
+                function switchRegionView(view, btn) {
+                    const buttons = btn.parentElement.querySelectorAll('button');
+                    buttons.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    
+                    document.getElementById('view-world').style.display = view === 'world' ? 'block' : 'none';
+                    document.getElementById('view-china').style.display = view === 'china' ? 'block' : 'none';
+                    
+                    // 关键修复：ECharts 所在容器恢复显示时，必须触发 resize 事件，否则地图宽度会变成 0
+                    setTimeout(() => {
+                        window.dispatchEvent(new Event('resize'));
+                    }, 50);
+                }
+            </script>
+
+            <section class="card" id="view-world">
                 <div class="section-title"><h3>全球热力</h3><span class="muted">可缩放，按 IP 计</span></div>
                 <div id="worldMap" style="width:100%;height:520px;margin-bottom:12px;"></div>
                 <div class="table-wrap">
@@ -51,9 +71,9 @@ render_topbar($branding);
                         </tbody>
                     </table>
                 </div>
-            </section>
+</section>
 
-            <section class="card">
+            <section class="card" id="view-china" style="display: none;">
                 <div class="section-title"><h3>中国区域</h3><span class="muted">省级视图，按 IP 计</span></div>
                 <div id="chinaRegionMap" style="width:100%;height:420px;margin-bottom:12px;"></div>
                 <div class="table-wrap">
