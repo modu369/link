@@ -10,8 +10,183 @@ function render_head(string $title = '统计后台'): void
         <link rel="stylesheet" href="/t_statics/css/modern-normalize.css">
         <link rel="stylesheet" href="/t_statics/css/v6-default.css">
         <script src="/t_statics/js/chart.js"></script>
+        <style>
+            /* ========================================================
+               1. 全局字体渲染引擎优化 (核心质感来源)
+               ======================================================== */
+            body, html, button, input, select, textarea, a {
+                /* 苹果/微软/安卓 最佳中文字体栈 fallback */
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif !important;
+                /* 开启 Mac/iOS 的字体抗锯齿，文字边缘更锐利平滑 */
+                -webkit-font-smoothing: antialiased !important;
+                -moz-osx-font-smoothing: grayscale !important;
+                /* 优化文字可读性与字距 */
+                text-rendering: optimizeLegibility !important;
+            }
+
+            /* ========================================================
+               2. 顶部通栏 & 侧边栏 UI 精调
+               ======================================================== */
+            
+            header {
+                padding: 0 24px 0 0 !important;
+                height: 60px !important;
+                background: #fff !important;
+                display: flex !important;
+                justify-content: space-between !important;
+                align-items: center !important;
+                box-shadow: 0 1px 4px rgba(0,21,41,.08) !important;
+                position: sticky !important;
+                top: 0 !important;
+                z-index: 1000 !important;
+                border: none !important;
+            }
+            .header-left { display: flex; align-items: center; gap: 24px; height: 100%; }
+            .header-right { display: flex; align-items: center; gap: 24px; }
+            
+            .brand-link { 
+                text-decoration: none; 
+                background: #fff; 
+                width: 220px; 
+                height: 60px;
+                display: flex;
+                align-items: center;
+                padding-left: 24px;
+                border-right: 1px solid #f0f0f0;
+            }
+            .brand { 
+                font-size: 20px !important; 
+                font-weight: 900 !important; /* 极粗字重，凸显 Logo 质感 */
+                color: #17233d !important; 
+                font-style: italic !important; 
+                margin: 0 !important; 
+                letter-spacing: 0.5px !important;
+            }
+            .brand span { color: #f9a123; font-size: 14px; margin-left: 2px; font-style: normal; font-weight: 800;}
+            
+            .site-switcher select {
+                padding: 6px 28px 6px 14px !important;
+                border: 1px solid #dcdee2 !important;
+                border-radius: 4px !important;
+                background: #f8f8f9 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23808695'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E") no-repeat right 6px center / 16px !important;
+                font-size: 14px !important;
+                font-weight: 500 !important;
+                color: #515a6e !important;
+                outline: none !important;
+                appearance: none !important;
+                min-width: 160px;
+                cursor: pointer;
+                transition: border 0.2s, box-shadow 0.2s;
+            }
+            .site-switcher select:hover { border-color: #57a3f3 !important; }
+            .site-switcher select:focus { border-color: #2d8cf0 !important; box-shadow: 0 0 0 2px rgba(45,140,240,.2) !important; }
+
+            .top-nav-links { display: flex; gap: 24px; margin-right: 8px; }
+            .top-nav-links a { 
+                text-decoration: none; 
+                color: #515a6e; 
+                font-size: 14px; 
+                font-weight: 500;
+                display: flex; 
+                align-items: center; 
+                gap: 6px;
+                transition: color 0.2s;
+            }
+            .top-nav-links a:hover { color: #2d8cf0; }
+
+            /* 侧边栏 */
+            .nav {
+                background: #fff !important;
+                border: none !important;
+                border-right: 1px solid #f0f0f0 !important;
+                border-radius: 0 !important;
+                box-shadow: none !important;
+                padding: 12px 0 !important;
+                position: sticky !important;
+                top: 60px !important;
+                height: calc(100vh - 60px) !important;
+                width: 220px !important;
+                overflow-y: auto !important;
+            }
+
+            .stat-info-box { padding: 0 20px 12px; margin-bottom: 8px; }
+            .stat-id-badge {
+                display: flex; align-items: center; gap: 8px;
+                background: #f8f8f9; padding: 7px 12px; border-radius: 4px;
+                font-size: 12px; color: #515a6e; font-weight: 600; letter-spacing: 0.3px;
+            }
+            .stat-dot { width: 6px; height: 6px; background: #19be6b; border-radius: 50%; box-shadow: 0 0 0 2px #e3f9ed; }
+
+            .nav-section { border: none !important; margin: 0 !important; }
+            .nav-toggle { 
+                background: transparent !important; 
+                padding: 12px 20px !important; 
+                color: #515a6e !important; 
+                font-size: 14px !important;
+                font-weight: 600 !important; /* 主菜单加粗一点点 */
+                letter-spacing: 0.2px !important;
+                border: none !important;
+                width: 100% !important;
+                text-align: left !important;
+                display: flex !important;
+                justify-content: space-between !important;
+                align-items: center !important;
+                cursor: pointer;
+                transition: color 0.2s;
+            }
+            .nav-toggle-left { display: flex; align-items: center; gap: 10px; }
+            
+            .nav-toggle-left svg { 
+                width: 16px; height: 16px; 
+                stroke: #808695; fill: none; 
+                stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+                transition: stroke 0.2s;
+            }
+            
+            .nav-toggle:hover { color: #2d8cf0 !important; }
+            .nav-toggle:hover .nav-toggle-left svg { stroke: #2d8cf0 !important; }
+            
+            .nav-toggle-chevron { color: #c5c8ce; font-size: 16px; font-family: consolas, monospace; transition: transform 0.2s; }
+            .nav-section.open .nav-toggle-chevron { transform: rotate(90deg); }
+
+            .nav-links { padding: 2px 0 6px 0 !important; }
+            .nav a { 
+                padding: 10px 20px 10px 46px !important; 
+                margin: 0 !important;
+                border-radius: 0 !important;
+                color: #515a6e !important;
+                font-size: 14px !important; /* 从13px升到14px，提升阅读体验 */
+                font-weight: 500 !important; /* 适中的字重 */
+                border: none !important;
+                display: block !important;
+                text-decoration: none !important;
+                transition: all 0.2s ease;
+                position: relative;
+            }
+            .nav a:hover { color: #2d8cf0 !important; background: #f8f8f9 !important; }
+            
+            .nav a.active { 
+                background: #f0faff !important; 
+                color: #2d8cf0 !important; 
+                font-weight: 600 !important; /* 激活态加粗 */
+                box-shadow: none !important;
+            }
+            .nav a.active::after {
+                content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 3px; background: #2d8cf0;
+            }
+            
+            .data-layout { display: flex !important; flex-direction: row !important; padding: 0 !important; align-items: stretch !important; }
+            .content { flex: 1; padding: 24px !important; min-width: 0 !important; background: #f5f7f9 !important; }
+
+            @media (max-width: 1100px) {
+                .data-layout { flex-direction: column !important; }
+                .nav { width: 100% !important; height: auto !important; position: static !important; border-right: none !important; }
+                .brand-link { width: auto; border-right: none; }
+                .header-right .top-nav-links { display: none !important; }
+            }
+        </style>
     </head>
-    <body>
+    <body style="background: #f5f7f9;">
     <?php
 }
 
@@ -23,13 +198,26 @@ function render_topbar(array $branding): void
         : (!empty($_SESSION['nickname']) ? $_SESSION['nickname'] : ($_SESSION['username'] ?? '用户'));
     ?>
     <header>
-        <a href="/sites.php" style="text-decoration:none; color:inherit;">
-            <div class="brand"><?= htmlspecialchars($branding['brand_title'] ?? 'V6统计后台', ENT_QUOTES, 'UTF-8') ?></div>
-            <div class="muted"><?= htmlspecialchars($branding['brand_subtitle'] ?? '', ENT_QUOTES, 'UTF-8') ?></div>
-        </a>
-        <div class="top-bar">
-            <div class="user-menu">
-                <div class="user-trigger"><?= htmlspecialchars($displayName, ENT_QUOTES, 'UTF-8') ?></div>
+        <div class="header-left" id="header-mount">
+            <a href="/sites.php" class="brand-link">
+                <div class="brand">
+                    <?= htmlspecialchars(explode(' ', $branding['brand_title'] ?? '51.LA V6')[0] ?? '51.LA', ENT_QUOTES, 'UTF-8') ?>
+                    <span><?= htmlspecialchars(explode(' ', $branding['brand_title'] ?? '51.LA V6')[1] ?? 'V6', ENT_QUOTES, 'UTF-8') ?></span>
+                </div>
+            </a>
+        </div>
+
+        <div class="header-right">
+            <div class="top-nav-links">
+                <a href="#"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg> 大数据指数</a>
+                <a href="#"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg> SEO建议</a>
+                <a href="#"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg> API接口</a>
+            </div>
+            <div class="user-menu" style="padding-right:24px;">
+                <div class="user-trigger" style="font-size:14px;color:#515a6e;font-weight:500;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#808695" stroke-width="2" style="vertical-align:-3px;margin-right:4px;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                    <?= htmlspecialchars($displayName, ENT_QUOTES, 'UTF-8') ?>
+                </div>
                 <div class="dropdown-content">
                     <?php if ($isAdmin): ?>
                         <a href="/user.php">系统设置</a>
@@ -45,19 +233,38 @@ function render_topbar(array $branding): void
     </header>
     <?php
 }
+
 function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string $active, string $range): void
 {
+    $icons = [
+        'core' => '<svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>',
+        'refer' => '<svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>',
+        'visitor' => '<svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>',
+        'config' => '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>'
+    ];
     ?>
-    <aside class="nav">
-        <?php if ($selectedSite): ?>
-            <div class="site-name"><?= htmlspecialchars($selectedSite['name'], ENT_QUOTES, 'UTF-8') ?></div>
-            <div class="site-domain">域名 <?= htmlspecialchars($selectedSite['domain'], ENT_QUOTES, 'UTF-8') ?>（含 www）</div>
+    <template id="switcher-tpl">
+        <?php if (!empty($sites)): ?>
+        <div class="site-switcher">
+            <select onchange="location.href=this.value;">
+                <?php foreach ($sites as $site): ?>
+                    <option value="<?= htmlspecialchars($active, ENT_QUOTES, 'UTF-8') ?>.php?site=<?= (int) $site['id'] ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>" <?= ($siteId === (int) $site['id']) ? 'selected' : '' ?>>
+                        <?= htmlspecialchars($site['name'], ENT_QUOTES, 'UTF-8') ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
         <?php endif; ?>
-        <select onchange="location.href=this.value;">
-            <?php foreach ($sites as $site): ?>
-                <option value="<?= htmlspecialchars($active, ENT_QUOTES, 'UTF-8') ?>.php?site=<?= (int) $site['id'] ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>" <?= ($siteId === (int) $site['id']) ? 'selected' : '' ?>><?= htmlspecialchars($site['name'], ENT_QUOTES, 'UTF-8') ?></option>
-            <?php endforeach; ?>
-        </select>
+    </template>
+
+    <aside class="nav">
+        <div class="stat-info-box">
+            <div class="stat-id-badge">
+                <span class="stat-dot"></span>
+                统计 ID: <?= $siteId ? htmlspecialchars((string)$siteId, ENT_QUOTES, 'UTF-8') : '---' ?>
+            </div>
+        </div>
+
         <?php
         $sections = [
             'core' => [
@@ -90,25 +297,27 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
                     ['key' => 'entry', 'label' => '入口页', 'href' => "/entry.php?site={$siteId}&range={$range}"],
                 ],
             ],
-'config' => [
-    'title' => '配置',
-    'items' => array_values(array_filter([
-        ['key' => 'config', 'label' => '配置修改', 'href' => "/config.php?site={$siteId}&range={$range}"],
-        ['key' => 'blocked_domains', 'label' => '拦截域名', 'href' => "/blocked_domains.php?site={$siteId}&range={$range}"],
-        ['key' => 'code', 'label' => '获取代码', 'href' => "/code.php?site={$siteId}&range={$range}"],
-        // 仅限管理员显示
-        $GLOBALS['is_admin'] ? ['key' => 'proxy_block', 'label' => '风控拦截', 'href' => "/proxy_block.php?site={$siteId}&range={$range}"] : null,
-    ])),
-],
+            'config' => [
+                'title' => '配置',
+                'items' => array_values(array_filter([
+                    ['key' => 'config', 'label' => '配置修改', 'href' => "/config.php?site={$siteId}&range={$range}"],
+                    ['key' => 'blocked_domains', 'label' => '拦截域名', 'href' => "/blocked_domains.php?site={$siteId}&range={$range}"],
+                    ['key' => 'code', 'label' => '获取代码', 'href' => "/code.php?site={$siteId}&range={$range}"],
+                    $GLOBALS['is_admin'] ? ['key' => 'proxy_block', 'label' => '风控拦截', 'href' => "/proxy_block.php?site={$siteId}&range={$range}"] : null,
+                ])),
+            ],
         ];
 
         foreach ($sections as $sectionKey => $section):
             $open = in_array($active, array_column($section['items'], 'key'), true);
             ?>
-            <div class="nav-section <?= $open ? 'open' : '' ?>" data-section="<?= $sectionKey ?>">
-                <button class="nav-toggle" type="button" aria-expanded="<?= $open ? 'true' : 'false' ?>">
-                    <?= htmlspecialchars($section['title'], ENT_QUOTES, 'UTF-8') ?>
-                    <span>▼</span>
+            <div class="nav-section <?= $open ? 'open' : '' ?>">
+                <button class="nav-toggle" type="button">
+                    <div class="nav-toggle-left">
+                        <?= $icons[$sectionKey] ?? '' ?>
+                        <span><?= htmlspecialchars($section['title'], ENT_QUOTES, 'UTF-8') ?></span>
+                    </div>
+                    <span class="nav-toggle-chevron">›</span>
                 </button>
                 <div class="nav-links">
                     <?php foreach ($section['items'] as $item): ?>
@@ -119,15 +328,20 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
                 </div>
             </div>
         <?php endforeach; ?>
-        <a class="return-link" href="/sites.php">⏎ 返回域名列表</a>
+
         <script>
-            document.querySelectorAll('.nav-section .nav-toggle').forEach(function(btn){
-                btn.addEventListener('click', function(){
-                    var section = btn.closest('.nav-section');
-                    var open = section.classList.toggle('open');
-                    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+            (function(){
+                var mount = document.getElementById('header-mount');
+                var tpl = document.getElementById('switcher-tpl');
+                if (mount && tpl) { mount.appendChild(tpl.content.cloneNode(true)); }
+                
+                document.querySelectorAll('.nav-toggle').forEach(function(btn){
+                    btn.onclick = function(){
+                        var section = btn.parentElement;
+                        section.classList.toggle('open');
+                    };
                 });
-            });
+            })();
         </script>
     </aside>
     <?php
@@ -170,9 +384,7 @@ function render_range_filters(array $allowedRanges, string $range, string $page,
         function applyCustomRange(form) {
             var start = form.querySelector('input[name="start"]').value;
             var end = form.querySelector('input[name="end"]').value;
-            if (!start || !end) {
-                return false;
-            }
+            if (!start || !end) return false;
             form.querySelector('input[name="range"]').value = 'custom:' + start + ':' + end;
             return true;
         }
@@ -182,9 +394,7 @@ function render_range_filters(array $allowedRanges, string $range, string $page,
 
 function render_pagination(int $page, int $totalPages, string $path, array $params = []): void
 {
-    if ($totalPages <= 1) {
-        return;
-    }
+    if ($totalPages <= 1) return;
     $page = max(1, $page);
     $totalPages = max(1, $totalPages);
     $prevPage = max(1, $page - 1);
@@ -208,17 +418,13 @@ function render_pagination(int $page, int $totalPages, string $path, array $para
         $end = min($totalPages, $page + $window);
         if ($start > 1) {
             $renderLink(1, '1', false, $page === 1);
-            if ($start > 2) {
-                echo '<span class="disabled">...</span>';
-            }
+            if ($start > 2) echo '<span class="disabled">...</span>';
         }
         for ($i = $start; $i <= $end; $i++) {
             $renderLink($i, (string) $i, false, $i === $page);
         }
         if ($end < $totalPages) {
-            if ($end < $totalPages - 1) {
-                echo '<span class="disabled">...</span>';
-            }
+            if ($end < $totalPages - 1) echo '<span class="disabled">...</span>';
             $renderLink($totalPages, (string) $totalPages, false, $page === $totalPages);
         }
         $renderLink($nextPage, '下一页', $page === $totalPages);
@@ -231,3 +437,4 @@ function render_footer(): void
 {
     echo "</body></html>";
 }
+?>
