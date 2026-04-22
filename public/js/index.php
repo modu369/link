@@ -274,10 +274,54 @@ if ($isSpider) {
       var separator = base.indexOf('?') === -1 ? '?' : '&';
       var targetUrl = base + separator + params.toString();
 
-      var sent = false;
-      if (navigator.sendBeacon) {
-          sent = navigator.sendBeacon(targetUrl); 
-      }
+      var sendData = function(isPing) {
+          if (isPing) params.set('ping', '1'); 
+          
+          try {
+              var storageKey = 'tracker_' + siteId;
+              var sessionData = JSON.parse(localStorage.getItem(storageKey) || '{}');
+              if (sessionData.started) {
+                  sessionData.duration = Math.max(0, Math.round((Date.now() - sessionData.started) / 1000));
+                  params.set('dur', sessionData.duration);
+                  localStorage.setItem(storageKey, JSON.stringify(sessionData));
+              }
+          } catch(e) {}
+
+          var customEndpoint = script.getAttribute('data-endpoint');
+          var base = customEndpoint || script.src.replace(/\/js\/[^/]+$/, '/stat.php');
+
+          var sent = false;
+          if (navigator.sendBeacon) {
+              var fd = new FormData();
+              params.forEach(function(value, key) { fd.append(key, value); });
+              sent = navigator.sendBeacon(base, fd); 
+          }
+          if (!sent) {
+              if (window.fetch) {
+                  fetch(base, { method: 'POST', body: params, keepalive: true }).catch(function(err) {});
+              } else {
+                  var separator = base.indexOf('?') === -1 ? '?' : '&';
+                  var img = new Image(1, 1);
+                  img.referrerPolicy = 'no-referrer-when-downgrade';
+                  img.src = base + separator + params.toString();
+              }
+          }
+      };
+
+      sendData(false);
+
+      var hasPinged = false;
+      var sendPing = function() {
+          if (hasPinged) return;
+          hasPinged = true;
+          sendData(true);
+      };
+      
+      document.addEventListener('visibilitychange', function() {
+          if (document.visibilityState === 'hidden') sendPing();
+      });
+      window.addEventListener('pagehide', sendPing);
+      
       if (!sent) {
           if (window.fetch) {
               fetch(targetUrl, { method: 'GET', keepalive: true }).catch(function(err) {});
