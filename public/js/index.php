@@ -296,16 +296,6 @@ if ($isSpider) {
               params.forEach(function(value, key) { fd.append(key, value); });
               sent = navigator.sendBeacon(base, fd); 
           }
-          if (!sent) {
-              if (window.fetch) {
-                  fetch(base, { method: 'POST', body: params, keepalive: true }).catch(function(err) {});
-              } else {
-                  var separator = base.indexOf('?') === -1 ? '?' : '&';
-                  var img = new Image(1, 1);
-                  img.referrerPolicy = 'no-referrer-when-downgrade';
-                  img.src = base + separator + params.toString();
-              }
-          }
       };
 
       sendData(false);
