@@ -131,16 +131,27 @@ if ($isSpider) {
   }
   if (!siteId) return;
 
-  var screenWidth = (window.screen && window.screen.width) ? window.screen.width : 0;
+var screenWidth = (window.screen && window.screen.width) ? window.screen.width : 0;
   var screenHeight = (window.screen && window.screen.height) ? window.screen.height : 0;
   var language = (navigator.language || '').toLowerCase();
+  var netType = '';
+  if (navigator.connection) {
+      netType = navigator.connection.type || navigator.connection.effectiveType || '';
+  }
+  var isSecMobile = '';
+  if (navigator.userAgentData && navigator.userAgentData.mobile !== undefined) {
+      isSecMobile = navigator.userAgentData.mobile ? '?1' : '?0';
+  }
+
   var params = new URLSearchParams({
     sid: siteId,
     p: window.location.href,
     r: document.referrer || '',
     lg: language,
     showp: (screenWidth && screenHeight) ? (screenWidth + 'x' + screenHeight) : '',
-    ntime: Math.floor(Date.now() / 1000).toString()
+    ntime: Math.floor(Date.now() / 1000).toString(),
+    net: netType,
+    sec_m: isSecMobile
   });
 
 try {
