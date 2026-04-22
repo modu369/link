@@ -36,22 +36,12 @@ render_topbar($branding);
     .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; align-items: stretch; }
     .pill-tag { background: #deedfb; color: #1690ff; padding: 4px 10px; border-radius: 999px; font-weight: 700; border: 1px solid var(--border); }
     .chart-wrap { position: relative; width: 100%; }
-    .trend-wrap canvas
-
-    {
-        max-height: 430px;
-        height: 400px;
-    }
+    .trend-wrap canvas { max-height: 430px; height: 400px; }
     .table-wrap { max-height: 320px; overflow: auto; }
     .trend-controls { display:flex; gap:8px; align-items:center; }
     .trend-toggle button { border:1px solid var(--border); background:#deedfb; color:#1690ff; padding:6px 10px; border-radius:8px; cursor:pointer; font-weight:700; }
     .trend-toggle button.active { background:#1690ff; color:#fff; }
-    .browser-pie {
-        max-width: 420px;
-        margin: 0 auto;
-        display: flex;
-        justify-content: center;
-    }
+    .browser-pie { max-width: 420px; margin: 0 auto; display: flex; justify-content: center; }
 </style>
 <div class="data-layout">
     <?php render_sidebar($sites, $siteId, $selectedSite, 'overview', $range); ?>
@@ -71,29 +61,78 @@ render_topbar($branding);
                     <?php render_range_filters($allowedRanges, $range, 'overview', (int) $selectedSite['id']); ?>
                 </div>
                 <div class="metric-grid">
-                    <div class="metric-tile"><div class="metric-icon">📈</div><div class="metric-info"><div class="label">PV</div><div class="val"><?= $data['totals']['views'] ?></div></div></div>
-                    <div class="metric-tile"><div class="metric-icon">👥</div><div class="metric-info"><div class="label">UV</div><div class="val"><?= $data['totals']['uniques'] ?></div></div></div>
-                    <div class="metric-tile"><div class="metric-icon">🌐</div><div class="metric-info"><div class="label">IP</div><div class="val"><?= $data['totals']['ip_count'] ?></div></div></div>
-                    
-                    <div class="metric-tile"><div class="metric-icon">📲</div><div class="metric-info"><div class="label">移动 PV</div><div class="val"><?= (int)($data['devices']['mobile']['views'] ?? 0) ?></div></div></div>
-                    <div class="metric-tile"><div class="metric-icon">📶</div><div class="metric-info"><div class="label">移动 IP</div><div class="val"><?= (int)($data['devices']['mobile']['ips'] ?? 0) ?></div></div></div>
-                    <div class="metric-tile"><div class="metric-icon">⏱️</div><div class="metric-info"><div class="label">平均访问时长</div><div class="val"><?= $avgMinutes ?> min</div></div></div>
-                    <div class="metric-tile"><div class="metric-icon">📄</div><div class="metric-info"><div class="label">平均访问页数</div><div class="val"><?= $data['totals']['averages']['pages'] ?></div></div></div>
-                    <div class="metric-tile"><div class="metric-icon">↩️</div><div class="metric-info"><div class="label">跳出率</div><div class="val"><?= round($data['totals']['bounce_rate'] * 100, 1) ?>%</div></div></div>
-                    <div class="metric-tile"><div class="metric-icon">🎯</div><div class="metric-info"><div class="label">预计今日 PV</div><div class="val"><?= $data['predictions']['views']?></div></div></div>
-                    <div class="metric-tile"><div class="metric-icon">🔮</div><div class="metric-info"><div class="label">预计今日 IP</div><div class="val"><?= $data['predictions']['ips'] ?></div></div></div>
-                    <div class="metric-tile"><div class="metric-icon">📊</div><div class="metric-info"><div class="label">预计今日移动 PV</div><div class="val"><?= $data['predictions']['mobile_views'] ?? 0 ?></div></div></div>
-                    <div class="metric-tile"><div class="metric-icon">✨</div><div class="metric-info"><div class="label">预计今日移动 IP</div><div class="val"><?= $data['predictions']['mobile_ips'] ?? 0 ?></div></div></div>
+                    <div class="metric-tile">
+                        <div class="metric-icon"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></div>
+                        <div class="metric-info"><div class="label">PV</div><div class="val"><?= $data['totals']['views'] ?></div></div>
+                    </div>
+                    <div class="metric-tile">
+                        <div class="metric-icon"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg></div>
+                        <div class="metric-info"><div class="label">UV</div><div class="val"><?= $data['totals']['uniques'] ?></div></div>
+                    </div>
+                    <div class="metric-tile">
+                        <div class="metric-icon"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg></div>
+                        <div class="metric-info"><div class="label">IP</div><div class="val"><?= $data['totals']['ip_count'] ?></div></div>
+                    </div>
+                    <div class="metric-tile">
+                        <div class="metric-icon"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg></div>
+                        <div class="metric-info"><div class="label">移动 PV</div><div class="val"><?= (int)($data['devices']['mobile']['views'] ?? 0) ?></div></div>
+                    </div>
+                    <div class="metric-tile">
+                        <div class="metric-icon"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><circle cx="12" cy="18" r="1"></circle><path d="M12 13a4 4 0 0 0-4-4"></path><path d="M12 9a8 8 0 0 0-8-8"></path></svg></div>
+                        <div class="metric-info"><div class="label">移动 IP</div><div class="val"><?= (int)($data['devices']['mobile']['ips'] ?? 0) ?></div></div>
+                    </div>
+                    <div class="metric-tile">
+                        <div class="metric-icon"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg></div>
+                        <div class="metric-info"><div class="label">平均访问时长</div><div class="val"><?= $avgMinutes ?> min</div></div>
+                    </div>
+                    <div class="metric-tile">
+                        <div class="metric-icon"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg></div>
+                        <div class="metric-info"><div class="label">平均访问页数</div><div class="val"><?= $data['totals']['averages']['pages'] ?></div></div>
+                    </div>
+                    <div class="metric-tile">
+                        <div class="metric-icon"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 10 4 15 9 20"></polyline><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg></div>
+                        <div class="metric-info"><div class="label">跳出率</div><div class="val"><?= round($data['totals']['bounce_rate'] * 100, 1) ?>%</div></div>
+                    </div>
+
+                    <div class="metric-tile">
+                        <div class="metric-icon" style="background: linear-gradient(135deg, #dcfce7 0%, #f0fdf4 100%); color: #16a34a; box-shadow: 0 10px 22px rgba(22, 163, 74, 0.16);"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></div>
+                        <div class="metric-info"><div class="label">预计今日 PV</div><div class="val"><?= $data['predictions']['views']?></div></div>
+                    </div>
+                    <div class="metric-tile">
+                        <div class="metric-icon" style="background: linear-gradient(135deg, #dcfce7 0%, #f0fdf4 100%); color: #16a34a; box-shadow: 0 10px 22px rgba(22, 163, 74, 0.16);"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg></div>
+                        <div class="metric-info"><div class="label">预计今日 IP</div><div class="val"><?= $data['predictions']['ips'] ?></div></div>
+                    </div>
+                    <div class="metric-tile">
+                        <div class="metric-icon" style="background: linear-gradient(135deg, #dcfce7 0%, #f0fdf4 100%); color: #16a34a; box-shadow: 0 10px 22px rgba(22, 163, 74, 0.16);"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg></div>
+                        <div class="metric-info"><div class="label">预计今日移动 PV</div><div class="val"><?= $data['predictions']['mobile_views'] ?? 0 ?></div></div>
+                    </div>
+                    <div class="metric-tile">
+                        <div class="metric-icon" style="background: linear-gradient(135deg, #dcfce7 0%, #f0fdf4 100%); color: #16a34a; box-shadow: 0 10px 22px rgba(22, 163, 74, 0.16);"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><circle cx="12" cy="18" r="1"></circle><path d="M12 13a4 4 0 0 0-4-4"></path><path d="M12 9a8 8 0 0 0-8-8"></path></svg></div>
+                        <div class="metric-info"><div class="label">预计今日移动 IP</div><div class="val"><?= $data['predictions']['mobile_ips'] ?? 0 ?></div></div>
+                    </div>
+
                     <?php if ($range === 'today' && $yesterdayTotals): ?>
-                        <div class="metric-tile"><div class="metric-icon yesterday">📈</div><div class="metric-info"><div class="label">昨日 PV</div><div class="val"><?= $yesterdayTotals['views'] ?? 0 ?></div></div></div>
-                        <div class="metric-tile"><div class="metric-icon yesterday">🌐</div><div class="metric-info"><div class="label">昨日 IP</div><div class="val"><?= $yesterdayTotals['ip_count'] ?? 0 ?></div></div></div>
-                        <div class="metric-tile"><div class="metric-icon yesterday">📲</div><div class="metric-info"><div class="label">昨日移动 PV</div><div class="val"><?= (int)($yesterdayDevices['mobile']['views'] ?? 0) ?></div></div></div>
-                        <div class="metric-tile"><div class="metric-icon yesterday">📶</div><div class="metric-info"><div class="label">昨日移动 IP</div><div class="val"><?= (int)($yesterdayDevices['mobile']['ips'] ?? 0) ?></div></div></div>
+                        <div class="metric-tile">
+                            <div class="metric-icon yesterday"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></div>
+                            <div class="metric-info"><div class="label">昨日 PV</div><div class="val"><?= $yesterdayTotals['views'] ?? 0 ?></div></div>
+                        </div>
+                        <div class="metric-tile">
+                            <div class="metric-icon yesterday"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg></div>
+                            <div class="metric-info"><div class="label">昨日 IP</div><div class="val"><?= $yesterdayTotals['ip_count'] ?? 0 ?></div></div>
+                        </div>
+                        <div class="metric-tile">
+                            <div class="metric-icon yesterday"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg></div>
+                            <div class="metric-info"><div class="label">昨日移动 PV</div><div class="val"><?= (int)($yesterdayDevices['mobile']['views'] ?? 0) ?></div></div>
+                        </div>
+                        <div class="metric-tile">
+                            <div class="metric-icon yesterday"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><circle cx="12" cy="18" r="1"></circle><path d="M12 13a4 4 0 0 0-4-4"></path><path d="M12 9a8 8 0 0 0-8-8"></path></svg></div>
+                            <div class="metric-info"><div class="label">昨日移动 IP</div><div class="val"><?= (int)($yesterdayDevices['mobile']['ips'] ?? 0) ?></div></div>
+                        </div>
                     <?php endif; ?>
                 </div>
             </section>
 
-            <?php if ($showTrend): ?>
+<?php if ($showTrend): ?>
                 <section class="card">
                     <div class="section-title" style="justify-content: space-between; gap: 12px; flex-wrap: wrap;">
                         <div class="trend-controls">
@@ -106,7 +145,7 @@ render_topbar($branding);
                             <button data-metric="views">PV</button>
                         </div>
                     </div>
-                    <div class="chart-wrap trend-wrap"><canvas id="dailyTrendChart"></canvas></div>
+                    <div class="chart-wrap trend-wrap"><div id="dailyTrendChart" style="width: 100%; height: 350px;"></div></div>
                 </section>
             <?php endif; ?>
 
@@ -230,59 +269,164 @@ render_topbar($branding);
 
             <script src="/t_statics/js/echarts.min.js"></script>
             <script src="/t_statics/js/china.js"></script>
-            <script>
+<script>
                 <?php if ($showTrend): ?>
                 const trendData = <?= json_encode($trend, JSON_UNESCAPED_UNICODE) ?>;
                 const ctxDaily = document.getElementById('dailyTrendChart');
                 let trendChart = null;
 
                 const renderTrend = (metric = 'ips') => {
-                    if (!ctxDaily || !window.Chart || !trendData) return;
-                    const ctx = ctxDaily.getContext('2d');
-                    const primaryGrad = ctx.createLinearGradient(0, 0, 0, 160);
-                    primaryGrad.addColorStop(0, '#1690ff');
-                    primaryGrad.addColorStop(1, 'rgba(22,144,255,0.08)');
-                    const compareGrad = ctx.createLinearGradient(0, 0, 0, 160);
-                    compareGrad.addColorStop(0, '#73c1ff');
-                    compareGrad.addColorStop(1, 'rgba(115,193,255,0.08)');
+                    if (!ctxDaily || !window.echarts || !trendData) return;
+                    
+                    if (trendChart) trendChart.dispose();
+                    trendChart = echarts.init(ctxDaily);
 
-                    const datasets = [];
+                    const series = [];
+                    const legends = [];
+
+                    // 1. 今日数据 (纯正蓝实线 + 底部渐变)
                     if (trendData.primary) {
-                        datasets.push({
-                            label: trendData.primary_label,
-                            data: trendData.primary?.[metric] || [],
-                            borderColor: '#1690ff',
-                            backgroundColor: primaryGrad,
-                            tension: 0.35,
-                            fill: true,
-                        });
-                    }
-
-                    if (trendData.compare) {
-                        datasets.push({
-                            label: trendData.compare_label,
-                            data: trendData.compare?.[metric] || [],
-                            borderColor: '#73c1ff',
-                            backgroundColor: compareGrad,
-                            tension: 0.35,
-                            fill: true,
-                        });
-                    }
-
-                    if (trendChart) trendChart.destroy();
-                    trendChart = new Chart(ctxDaily, {
-                        type: 'line',
-                        data: { labels: trendData.labels, datasets },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            plugins: { legend: { position: 'top' }, tooltip: { mode: 'index', intersect: false } },
-                            scales: {
-                                x: { ticks: { maxRotation: 0 }, grid: { display: false } },
-                                y: { beginAtZero: true }
+                        legends.push(trendData.primary_label);
+                        series.push({
+                            name: trendData.primary_label,
+                            data: trendData.primary[metric] || [],
+                            type: 'line',
+                            smooth: true,
+                            symbol: 'circle',
+                            symbolSize: 8,
+                            showSymbol: false,
+                            itemStyle: { color: '#1890ff', borderColor: '#fff', borderWidth: 2 },
+                            lineStyle: { width: 2, type: 'solid' },
+                            areaStyle: {
+                                color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                                    { offset: 0, color: 'rgba(24, 144, 255, 0.25)' },
+                                    { offset: 1, color: 'rgba(24, 144, 255, 0)' }
+                                ])
                             }
-                        }
+                        });
+                    }
+
+                    // 2. 昨日数据 (纯正黄实线 + 底部渐变)
+                    if (trendData.compare) {
+                        legends.push(trendData.compare_label);
+                        series.push({
+                            name: trendData.compare_label,
+                            data: trendData.compare[metric] || [],
+                            type: 'line',
+                            smooth: true,
+                            symbol: 'circle',
+                            symbolSize: 8,
+                            showSymbol: false,
+                            itemStyle: { color: '#faad14', borderColor: '#fff', borderWidth: 2 },
+                            lineStyle: { width: 2, type: 'solid' },
+                            areaStyle: {
+                                color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                                    { offset: 0, color: 'rgba(250, 173, 20, 0.25)' },
+                                    { offset: 1, color: 'rgba(250, 173, 20, 0)' }
+                                ])
+                            }
+                        });
+                    }
+
+                    trendChart.setOption({
+                        tooltip: {
+                            trigger: 'axis',
+                            backgroundColor: 'rgba(23, 35, 61, 0.9)',
+                            borderColor: 'transparent',
+                            padding: [12, 16],
+                            textStyle: { color: '#fff' },
+                            axisPointer: { type: 'line', lineStyle: { color: '#d9d9d9', type: 'solid' } },
+                            
+                            // ==========================================
+                            // 核心修复：100% 完美还原的时间段格式化与比对
+                            // ==========================================
+                            formatter: function (params) {
+                                if (!params || !params.length) return '';
+
+                                let rawVal = String(params[0].axisValueLabel || params[0].axisValue).trim();
+                                let displayTitle = rawVal;
+                                
+                                // 极度安全的提取逻辑：只要是小时，强制格式化为 00:00 - 00:59
+                                let isHour = (trendData.granularity === 'hour') || /^\d{1,2}(:\d{2})?$/.test(rawVal);
+                                if (isHour) {
+                                    let hNum = parseInt(rawVal, 10);
+                                    if (!isNaN(hNum)) {
+                                        let hStr = hNum.toString().padStart(2, '0');
+                                        displayTitle = '时间：' + hStr + ':00 - ' + hStr + ':59';
+                                    }
+                                } else {
+                                    displayTitle = '日期：' + rawVal;
+                                }
+
+                                let pData = params.find(p => p.seriesName === trendData.primary_label);
+                                let cData = params.find(p => p.seriesName === trendData.compare_label);
+                                
+                                let pVal = pData ? Number(pData.value || 0) : 0;
+                                let cVal = cData ? Number(cData.value || 0) : 0;
+
+                                // 计算百分比涨跌对比
+                                let diffHtml = '';
+                                if (pData && cData) {
+                                    let diff = pVal - cVal;
+                                    if (cVal === 0) {
+                                        diffHtml = pVal > 0 ? '<span style="color: #ed4014; font-weight: bold;">↑ 100.00%</span>' : '<span style="color: #808695; font-weight: bold;">0.00%</span>';
+                                    } else {
+                                        let pct = (diff / cVal) * 100;
+                                        if (diff > 0) {
+                                            diffHtml = '<span style="color: #ed4014; font-weight: bold;">↑ ' + pct.toFixed(2) + '%</span>';
+                                        } else if (diff < 0) {
+                                            diffHtml = '<span style="color: #19be6b; font-weight: bold;">↓ ' + Math.abs(pct).toFixed(2) + '%</span>';
+                                        } else {
+                                            diffHtml = '<span style="color: #808695; font-weight: bold;">0.00%</span>';
+                                        }
+                                    }
+                                }
+
+                                // 组装顶级排版 HTML
+                                let html = '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px; color: #808695;">' + 
+                                           '<span>' + displayTitle + '</span>' + 
+                                           '<span style="margin-left: 24px;">' + diffHtml + '</span>' + 
+                                           '</div>';
+                                
+                                params.forEach(p => {
+                                    let safeVal = (p.value !== undefined && p.value !== null && !isNaN(p.value)) ? Number(p.value).toLocaleString() : '0';
+                                    html += '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">' +
+                                            '<div style="display: flex; align-items: center; color: #c5c8ce; font-size: 13px;">' + p.marker + p.seriesName+ '：' + '</div>' +
+                                            '<div style="color: #fff; font-weight: 600; font-size: 14px; margin-left: 36px;">' + safeVal + '</div>' +
+                                            '</div>';
+                                });
+                                return html;
+                            }
+                        },
+                        legend: {
+                            data: legends,
+                            top: 0,
+                            right: 0,
+                            icon: 'rect',
+                            itemWidth: 16,
+                            itemHeight: 4,
+                            textStyle: { color: '#8c8c8c', fontSize: 12 }
+                        },
+                        grid: { left: '0%', right: '1%', bottom: '0%', top: '15%', containLabel: true },
+                        xAxis: {
+                            type: 'category',
+                            data: trendData.labels,
+                            boundaryGap: false,
+                            axisLine: { show: false },
+                            axisTick: { show: false },
+                            axisLabel: { color: '#8c8c8c', margin: 12 }
+                        },
+                        yAxis: {
+                            type: 'value',
+                            axisLine: { show: false },
+                            axisTick: { show: false },
+                            splitLine: { lineStyle: { color: '#f0f0f0', type: 'solid' } },
+                            axisLabel: { color: '#8c8c8c' }
+                        },
+                        series: series
                     });
+
+                    window.addEventListener('resize', () => trendChart.resize());
                 };
 
                 document.querySelectorAll('.trend-toggle button').forEach(btn => {
@@ -296,6 +440,56 @@ render_topbar($branding);
                 renderTrend('ips');
                 <?php endif; ?>
 
+                // 饼图通用配置
+                const pieOptions = {
+                    plugins: {
+                        legend: { position: 'right', labels: { color: '#595959', usePointStyle: true, boxWidth: 8 } },
+                        tooltip: {
+                            backgroundColor: 'rgba(23, 35, 61, 0.85)', padding: 12,
+                            callbacks: {
+                                label: (ctx) => ` ${ctx.label}: ${ctx.parsed} IP`,
+                                afterLabel: (ctx) => {
+                                    const total = (ctx.dataset?.data || []).reduce((s, v) => s + Number(v || 0), 0) || 1;
+                                    const pct = ((ctx.parsed / total) * 100).toFixed(1);
+                                    return ` 占比 ${pct}%`;
+                                }
+                            }
+                        }
+                    },
+                    borderWidth: 0, cutout: '65%'
+                };
+
+                const deviceData = [
+                    {label:'电脑端', value: <?= (int) $data['devices']['desktop']['ips'] ?>, color:'#1890ff'},
+                    {label:'移动端', value: <?= (int) $data['devices']['mobile']['ips'] ?>, color:'#2fc25b'}
+                ];
+                const ctxDevice = document.getElementById('devicePie');
+                if (ctxDevice && window.Chart) {
+                    new Chart(ctxDevice, {
+                        type:'doughnut',
+                        data:{
+                            labels: deviceData.map(d=>d.label),
+                            datasets:[{data: deviceData.map(d=>d.value), backgroundColor: deviceData.map(d=>d.color), borderWidth: 2, borderColor: '#fff'}]
+                        },
+                        options: pieOptions
+                    });
+                }
+
+                const browserRows = <?= json_encode($data['browsers'], JSON_UNESCAPED_UNICODE) ?>;
+                const ctxBrowser = document.getElementById('browserBar');
+                if (ctxBrowser && window.Chart) {
+                    const palette = ['#1890ff','#2fc25b','#facc14','#f04864','#8543e0','#13c2c2','#3436c7','#223273'];
+                    new Chart(ctxBrowser, {
+                        type:'doughnut',
+                        data:{
+                            labels: browserRows.map(r=>r.browser || '未知'),
+                            datasets:[{data: browserRows.map(r=>Number(r.ips)), backgroundColor: browserRows.map((_,i)=>palette[i % palette.length]), borderWidth: 2, borderColor: '#fff'}]
+                        },
+                        options: { ...pieOptions, cutout: '55%' }
+                    });
+                }
+                
+                // 地图初始化
                 const chinaRows = <?= json_encode($data['china_map'] ?? [], JSON_UNESCAPED_UNICODE) ?>;
                 const chinaEl = document.getElementById('chinaMap');
                 if (chinaEl && window.echarts) {
@@ -306,75 +500,11 @@ render_topbar($branding);
                     }));
                     const maxVal = mapData.reduce((m, r) => Math.max(m, r.value || 0), 0) || 1;
                     chinaChart.setOption({
-                        tooltip: {
-                            trigger: 'item',
-                            formatter: '{b}<br/>IP: {c}'
-                        },
-                        visualMap: {
-                            min: 0,
-                            max: maxVal,
-                            left: 'left',
-                            bottom: '5%',
-                            text: ['多', '少'],
-                            inRange: { color: ['#deedfb', '#1690ff'] },
-                            calculable: true
-                        },
-                        series: [{
-                            name: '地域分布',
-                            type: 'map',
-                            map: 'china',
-                            roam: false,
-                            data: mapData,
-                            emphasis: { label: { show: true } }
-                        }]
+                        tooltip: { trigger: 'item', backgroundColor: 'rgba(23, 35, 61, 0.85)', textStyle: { color: '#fff' }, padding: [12, 16], formatter: '{b}<br/>IP: {c}' },
+                        visualMap: { min: 0, max: maxVal, left: 'left', bottom: '0', text: ['多', '少'], inRange: { color: ['#e6f7ff', '#1890ff'] }, calculable: true, textStyle: {color: '#8c8c8c'} },
+                        series: [{ name: '地域分布', type: 'map', map: 'china', roam: false, data: mapData, emphasis: { label: { show: true }, itemStyle: { areaColor: '#69c0ff' } }, itemStyle: { borderColor: '#fff', borderWidth: 1 } }]
                     });
                     window.addEventListener('resize', () => chinaChart.resize());
-                }
-
-                const pieOptions = {
-                    plugins: {
-                        legend: { position: 'bottom' },
-                        tooltip: {
-                            callbacks: {
-                                label: (ctx) => `${ctx.label}: ${ctx.parsed} IP`,
-                                afterLabel: (ctx) => {
-                                    const total = (ctx.dataset?.data || []).reduce((s, v) => s + Number(v || 0), 0) || 1;
-                                    const pct = ((ctx.parsed / total) * 100).toFixed(1);
-                                    return `占比 ${pct}%`;
-                                }
-                            }
-                        }
-                    }
-                };
-
-                const deviceData = [
-                    {label:'电脑端', value: <?= (int) $data['devices']['desktop']['ips'] ?>, color:'#1690ff'},
-                    {label:'移动端', value: <?= (int) $data['devices']['mobile']['ips'] ?>, color:'#73c1ff'}
-                ];
-                const ctxDevice = document.getElementById('devicePie');
-                if (ctxDevice && window.Chart) {
-                    new Chart(ctxDevice, {
-                        type:'doughnut',
-                        data:{
-                            labels: deviceData.map(d=>d.label),
-                            datasets:[{data: deviceData.map(d=>d.value), backgroundColor: deviceData.map(d=>d.color), cutout:'60%'}]
-                        },
-                        options: pieOptions
-                    });
-                }
-
-                const browserRows = <?= json_encode($data['browsers'], JSON_UNESCAPED_UNICODE) ?>;
-                const ctxBrowser = document.getElementById('browserBar');
-                if (ctxBrowser && window.Chart) {
-                    const palette = ['#1690ff','#73c1ff','#4dd0e1','#7c4dff','#ff8a65','#ffd166','#06d6a0','#ef476f','#9c27b0','#26c6da'];
-                    new Chart(ctxBrowser, {
-                        type:'pie',
-                        data:{
-                            labels: browserRows.map(r=>r.browser || '未知'),
-                            datasets:[{label:'IP', data: browserRows.map(r=>Number(r.ips)), backgroundColor: browserRows.map((_,i)=>palette[i % palette.length])}]
-                        },
-                        options: pieOptions
-                    });
                 }
             </script>
         <?php endif; ?>
