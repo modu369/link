@@ -1213,7 +1213,7 @@ private function isProxySuspicious(
             }
 
             if ($isDataCenterAsn) {
-                $score += 40; 
+                $score += 20; 
                 $highFreqHits += 1;
             }
             if ($countryValue === '' || $countryValue === '未知' || str_contains($countryValue, '保留地址')) {
