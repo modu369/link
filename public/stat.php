@@ -32,7 +32,9 @@ if ($method !== 'GET' && $method !== 'POST') {
     http_response_code(405);
     exit;
 }
-
+$getParam = static function (string $key) {
+    return $_POST[$key] ?? $_GET[$key] ?? null;
+};
 $sanitizeText = static function (?string $value, int $maxLen): string {
     $value = trim((string) $value);
     if ($value === '') {
@@ -262,7 +264,8 @@ if ($matchedSpider) {
         $siteId = $getSiteByTrackingId($trackingId);
         if ($siteId && $redis) {
 // --- 提取当前爬取的 URL ---
-            $pageUrl = trim((string) ($_GET['p'] ?? ($_SERVER['HTTP_REFERER'] ?? '')));
+            $pageUrl = trim((string) ($getParam('p') ?? ($_SERVER['HTTP_REFERER'] ?? '')));
+$referrerUrl = trim((string) ($getParam('r') ?? ''));
             
             // --- 60 秒双端去重锁，加入 $pageUrl 实现按页面精准去重 ---
             $dedupKey = "bot_dedup:{$siteId}:" . md5($clientIp . $spiderEngine . $pageUrl);
@@ -316,7 +319,7 @@ if ($matchedSpider) {
 // 以下是普通真实人类访客的 PV 记录逻辑
 // ============================================
 
-$cookieParam = (string) ($_GET['ckv'] ?? '');
+$cookieParam = (string) ($getParam('ckv') ?? '');
 $cookieParam = trim($cookieParam);
 
 // 服务端兜底机制
@@ -343,33 +346,32 @@ if ($cookieValue === '') {
     }
 }
 
-$duration = max(0, (int) ($_GET['dur'] ?? 0));
+$duration = max(0, (int) ($getParam('dur') ?? 0));
 $duration = min($duration, 86400);
-$pageCount = max(1, (int) ($_GET['pc'] ?? 1));
+$pageCount = max(1, (int) ($getParam('pc') ?? 1));
 $pageCount = min($pageCount, 1000);
 
 $payload = [
-    'path' => $sanitizeText($_GET['p'] ?? ($_SERVER['HTTP_REFERER'] ?? ''), 2048),
-    'title' => $sanitizeText($_GET['tt'] ?? '', 255),
-    'referrer' => $sanitizeText($_GET['r'] ?? ($_SERVER['HTTP_REFERER'] ?? ''), 2048),
+    'is_ping' => ($getParam('ping') === '1'), // 【新增】：接收心跳标识
+    'path' => $sanitizeText($getParam('p') ?? ($_SERVER['HTTP_REFERER'] ?? ''), 2048),
+    'title' => $sanitizeText($getParam('tt') ?? '', 255),
+    'referrer' => $sanitizeText($getParam('r') ?? ($_SERVER['HTTP_REFERER'] ?? ''), 2048),
     'user_agent' => $userAgent,
-    'language' => $sanitizeText($_GET['lg'] ?? null, 32),
-    'showp' => $sanitizeText($_GET['showp'] ?? null, 32),
-    'ntime' => $sanitizeText($_GET['ntime'] ?? null, 16),
+    'language' => $sanitizeText($getParam('lg') ?? null, 32),
+    'showp' => $sanitizeText($getParam('showp') ?? null, 32),
+    'ntime' => $sanitizeText($getParam('ntime') ?? null, 16),
     'accept_language' => $sanitizeText($_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '', 128),
     'accept_encoding' => $sanitizeText($_SERVER['HTTP_ACCEPT_ENCODING'] ?? '', 128),
     'sec_ch_ua' => $sanitizeText($_SERVER['HTTP_SEC_CH_UA'] ?? '', 256),
-    // 优先读取前端 JS 探针传来的 sec_m 参数，兜底读取后端 Header
-    'sec_ch_ua_mobile' => $sanitizeText($_GET['sec_m'] ?? $_SERVER['HTTP_SEC_CH_UA_MOBILE'] ?? '', 32),
-    // 接收新增的网络环境探针参数
-    'net' => $sanitizeText($_GET['net'] ?? null, 32),
+    'sec_ch_ua_mobile' => $sanitizeText($getParam('sec_m') ?? $_SERVER['HTTP_SEC_CH_UA_MOBILE'] ?? '', 32),
+    'net' => $sanitizeText($getParam('net') ?? null, 32),
     'sec_ch_ua_platform' => $sanitizeText($_SERVER['HTTP_SEC_CH_UA_PLATFORM'] ?? '', 64),
     'sec_fetch_site' => $sanitizeText($_SERVER['HTTP_SEC_FETCH_SITE'] ?? '', 32),
     'sec_fetch_mode' => $sanitizeText($_SERVER['HTTP_SEC_FETCH_MODE'] ?? '', 32),
     'sec_fetch_dest' => $sanitizeText($_SERVER['HTTP_SEC_FETCH_DEST'] ?? '', 32),
     'ip' => $clientIp,
-    'session_id' => $sanitizeText($_GET['sid2'] ?? null, 64),
-    'fingerprint' => $sanitizeText($_GET['fp'] ?? null, 128),
+    'session_id' => $sanitizeText($getParam('sid2') ?? null, 64),
+    'fingerprint' => $sanitizeText($getParam('fp') ?? null, 128),
     'duration' => $duration,
     'page_count' => $pageCount,
     'visitor_id' => $cookieParam,
