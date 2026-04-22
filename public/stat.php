@@ -359,7 +359,10 @@ $payload = [
     'accept_language' => $sanitizeText($_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '', 128),
     'accept_encoding' => $sanitizeText($_SERVER['HTTP_ACCEPT_ENCODING'] ?? '', 128),
     'sec_ch_ua' => $sanitizeText($_SERVER['HTTP_SEC_CH_UA'] ?? '', 256),
-    'sec_ch_ua_mobile' => $sanitizeText($_SERVER['HTTP_SEC_CH_UA_MOBILE'] ?? '', 32),
+    // 优先读取前端 JS 探针传来的 sec_m 参数，兜底读取后端 Header
+    'sec_ch_ua_mobile' => $sanitizeText($_GET['sec_m'] ?? $_SERVER['HTTP_SEC_CH_UA_MOBILE'] ?? '', 32),
+    // 接收新增的网络环境探针参数
+    'net' => $sanitizeText($_GET['net'] ?? null, 32),
     'sec_ch_ua_platform' => $sanitizeText($_SERVER['HTTP_SEC_CH_UA_PLATFORM'] ?? '', 64),
     'sec_fetch_site' => $sanitizeText($_SERVER['HTTP_SEC_FETCH_SITE'] ?? '', 32),
     'sec_fetch_mode' => $sanitizeText($_SERVER['HTTP_SEC_FETCH_MODE'] ?? '', 32),
