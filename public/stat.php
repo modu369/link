@@ -20,16 +20,15 @@ require __DIR__ . '/../src/Tracker.php';
 $config = require __DIR__ . '/../config/config.php';
 
 header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
-
+header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 if ($method === 'OPTIONS') {
     http_response_code(204);
     exit;
 }
 
-if ($method !== 'GET') {
+// 允许 GET 和 POST
+if ($method !== 'GET' && $method !== 'POST') {
     http_response_code(405);
     exit;
 }
@@ -351,6 +350,7 @@ $pageCount = min($pageCount, 1000);
 
 $payload = [
     'path' => $sanitizeText($_GET['p'] ?? ($_SERVER['HTTP_REFERER'] ?? ''), 2048),
+    'title' => $sanitizeText($_GET['tt'] ?? '', 255),
     'referrer' => $sanitizeText($_GET['r'] ?? ($_SERVER['HTTP_REFERER'] ?? ''), 2048),
     'user_agent' => $userAgent,
     'language' => $sanitizeText($_GET['lg'] ?? null, 32),
