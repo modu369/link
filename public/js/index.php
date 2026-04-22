@@ -311,6 +311,16 @@ if ($isSpider) {
           if (document.visibilityState === 'hidden') sendPing();
       });
       window.addEventListener('pagehide', sendPing);
+
+      if (window._v6_tracker_heartbeat) {
+          clearInterval(window._v6_tracker_heartbeat);
+      }
+      window._v6_tracker_heartbeat = setInterval(function() {
+          if (document.visibilityState === 'visible') {
+              hasPinged = false;
+              sendPing();
+          }
+      }, 15000);
       
       if (!sent) {
           if (window.fetch) {
@@ -325,19 +335,20 @@ if ($isSpider) {
 
   trackPageView();
 
-  var bindSPA = function() {
+var bindSPA = function() {
       var _wr = function(type) {
           var orig = window.history[type];
           return function() {
               var rv = orig.apply(this, arguments);
-              setTimeout(trackPageView, 50);
+              // 从 setTimeout 50 改为 300，给 Vue/React 足够的时间更新 DOM Title
+              setTimeout(trackPageView, 300); 
               return rv;
           };
       };
       if (window.history && window.history.pushState) window.history.pushState = _wr('pushState');
       if (window.history && window.history.replaceState) window.history.replaceState = _wr('replaceState');
-      window.addEventListener('popstate', function() { setTimeout(trackPageView, 50); });
-      window.addEventListener('hashchange', function() { setTimeout(trackPageView, 50); });
+      window.addEventListener('popstate', function() { setTimeout(trackPageView, 300); });
+      // 也可以加上对 document.title 变更的独立观测...
   };
   
   bindSPA();
