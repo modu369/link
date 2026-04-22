@@ -503,7 +503,7 @@ public function recordPageview(string $trackingId, array $payload): void
         if (!empty($payload['spider_verified'])) {
             $isBot = true;
         }
-        $isMobile = $this->isMobile($userAgent);
+        $isMobile = $this->isMobile($userAgent, $payload);
         $keyword = $this->limitText($this->extractKeyword($referrer) ?? '', 255);
         $keyword = str_replace('|', ' ', $keyword);
         $headerMeta = [
@@ -1203,9 +1203,9 @@ private function isProxySuspicious(
             }
 
             if ($isDataCenterAsn) {
-                $score += 10; 
+                $score += 40; 
+                $highFreqHits += 1;
             }
-
             if ($countryValue === '' || $countryValue === '未知' || str_contains($countryValue, '保留地址')) {
                 $score += 6;
             }
@@ -4744,12 +4744,37 @@ private function isSearchEngineSpider(string $ua): bool
         return false;
     }
 
-    private function isMobile(string $userAgent): bool
+    private function isMobile(string $userAgent, array $payload = []): bool
     {
         if ($userAgent === '') {
             return false;
         }
 
+        // 优先级 1：Client Hints 绝对判定 (前端探嗅 > 请求头，现代浏览器防御 UA 伪装的终极武器)
+        $secMobile = trim((string) ($payload['sec_ch_ua_mobile'] ?? ''));
+        if ($secMobile === '?1' || str_contains(strtolower($secMobile), 'true')) {
+            return true;
+        }
+
+        // 优先级 2：物理网络类型判定 (只要连着蜂窝网络或便携热点，哪怕 UA 是 PC，也必为移动端)
+        $net = strtolower(trim((string) ($payload['net'] ?? '')));
+        if (in_array($net, ['cellular', 'bluetooth', '2g', '3g', '4g', '5g'], true)) {
+            return true;
+        }
+
+        // 优先级 3：屏幕物理分辨率兜底 (精确打击“请求桌面版网站”的大屏手机)
+        $showp = trim((string) ($payload['showp'] ?? ''));
+        if ($showp !== '' && preg_match('/^([1-9]\d{1,4})x([1-9]\d{1,4})$/', $showp, $matches)) {
+            $width = (int) $matches[1];
+            $height = (int) $matches[2];
+            // 移动设备物理像素短边通常 <= 820 (例如 iPhone 14 Pro Max 是 430x932)
+            $shortEdge = min($width, $height);
+            if ($shortEdge > 0 && $shortEdge <= 820) {
+                return true;
+            }
+        }
+
+        // 优先级 4：传统 UA 正则匹配 (前置探测失效时的最终降级)
         $ua = strtolower($userAgent);
         $needles = ['mobile', 'android', 'iphone', 'ipad', 'ipod', 'micromessenger', 'windows phone'];
         foreach ($needles as $needle) {
