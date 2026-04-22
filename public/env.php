@@ -25,9 +25,26 @@ render_topbar($branding);
                     </div>
                     <?php render_range_filters($allowedRanges, $range, 'env', (int) $selectedSite['id']); ?>
                 </div>
-            </section>
+</section>
+            <div class="view-tabs">
+                <button class="active" onclick="switchEnvView('device', this)">设备类别</button>
+                <button onclick="switchEnvView('browser', this)">浏览器类型</button>
+            </div>
 
-            <section class="card">
+            <script>
+                function switchEnvView(view, btn) {
+                    // 更新按钮状态
+                    const buttons = btn.parentElement.querySelectorAll('button');
+                    buttons.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    
+                    // 切换显示板块
+                    document.getElementById('view-device').style.display = view === 'device' ? 'block' : 'none';
+                    document.getElementById('view-browser').style.display = view === 'browser' ? 'block' : 'none';
+                }
+            </script>
+
+            <section class="card" id="view-device">
                 <div class="section-title"><h3>设备类别</h3><span class="muted">按 IP 聚合</span></div>
                 
                 <div style="margin-bottom:14px; display:flex; justify-content:center;">
@@ -44,9 +61,9 @@ render_topbar($branding);
                         <tr><td>移动端</td><td><?= (int) $data['devices']['mobile']['ips'] ?></td></tr>
                     </tbody>
                 </table>
-            </section>
+</section>
 
-            <section class="card">
+            <section class="card" id="view-browser" style="display: none;">
                 <div class="section-title"><h3>浏览器类型</h3><span class="muted">前 50</span></div>
                 
                 <div style="margin-bottom:14px; display:flex; justify-content:center;">
@@ -114,7 +131,6 @@ render_topbar($branding);
                                             afterLabel:(ctx)=>{
                                                 const totalVal = (ctx.dataset?.data || []).reduce((s,v)=>s+Number(v||0),0) || 1;
                                                 const pct = ((ctx.parsed/totalVal)*100).toFixed(1);
-                                                return `占比 ${pct}%`;
                                             }
                                         }
                                     }
