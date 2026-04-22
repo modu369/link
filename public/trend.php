@@ -21,7 +21,7 @@ render_topbar($branding);
     .trend-info { display:flex; flex-direction:column; gap:4px; min-width:0; }
     .trend-info .label { color:var(--muted); font-size:12px; font-weight:400; word-break:break-word; }
     .trend-info .val { font-size:12px; font-weight:400; word-break:break-word; }
-    .trend-canvas { width:100%; max-height:360px; }
+    .trend-canvas { width:100%; height:350px; }
 </style>
 <div class="data-layout">
     <?php render_sidebar($sites, $siteId, $selectedSite, 'trend', $range); ?>
@@ -70,7 +70,7 @@ render_topbar($branding);
                             <button data-metric="views">PV</button>
                         </div>
                     </div>
-                    <div class="chart-wrap trend-wrap"><canvas id="trendLineCanvas" class="trend-canvas"></canvas></div>
+                    <div class="chart-wrap trend-wrap"><div id="trendLineChart" class="trend-canvas"></div></div>
                 </section>
             <?php endif; ?>
 
@@ -111,57 +111,160 @@ render_topbar($branding);
     </main>
 </div>
 <?php render_footer(); ?>
+
+<script src="/t_statics/js/echarts.min.js"></script>
 <script>
     const trendSource = <?= json_encode($trendLines, JSON_UNESCAPED_UNICODE) ?>;
-    const trendCanvas = document.getElementById('trendLineCanvas');
+    const chartEl = document.getElementById('trendLineChart');
     let trendLineChart = null;
 
     const renderTrendLine = (metric = 'ips') => {
-        if (!trendCanvas || !window.Chart || !trendSource) return;
-        const ctx = trendCanvas.getContext('2d');
-        const grad1 = ctx.createLinearGradient(0, 0, 0, 200);
-        grad1.addColorStop(0, '#1690ff');
-        grad1.addColorStop(1, 'rgba(22,144,255,0.08)');
-        const grad2 = ctx.createLinearGradient(0, 0, 0, 200);
-        grad2.addColorStop(0, '#73c1ff');
-        grad2.addColorStop(1, 'rgba(115,193,255,0.08)');
+        if (!chartEl || !window.echarts || !trendSource) return;
 
-        const datasets = [
-            {
-                label: trendSource.primary_label,
-                data: trendSource.primary?.[metric] || [],
-                borderColor: '#1690ff',
-                backgroundColor: grad1,
-                tension: 0.35,
-                fill: true,
-            }
-        ];
+        if (trendLineChart) trendLineChart.dispose();
+        trendLineChart = echarts.init(chartEl);
 
-        if (trendSource.compare) {
-            datasets.push({
-                label: trendSource.compare_label,
-                data: trendSource.compare?.[metric] || [],
-                borderColor: '#73c1ff',
-                backgroundColor: grad2,
-                tension: 0.35,
-                fill: true,
+        const series = [];
+        const legends = [];
+
+        // 1. 蓝色线 (通常为今日/本期数据)
+        if (trendSource.primary) {
+            legends.push(trendSource.primary_label);
+            series.push({
+                name: trendSource.primary_label,
+                data: trendSource.primary[metric] || [],
+                type: 'line',
+                smooth: true,
+                symbol: 'circle',
+                symbolSize: 8,
+                showSymbol: false,
+                itemStyle: { color: '#1890ff', borderColor: '#fff', borderWidth: 2 },
+                lineStyle: { width: 2, type: 'solid' },
+                areaStyle: {
+                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: 'rgba(24, 144, 255, 0.25)' },
+                        { offset: 1, color: 'rgba(24, 144, 255, 0)' }
+                    ])
+                }
             });
         }
 
-        if (trendLineChart) trendLineChart.destroy();
-        trendLineChart = new Chart(trendCanvas, {
-            type: 'line',
-            data: { labels: trendSource.labels, datasets },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false, // 允许高度自适应容器，而不锁定宽高比
-                plugins: { legend: { position: 'top' }, tooltip: { mode: 'index', intersect: false } },
-                scales: {
-                    x: { ticks: { maxRotation: 0 }, grid: { display: false } },
-                    y: { beginAtZero: true }
+        // 2. 黄色线 (通常为昨日/对比数据)
+        if (trendSource.compare) {
+            legends.push(trendSource.compare_label);
+            series.push({
+                name: trendSource.compare_label,
+                data: trendSource.compare[metric] || [],
+                type: 'line',
+                smooth: true,
+                symbol: 'circle',
+                symbolSize: 8,
+                showSymbol: false,
+                itemStyle: { color: '#faad14', borderColor: '#fff', borderWidth: 2 },
+                lineStyle: { width: 2, type: 'solid' },
+                areaStyle: {
+                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: 'rgba(250, 173, 20, 0.25)' },
+                        { offset: 1, color: 'rgba(250, 173, 20, 0)' }
+                    ])
                 }
-            }
+            });
+        }
+
+        trendLineChart.setOption({
+            tooltip: {
+                trigger: 'axis',
+                backgroundColor: 'rgba(23, 35, 61, 0.9)',
+                borderColor: 'transparent',
+                padding: [12, 16],
+                textStyle: { color: '#fff' },
+                axisPointer: { type: 'line', lineStyle: { color: '#d9d9d9', type: 'solid' } },
+                formatter: function (params) {
+                    if (!params || !params.length) return '';
+
+                    let rawVal = String(params[0].axisValueLabel || params[0].axisValue).trim();
+                    let displayTitle = rawVal;
+                    
+                    // 时间段强制格式化 00:00 - 00:59
+                    let isHour = (trendSource.granularity === 'hour') || /^\d{1,2}(:\d{2})?$/.test(rawVal);
+                    if (isHour) {
+                        let hNum = parseInt(rawVal, 10);
+                        if (!isNaN(hNum)) {
+                            let hStr = hNum.toString().padStart(2, '0');
+                            displayTitle = '时间：' + hStr + ':00 - ' + hStr + ':59';
+                        }
+                    } else {
+                        displayTitle = '日期：' + rawVal;
+                    }
+
+                    let pData = params.find(p => p.seriesName === trendSource.primary_label);
+                    let cData = params.find(p => p.seriesName === trendSource.compare_label);
+                    
+                    let pVal = pData ? Number(pData.value || 0) : 0;
+                    let cVal = cData ? Number(cData.value || 0) : 0;
+
+                    let diffHtml = '';
+                    if (pData && cData) {
+                        let diff = pVal - cVal;
+                        if (cVal === 0) {
+                            diffHtml = pVal > 0 ? '<span style="color: #ed4014; font-weight: bold;">↑ 100.00%</span>' : '<span style="color: #808695; font-weight: bold;">0.00%</span>';
+                        } else {
+                            let pct = (diff / cVal) * 100;
+                            if (diff > 0) {
+                                diffHtml = '<span style="color: #ed4014; font-weight: bold;">↑ ' + pct.toFixed(2) + '%</span>';
+                            } else if (diff < 0) {
+                                diffHtml = '<span style="color: #19be6b; font-weight: bold;">↓ ' + Math.abs(pct).toFixed(2) + '%</span>';
+                            } else {
+                                diffHtml = '<span style="color: #808695; font-weight: bold;">0.00%</span>';
+                            }
+                        }
+                    }
+
+                    let html = '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px; color: #808695;">' + 
+                               '<span>' + displayTitle + '</span>' + 
+                               '<span style="margin-left: 24px;">' + diffHtml + '</span>' + 
+                               '</div>';
+                    
+                    params.forEach(p => {
+                        let safeVal = (p.value !== undefined && p.value !== null && !isNaN(p.value)) ? Number(p.value).toLocaleString() : '0';
+                        html += '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">' +
+                                // 此处追加了中文冒号 “：”
+                                '<div style="display: flex; align-items: center; color: #c5c8ce; font-size: 13px;">' + p.marker + p.seriesName + '：</div>' +
+                                '<div style="color: #fff; font-weight: 600; font-size: 14px; margin-left: 36px;">' + safeVal + '</div>' +
+                                '</div>';
+                    });
+                    return html;
+                }
+            },
+            legend: {
+                data: legends,
+                top: 0,
+                right: 0,
+                icon: 'rect',
+                itemWidth: 16,
+                itemHeight: 4,
+                textStyle: { color: '#8c8c8c', fontSize: 12 }
+            },
+            grid: { left: '0%', right: '1%', bottom: '0%', top: '15%', containLabel: true },
+            xAxis: {
+                type: 'category',
+                data: trendSource.labels,
+                boundaryGap: false,
+                axisLine: { show: false },
+                axisTick: { show: false },
+                axisLabel: { color: '#8c8c8c', margin: 12 }
+            },
+            yAxis: {
+                type: 'value',
+                axisLine: { show: false },
+                axisTick: { show: false },
+                splitLine: { lineStyle: { color: '#f0f0f0', type: 'solid' } },
+                axisLabel: { color: '#8c8c8c' }
+            },
+            series: series
         });
+
+        window.addEventListener('resize', () => trendLineChart.resize());
     };
 
     document.querySelectorAll('.trend-toggle button').forEach(btn => {
