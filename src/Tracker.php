@@ -4356,25 +4356,77 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
             return json_decode($cached, true);
         }
 
+        // 1. 获取真实、包含 HLL 修正的精确当天/昨日数据，彻底修复基数虚高问题
+        $todayTotals = $this->getTotals($siteId, 'today');
+        $yesterdayTotals = $this->getTotals($siteId, 'yesterday');
+
+        $todayViews = max(0, (int)($todayTotals['views'] ?? 0));
+        $todayIps = max(0, (int)($todayTotals['ip_count'] ?? 0));
+        
+        $yesterdayFullViews = max(0, (int)($yesterdayTotals['views'] ?? 0));
+        $yesterdayFullIps = max(0, (int)($yesterdayTotals['ip_count'] ?? 0));
+
+        // 2. 计算纯时间进度 (当前秒数 / 86400)
+        $timeFraction = ((int)$now->format('H') * 3600 + (int)$now->format('i') * 60 + (int)$now->format('s')) / 86400;
+
+        // 获取昨天同时段的 PV，用于计算流量的 "形状进度"
         $todayStart = $now->setTime(0, 0, 0);
         $yesterdayStart = $todayStart->sub(new DateInterval('P1D'));
         $yesterdaySameTime = $yesterdayStart->setTime((int) $now->format('H'), (int) $now->format('i'), (int) $now->format('s'));
-        $today = $this->getRangeStats($siteId, $todayStart, $now);
-        $yesterdayFull = $this->getRangeStats($siteId, $yesterdayStart, $todayStart);
-        $yesterdayPace = $this->getRangeStats($siteId, $yesterdayStart, $yesterdaySameTime);
-        $averages = $this->getHistoricalAverages($siteId, 30);
+        $yesterdayPaceStats = $this->getRangeStats($siteId, $yesterdayStart, $yesterdaySameTime);
+        $yesterdayPartialViews = max(0, (int)($yesterdayPaceStats['views'] ?? 0));
 
-        $predictedIps = $this->projectDayMetric($today['ips'], $yesterdayFull['ips'], $yesterdayPace['ips'], $averages['ips']);
-        $predictedViews = $this->projectDayMetric($today['views'], $yesterdayFull['views'], $yesterdayPace['views'], $averages['views']);
+        // 3. 计算综合进度比例
+        $progressFraction = $yesterdayFullViews > 0 ? ($yesterdayPartialViews / $yesterdayFullViews) : $timeFraction;
+
+        // 平滑与兜底处理：如果昨天基数太小，或者算出的进度异常，则降级为时间进度
+        if ($progressFraction <= 0.05 || $yesterdayFullViews < 50) {
+            $progressFraction = $timeFraction;
+        }
+        $progressFraction = max(0.01, min(1.0, $progressFraction));
+
+        // 【关键修复】如果已经接近午夜（最后约 14 分钟，>99%），直接视为 100% 进度，预测值等于当前值
+        if ($timeFraction >= 0.99) {
+            $progressFraction = 1.0;
+        }
+
+        $predictedViews = $todayViews;
+        $predictedIps = $todayIps;
+
+        // 4. 根据当前时间段决定预测算法
+        if ($timeFraction < 0.1) {
+            // 凌晨前段（比如0点~2点）当天基数太小，使用昨日最终或历史均值按剩余时间加权
+            $averages = $this->getHistoricalAverages($siteId, 30);
+            $expectedViews = $yesterdayFullViews > 0 ? $yesterdayFullViews : max(0, (int)($averages['views'] ?? 0));
+            $expectedIps = $yesterdayFullIps > 0 ? $yesterdayFullIps : max(0, (int)($averages['ips'] ?? 0));
+            
+            $predictedViews = (int) round($todayViews + $expectedViews * (1 - $timeFraction));
+            $predictedIps = (int) round($todayIps + $expectedIps * (1 - $timeFraction));
+        } else {
+            // 正常时段，利用进度比例直接外推
+            $predictedViews = (int) round($todayViews / $progressFraction);
+            $predictedIps = (int) round($todayIps / $progressFraction);
+        }
+
+        // 绝对兜底：全站预测值绝对不能低于当前实时产生的值
+        $predictedViews = max($todayViews, $predictedViews);
+        $predictedIps = max($todayIps, $predictedIps);
+
+        // 5. 移动端精准预测
         $deviceData = $this->getDeviceBreakdown($siteId, 'today');
-        
-        $currentMobileIps = $deviceData['mobile']['ips'] ?? 0;
-        $currentTotalIps = max(1, $today['ips']); 
-        $predictedMobileIps = (int) round($predictedIps * ($currentMobileIps / $currentTotalIps));
+        $currentMobileViews = max(0, (int)($deviceData['mobile']['views'] ?? 0));
+        $currentMobileIps = max(0, (int)($deviceData['mobile']['ips'] ?? 0));
 
-        $currentMobileViews = $deviceData['mobile']['views'] ?? 0;
-        $currentTotalViews = max(1, $today['views']);
-        $predictedMobileViews = (int) round($predictedViews * ($currentMobileViews / $currentTotalViews));
+        // 提取实时的移动端占比进行推算
+        $mobileViewRatio = $todayViews > 0 ? ($currentMobileViews / $todayViews) : 0;
+        $mobileIpRatio = $todayIps > 0 ? ($currentMobileIps / $todayIps) : 0;
+
+        $predictedMobileViews = (int) round($predictedViews * $mobileViewRatio);
+        $predictedMobileIps = (int) round($predictedIps * $mobileIpRatio);
+
+        // 绝对兜底：移动端预测值绝对不能低于移动端已产生的值
+        $predictedMobileViews = max($currentMobileViews, $predictedMobileViews);
+        $predictedMobileIps = max($currentMobileIps, $predictedMobileIps);
 
         $predictions = [
             'views' => $predictedViews,
