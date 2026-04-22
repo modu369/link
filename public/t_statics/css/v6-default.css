@@ -121,3 +121,7 @@
 @media (min-width: 1200px) {
     .site-card { grid-column: span 2; }
 }
+.view-tabs { display: flex; gap: 10px; margin-bottom: 16px; }
+.view-tabs button { padding: 6px 16px; border: 1px solid #d9d9d9; background: #fff; color: #333; cursor: pointer; border-radius: 6px; font-size: 14px; transition: all 0.2s; outline: none; }
+.view-tabs button:hover { background: #f0f0f0; }
+.view-tabs button.active { background: #1690ff; color: #fff; border-color: #1690ff; }
