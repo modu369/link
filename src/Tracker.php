@@ -490,6 +490,7 @@ public function recordPageview(string $trackingId, array $payload): void
 
         $rawSessionId = $this->limitText($payload['session_id'] ?? '', 64);
         $rawFingerprint = $this->limitText($payload['fingerprint'] ?? '', 128);
+        $title = $this->limitText($payload['title'] ?? '', 255);
         $sessionId = $rawSessionId !== '' ? $rawSessionId : ($ipHash ?: bin2hex(random_bytes(8)));
         $fingerprint = $rawFingerprint;
         if ($fingerprint === '') {
@@ -601,6 +602,7 @@ public function recordPageview(string $trackingId, array $payload): void
             'site_id' => $site['id'], 
             'host' => $host, 
             'canonical_host' => $canonicalHost,
+            'title' => $title ?: null,
             'path' => $path, 
             'referrer' => $referrer ?: null, 
             'user_agent' => $userAgent,
@@ -5081,6 +5083,7 @@ private function isSearchEngineSpider(string $ua): bool
 
         $ensureColumn('host', 'VARCHAR(255)', 'AFTER site_id');
         $ensureColumn('canonical_host', 'VARCHAR(255)', $columnExists('host') ? 'AFTER host' : 'AFTER site_id');
+        $ensureColumn('title', 'VARCHAR(255)', 'AFTER canonical_host');
         $ensureColumn('path', 'VARCHAR(2048)');
         $ensureColumn('referrer', 'VARCHAR(2048)');
         $ensureColumn('user_agent', 'VARCHAR(1024)');
