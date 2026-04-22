@@ -7,7 +7,7 @@ $outputGifAndExit = static function () {
     echo base64_decode('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==');
     exit;
 };
-$trackingId = trim((string) ($_GET['sid'] ?? ''));
+$trackingId = trim((string) ($_POST['sid'] ?? $_GET['sid'] ?? ''));
 if ($trackingId === '' || !preg_match('/^[a-f0-9]{16}$/i', $trackingId)) {
     http_response_code(204);
     exit;
