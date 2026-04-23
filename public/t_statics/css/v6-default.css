@@ -125,3 +125,33 @@
 .view-tabs button { padding: 6px 16px; border: 1px solid #d9d9d9; background: #fff; color: #333; cursor: pointer; border-radius: 6px; font-size: 14px; transition: all 0.2s; outline: none; }
 .view-tabs button:hover { background: #f0f0f0; }
 .view-tabs button.active { background: #1690ff; color: #fff; border-color: #1690ff; }
+/* 如果你原来的 .stat-dot 已经有基础的长宽和颜色了，只需在原来基础上增加 animation 属性即可 */
+.stat-dot {
+    display: inline-block;
+    width: 10px;          /* 圆点大小，可根据你的 UI 调整 */
+    height: 10px;
+    border-radius: 50%;
+    background-color: #10b981; /* 默认绿色，如果你的系统有定义 var(--success) 请替换 */
+    
+    /* 核心：绑定呼吸灯动画，2秒一次，无限循环，平滑过渡 */
+    animation: stat-breathe 2s infinite ease-in-out;
+}
+
+/* 呼吸灯动画关键帧 */
+@keyframes stat-breathe {
+    0% {
+        opacity: 0.7;
+        /* 光晕收缩状态 */
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); 
+    }
+    30% {
+        opacity: 1;
+        /* 光晕扩散，同时变得完全透明 */
+        box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); 
+    }
+    100% {
+        opacity: 0.7;
+        /* 恢复到初始状态 */
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); 
+    }
+}
