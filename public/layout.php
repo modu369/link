@@ -49,7 +49,7 @@ function render_head(string $title = '统计后台'): void
                 color: #17233d !important; font-style: italic !important; 
                 margin: 0 !important; letter-spacing: 0.5px !important;
             }
-            .brand span { color: #f9a123; font-size: 14px; margin-left: 2px; font-style: normal; font-weight: 800;}
+            .brand span { color: #f9a123; font-size: 14px; margin-left: 2px; font-style: italic; font-weight: 800;}
             
             .site-switcher select {
                 padding: 6px 28px 6px 14px !important; border: 1px solid #dcdee2 !important; border-radius: 4px !important;
@@ -175,8 +175,8 @@ function render_topbar(array $branding): void
         <div class="header-left" id="header-mount">
             <a href="/sites.php" class="brand-link">
                 <div class="brand">
-                    <?= htmlspecialchars(explode(' ', $branding['brand_title'] ?? '51.LA V6')[0] ?? '51.LA', ENT_QUOTES, 'UTF-8') ?>
-                    <span><?= htmlspecialchars(explode(' ', $branding['brand_title'] ?? '51.LA V6')[1] ?? 'V6', ENT_QUOTES, 'UTF-8') ?></span>
+                    <?= htmlspecialchars($branding['brand_title'] ?? 'V6统计后台', ENT_QUOTES, 'UTF-8') ?>
+                    <span><?= htmlspecialchars($branding['brand_subtitle'] ?? '', ENT_QUOTES, 'UTF-8') ?></span>
                 </div>
             </a>
         </div>
