@@ -490,10 +490,12 @@ $debounceKey = "tracker:debounce:{$trackingId}:" . md5($fp . $ip . $path . $isPi
         $uvToday = false;
         $isUnique = false;
 
-        $rawSessionId = $this->limitText($payload['session_id'] ?? '', 64);
+$rawSessionId = $this->limitText($payload['session_id'] ?? '', 64);
         $rawFingerprint = $this->limitText($payload['fingerprint'] ?? '', 128);
         $title = $this->limitText($payload['title'] ?? '', 255);
-        $sessionId = $rawSessionId !== '' ? $rawSessionId : ($ipHash ?: bin2hex(random_bytes(8)));
+        
+        // 优化：彻底剥离 ipHash 作为业务 ID 的兜底，改用标准的 UUID v4 (32位纯Hex)
+        $sessionId = $rawSessionId !== '' ? $rawSessionId : $this->generateUuidV4Hex();
         $fingerprint = $rawFingerprint;
         if ($fingerprint === '') {
             $fingerprint = $sessionId;
@@ -578,7 +580,8 @@ $proxyRisk = $this->isProxySuspicious(
 
         $visitorId = $this->limitText($payload['visitor_id'] ?? '', 128);
         if ($visitorId === '') {
-            $visitorId = $ipHash ?: bin2hex(random_bytes(8));
+            // 优化：优先使用指纹作为访客ID，其次生成新ID，绝对不再使用 IP Hash 污染独立访客(UV)计算
+            $visitorId = $rawFingerprint !== '' ? $rawFingerprint : $this->generateUuidV4Hex();
         }
 
         if ($visitorId) {
@@ -6816,5 +6819,18 @@ $globalMobileIps = !empty($allMobileIpKeys) ? (int) $this->redis->pfCount($allMo
             $stmt = $this->db->prepare($sql);
             $stmt->execute($params);
         }
+    }
+    /**
+     * 生成符合 RFC 4122 标准的 UUID v4 (去除短横线，返回 32 位 Hex 字符串)
+     * 完美兼容 stat.php 中的 /^[a-f0-9]{16,128}$/i 正则校验
+     */
+    private function generateUuidV4Hex(): string
+    {
+        return sprintf('%04x%04x%04x%04x%04x%04x%04x%04x',
+            mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff),
+            mt_rand(0, 0x0fff) | 0x4000,
+            mt_rand(0, 0x3fff) | 0x8000,
+            mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff)
+        );
     }
 }
