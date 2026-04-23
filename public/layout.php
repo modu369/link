@@ -15,19 +15,15 @@ function render_head(string $title = '统计后台'): void
                1. 全局字体渲染引擎优化 (核心质感来源)
                ======================================================== */
             body, html, button, input, select, textarea, a {
-                /* 苹果/微软/安卓 最佳中文字体栈 fallback */
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif !important;
-                /* 开启 Mac/iOS 的字体抗锯齿，文字边缘更锐利平滑 */
                 -webkit-font-smoothing: antialiased !important;
                 -moz-osx-font-smoothing: grayscale !important;
-                /* 优化文字可读性与字距 */
                 text-rendering: optimizeLegibility !important;
             }
 
             /* ========================================================
                2. 顶部通栏 & 侧边栏 UI 精调
                ======================================================== */
-            
             header {
                 padding: 0 24px 0 0 !important;
                 height: 60px !important;
@@ -45,37 +41,21 @@ function render_head(string $title = '统计后台'): void
             .header-right { display: flex; align-items: center; gap: 24px; }
             
             .brand-link { 
-                text-decoration: none; 
-                background: #fff; 
-                width: 220px; 
-                height: 60px;
-                display: flex;
-                align-items: center;
-                padding-left: 24px;
-                border-right: 1px solid #f0f0f0;
+                text-decoration: none; background: #fff; width: 220px; height: 60px;
+                display: flex; align-items: center; padding-left: 24px; border-right: 1px solid #f0f0f0;
             }
             .brand { 
-                font-size: 20px !important; 
-                font-weight: 900 !important; /* 极粗字重，凸显 Logo 质感 */
-                color: #17233d !important; 
-                font-style: italic !important; 
-                margin: 0 !important; 
-                letter-spacing: 0.5px !important;
+                font-size: 20px !important; font-weight: 900 !important; 
+                color: #17233d !important; font-style: italic !important; 
+                margin: 0 !important; letter-spacing: 0.5px !important;
             }
             .brand span { color: #f9a123; font-size: 14px; margin-left: 2px; font-style: normal; font-weight: 800;}
             
             .site-switcher select {
-                padding: 6px 28px 6px 14px !important;
-                border: 1px solid #dcdee2 !important;
-                border-radius: 4px !important;
+                padding: 6px 28px 6px 14px !important; border: 1px solid #dcdee2 !important; border-radius: 4px !important;
                 background: #f8f8f9 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23808695'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E") no-repeat right 6px center / 16px !important;
-                font-size: 14px !important;
-                font-weight: 500 !important;
-                color: #515a6e !important;
-                outline: none !important;
-                appearance: none !important;
-                min-width: 160px;
-                cursor: pointer;
+                font-size: 14px !important; font-weight: 500 !important; color: #515a6e !important;
+                outline: none !important; appearance: none !important; min-width: 160px; cursor: pointer;
                 transition: border 0.2s, box-shadow 0.2s;
             }
             .site-switcher select:hover { border-color: #57a3f3 !important; }
@@ -83,93 +63,87 @@ function render_head(string $title = '统计后台'): void
 
             .top-nav-links { display: flex; gap: 24px; margin-right: 8px; }
             .top-nav-links a { 
-                text-decoration: none; 
-                color: #515a6e; 
-                font-size: 14px; 
-                font-weight: 500;
-                display: flex; 
-                align-items: center; 
-                gap: 6px;
-                transition: color 0.2s;
+                text-decoration: none; color: #515a6e; font-size: 14px; font-weight: 500;
+                display: flex; align-items: center; gap: 6px; transition: color 0.2s;
             }
             .top-nav-links a:hover { color: #2d8cf0; }
 
-            /* 侧边栏 */
+            /* ========================================================
+               3. 侧边栏 (彻底优化卡顿与动画)
+               ======================================================== */
             .nav {
-                background: #fff !important;
-                border: none !important;
-                border-right: 1px solid #f0f0f0 !important;
-                border-radius: 0 !important;
-                box-shadow: none !important;
-                padding: 12px 0 !important;
-                position: sticky !important;
-                top: 60px !important;
-                height: calc(100vh - 60px) !important;
-                width: 220px !important;
-                overflow-y: auto !important;
+                background: #fff !important; border: none !important; border-right: 1px solid #f0f0f0 !important;
+                border-radius: 0 !important; box-shadow: none !important; padding: 12px 0 !important;
+                position: sticky !important; top: 60px !important; height: calc(100vh - 60px) !important;
+                width: 220px !important; overflow-y: auto !important;
+                overscroll-behavior: contain; /* 优化滚动性能 */
             }
+
+            /* 美化侧边栏滚动条，告别原生丑陋滚动条 */
+            .nav::-webkit-scrollbar { width: 5px; }
+            .nav::-webkit-scrollbar-track { background: transparent; }
+            .nav::-webkit-scrollbar-thumb { background: #e8eaec; border-radius: 4px; }
+            .nav::-webkit-scrollbar-thumb:hover { background: #c5c8ce; }
 
             .stat-info-box { padding: 0 20px 12px; margin-bottom: 8px; }
             .stat-id-badge {
-                display: flex; align-items: center; gap: 8px;
-                background: #f8f8f9; padding: 7px 12px; border-radius: 4px;
-                font-size: 12px; color: #515a6e; font-weight: 600; letter-spacing: 0.3px;
+                display: flex; align-items: center; gap: 8px; background: #f8f8f9; padding: 7px 12px; 
+                border-radius: 4px; font-size: 12px; color: #515a6e; font-weight: 600; letter-spacing: 0.3px;
             }
             .stat-dot { width: 6px; height: 6px; background: #19be6b; border-radius: 50%; box-shadow: 0 0 0 2px #e3f9ed; }
 
             .nav-section { border: none !important; margin: 0 !important; }
             .nav-toggle { 
-                background: transparent !important; 
-                padding: 12px 20px !important; 
-                color: #515a6e !important; 
-                font-size: 14px !important;
-                font-weight: 600 !important; /* 主菜单加粗一点点 */
-                letter-spacing: 0.2px !important;
-                border: none !important;
-                width: 100% !important;
-                text-align: left !important;
-                display: flex !important;
-                justify-content: space-between !important;
-                align-items: center !important;
-                cursor: pointer;
-                transition: color 0.2s;
+                background: transparent !important; padding: 12px 20px !important; color: #515a6e !important; 
+                font-size: 14px !important; font-weight: 600 !important; letter-spacing: 0.2px !important;
+                border: none !important; width: 100% !important; text-align: left !important;
+                display: flex !important; justify-content: space-between !important; align-items: center !important;
+                cursor: pointer; transition: color 0.25s ease;
             }
             .nav-toggle-left { display: flex; align-items: center; gap: 10px; }
             
             .nav-toggle-left svg { 
-                width: 16px; height: 16px; 
-                stroke: #808695; fill: none; 
+                width: 16px; height: 16px; stroke: #808695; fill: none; 
                 stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
-                transition: stroke 0.2s;
+                transition: stroke 0.25s ease;
             }
             
             .nav-toggle:hover { color: #2d8cf0 !important; }
             .nav-toggle:hover .nav-toggle-left svg { stroke: #2d8cf0 !important; }
             
-            .nav-toggle-chevron { color: #c5c8ce; font-size: 16px; font-family: consolas, monospace; transition: transform 0.2s; }
+            /* 箭头旋转动画优化 */
+            .nav-toggle-chevron { color: #c5c8ce; font-size: 16px; font-family: consolas, monospace; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
             .nav-section.open .nav-toggle-chevron { transform: rotate(90deg); }
 
-            .nav-links { padding: 2px 0 6px 0 !important; }
+            /* 核心：修复菜单卡顿，引入丝滑的 CSS Grid 高度动画 */
+            .nav-links { 
+                display: grid !important; 
+                grid-template-rows: 0fr; 
+                transition: grid-template-rows 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                padding: 0 !important;
+            }
+            .nav-section.open .nav-links { 
+                grid-template-rows: 1fr; 
+            }
+            .nav-links-inner { 
+                overflow: hidden !important; 
+            }
+            /* 使用伪元素制造留白，避免直接 padding 导致的动画跳跃 */
+            .nav-links-inner::before { content: ''; display: block; height: 2px; }
+            .nav-links-inner::after { content: ''; display: block; height: 6px; }
+
             .nav a { 
-                padding: 10px 20px 10px 46px !important; 
-                margin: 0 !important;
-                border-radius: 0 !important;
-                color: #515a6e !important;
-                font-size: 14px !important; /* 从13px升到14px，提升阅读体验 */
-                font-weight: 500 !important; /* 适中的字重 */
-                border: none !important;
-                display: block !important;
-                text-decoration: none !important;
-                transition: all 0.2s ease;
+                padding: 10px 20px 10px 46px !important; margin: 0 !important; border-radius: 0 !important;
+                color: #515a6e !important; font-size: 14px !important; font-weight: 500 !important;
+                border: none !important; display: block !important; text-decoration: none !important;
+                /* 修复卡顿：彻底干掉 transition: all，只过渡背景和颜色 */
+                transition: background-color 0.2s ease-out, color 0.2s ease-out !important;
                 position: relative;
             }
             .nav a:hover { color: #2d8cf0 !important; background: #f8f8f9 !important; }
             
             .nav a.active { 
-                background: #f0faff !important; 
-                color: #2d8cf0 !important; 
-                font-weight: 600 !important; /* 激活态加粗 */
-                box-shadow: none !important;
+                background: #f0faff !important; color: #2d8cf0 !important; font-weight: 600 !important; box-shadow: none !important;
             }
             .nav a.active::after {
                 content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 3px; background: #2d8cf0;
@@ -320,11 +294,13 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
                     <span class="nav-toggle-chevron">›</span>
                 </button>
                 <div class="nav-links">
-                    <?php foreach ($section['items'] as $item): ?>
-                        <a class="<?= $active === $item['key'] ? 'active' : '' ?>" href="<?= htmlspecialchars($item['href'], ENT_QUOTES, 'UTF-8') ?>">
-                            <?= htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8') ?>
-                        </a>
-                    <?php endforeach; ?>
+                    <div class="nav-links-inner">
+                        <?php foreach ($section['items'] as $item): ?>
+                            <a class="<?= $active === $item['key'] ? 'active' : '' ?>" href="<?= htmlspecialchars($item['href'], ENT_QUOTES, 'UTF-8') ?>">
+                                <?= htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8') ?>
+                            </a>
+                        <?php endforeach; ?>
+                    </div>
                 </div>
             </div>
         <?php endforeach; ?>
