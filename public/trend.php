@@ -114,6 +114,7 @@ render_topbar($branding);
 
 <script src="/t_statics/js/echarts.min.js"></script>
 <script>
+    <?php if ($showTrend ?? $trendLines): ?>
     const trendSource = <?= json_encode($trendLines, JSON_UNESCAPED_UNICODE) ?>;
     const chartEl = document.getElementById('trendLineChart');
     let trendLineChart = null;
@@ -127,14 +128,14 @@ render_topbar($branding);
         const series = [];
         const legends = [];
 
-        // 1. 蓝色线 (通常为今日/本期数据)
+        // 1. 蓝色线 (本期数据)
         if (trendSource.primary) {
             legends.push(trendSource.primary_label);
             series.push({
                 name: trendSource.primary_label,
                 data: trendSource.primary[metric] || [],
                 type: 'line',
-                smooth: true,
+                smooth: false, // <-- 核心修改：关闭平滑，改为硬拐角直线
                 symbol: 'circle',
                 symbolSize: 8,
                 showSymbol: false,
@@ -149,14 +150,14 @@ render_topbar($branding);
             });
         }
 
-        // 2. 黄色线 (通常为昨日/对比数据)
+        // 2. 黄色线 (对比数据)
         if (trendSource.compare) {
             legends.push(trendSource.compare_label);
             series.push({
                 name: trendSource.compare_label,
                 data: trendSource.compare[metric] || [],
                 type: 'line',
-                smooth: true,
+                smooth: false, // <-- 核心修改：关闭平滑，改为硬拐角直线
                 symbol: 'circle',
                 symbolSize: 8,
                 showSymbol: false,
@@ -228,7 +229,6 @@ render_topbar($branding);
                     params.forEach(p => {
                         let safeVal = (p.value !== undefined && p.value !== null && !isNaN(p.value)) ? Number(p.value).toLocaleString() : '0';
                         html += '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">' +
-                                // 此处追加了中文冒号 “：”
                                 '<div style="display: flex; align-items: center; color: #c5c8ce; font-size: 13px;">' + p.marker + p.seriesName + '：</div>' +
                                 '<div style="color: #fff; font-weight: 600; font-size: 14px; margin-left: 36px;">' + safeVal + '</div>' +
                                 '</div>';
@@ -276,4 +276,5 @@ render_topbar($branding);
     });
 
     renderTrendLine('ips');
+    <?php endif; ?>
 </script>
