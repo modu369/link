@@ -1,9 +1,9 @@
 <?php
 return [
     'db' => [
-        'dsn' => getenv('DB_DSN') ?: 'mysql:host=127.0.0.1;dbname=v8tongji;charset=utf8mb4',
+        'dsn' => getenv('DB_DSN') ?: 'mysql:host=127.0.0.1;dbname=ceshi;charset=utf8mb4',
         'user' => getenv('DB_USER') ?: 'ceshi',
-        'pass' => getenv('DB_PASS') ?: '123456',
+        'pass' => getenv('DB_PASS') ?: 'pai123456',
     ],
     'redis' => [
         'host' => getenv('REDIS_HOST') ?: '127.0.0.1',
@@ -71,10 +71,10 @@ return [
         // 处理中的数据超过该秒数将重新入队
         'stalled_after' => (int) (getenv('INGEST_STALLED_AFTER') ?: 300),
 // --- 优化后的刷量风险识别阈值配置 ---
-        'risk_score_threshold' => 80,       // 建议从 98 降回 80。因为惩罚力度已减弱，80分足以拦截绝大多数劣质代理。
-        'cross_region_threshold' => 4,      // 建议设为 3。兼容高铁/跨省通勤的真实用户，但大于3次跨区极大概率是秒拨IP池。
-        'high_freq_threshold' => 4,         // 建议设为 3。配合3次跨省使用，真实用户极难同时满足“频繁跨省+高频点击”。认定条件：10秒内35次
+        'risk_score_threshold' => 85,       // 建议从 98 降回 80。因为惩罚力度已减弱，80分足以拦截绝大多数劣质代理。
+        'cross_region_threshold' => 5,      // 建议设为 3。兼容高铁/跨省通勤的真实用户，但大于3次跨区极大概率是秒拨IP池。
+        'high_freq_threshold' => 5,         // 建议设为 3。配合3次跨省使用，真实用户极难同时满足“频繁跨省+高频点击”。认定条件：10秒内35次
         'sustained_freq_threshold' => 5,    // 建议设为 4。持续高频访问，真实用户哪怕是狂点也不可能持续这么久。
-        'medium_risk_score' => 65,          // 建议从 90 降回 60。配合持续高频(sustained)使用，只要一直高频刷，60分就该封禁。
+        'medium_risk_score' => 70,          // 建议从 90 降回 60。配合持续高频(sustained)使用，只要一直高频刷，60分就该封禁。
     ],
 ];
