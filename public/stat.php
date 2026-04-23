@@ -322,7 +322,12 @@ $cookieParam = trim($cookieParam);
 
 // 服务端兜底机制
 if ($cookieParam === '' || !preg_match('/^[a-f0-9]{16,128}$/i', $cookieParam)) {
-    $cookieParam = bin2hex(random_bytes(16));
+    $cookieParam = sprintf('%04x%04x%04x%04x%04x%04x%04x%04x',
+        mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff),
+        mt_rand(0, 0x0fff) | 0x4000,
+        mt_rand(0, 0x3fff) | 0x8000,
+        mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff)
+    );
 }
 
 $cookieName = 'tracker_ck_' . strtolower($trackingId);
