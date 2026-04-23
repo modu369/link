@@ -539,27 +539,16 @@ $debounceKey = "tracker:debounce:{$trackingId}:" . md5($fp . $ip . $path . $isPi
             $countryCode = $this->limitText($geo['country_code'] ?? '', 16);
             $asnMeta = $ip ? $this->resolveAsnMeta($ip) : [];
 
-            $proxyRisk = $this->isProxySuspicious(
-                $sessionId,
-                $fingerprint,
-                $uidProvided,
-                $fallbackUid,
-                $userAgent,
-                $duration,
-                $pageCount,
-                $ip,
-                $ipHash,
-                $asnMeta,
-                $cityName,
-                $regionName,
-                $countryName,
-                $headerMeta,
-                (bool) $isMobile,
-                $canonicalHost ?: $host
+$proxyRisk = $this->isProxySuspicious(
+                $sessionId, $fingerprint, $uidProvided, $fallbackUid, $userAgent,
+                $duration, $pageCount, $ip, $ipHash, $asnMeta, $cityName,
+                $regionName, $countryName, $headerMeta, (bool) $isMobile, $canonicalHost ?: $host
             );
             
             if ($proxyRisk['blocked']) {
-                return null;
+                // 写入专门的 Redis 封禁拦截统计池，不污染 MySQL 蜘蛛表
+                $this->recordBlockedStats((int) $site['id'], $ipHash, (bool) $isMobile);
+                return null; 
             }
             
             if (!empty($proxyRisk['is_spider'])) {
@@ -716,17 +705,14 @@ if (!empty($payload['is_ping'])) {
         ]);
     }
 private function truncateIpv6(?string $ip): ?string
-{
-    if (!$ip) return $ip;
-    // 【修复 3】：如果是 IPv6，截取前 64 位（通常是同一基站网段），避免隐私扩展导致同一用户 IP 不断变化
-    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
-        $parts = explode(':', $ip);
-        if (count($parts) >= 4) {
-            return implode(':', array_slice($parts, 0, 4)) . '::/64';
-        }
+    {
+        if (!$ip) return $ip;
+        
+        // 【对齐大厂标准】
+        // 为了在统计报表中呈现真实的独立 IP 量（对齐 51la），不再主动截断 IPv6 隐私扩展地址。
+        // 将 WAF 级别的 /64 网段折叠逻辑保留给外部防火墙，不干预业务统计报表。
+        return $ip; 
     }
-    return $ip;
-}
     private function persistBotLog(
         int $siteId,
         string $path,
@@ -1038,18 +1024,44 @@ private function isProxySuspicious(
         }
         $uidMissing = !$uidProvided;
 
-        // ==========================================
-        // = 修改点 1：顶层拦截改为验证 UID 和独立 IP =
-        // ==========================================
-        try {
-            $blockedKey = "proxy:blocked_uid:{$uid}";
-            $blockedIpKey = "proxy:blocked_exact_ip:{$ip}"; // 独立 IP 黑名单
-            
-            if ($this->redis->get($blockedKey) || $this->redis->get($blockedIpKey)) {
-                return ['blocked' => true, 'risk' => true, 'score' => 100];
+if ($isRisk) {
+                // 动态判断具体的封禁原因
+                $reason = '综合评分超限(Score:'.$score.')';
+                if ($isDataCenterAsn) $reason = 'IDC机房/云服务器特征';
+                elseif ($isForeign) $reason = '海外高频异常';
+                elseif ($crossRegionHits >= $crossRegionThreshold && $highFreqHits >= $highFreqThreshold) $reason = '秒拨IP(高频跨省)';
+                elseif ($score >= $mediumRiskScore && $sustainedHits >= $sustainedFreqThreshold) $reason = '设备级持续高频采集';
+
+                $probationKey = "proxy:probation:{$ip}"; 
+                $isProbation = (bool) $this->redis->get($probationKey);
+                
+                if (!$isProbation) {
+                    $this->redis->setex($probationKey, $this->proxyProbationSeconds, '1');
+                    $this->markProxyRiskStatus($ipHash, true);
+                    return ['blocked' => false, 'risk' => true, 'score' => $score];
+                }
+                
+                $blockType = ($isDataCenterAsn || $isForeign) ? 'IP全局封禁 (独立IP)' : '设备级封禁 (国内基站)';
+                $logData = json_encode([
+                    'ip' => $ip, 
+                    'uid' => $uid, 
+                    'type' => $blockType, 
+                    'time' => date('Y-m-d H:i:s'), 
+                    'score' => $score,
+                    'reason' => $reason // <--- 重点：将原因压入 Redis 日志
+                ], JSON_UNESCAPED_UNICODE);
+                $this->redis->lPush('proxy:recent_blocks_log', $logData);
+                $this->redis->lTrim('proxy:recent_blocks_log', 0, 999);
+                $this->redis->incr('proxy:total_blocks_count');
+                
+                if ($isDataCenterAsn || $isForeign) {
+                    $this->rememberBlockedProxyIp($ip);
+                    $this->redis->setex("proxy:blocked_exact_ip:{$ip}", 14400, '1'); 
+                }
+                
+                $this->redis->setex($blockedKey, 14400, '1'); 
+                return ['blocked' => true, 'risk' => true, 'score' => $score, 'reason' => $reason];
             }
-        } catch (Throwable $e) {
-        }
 
         // ==========================================
         // = 终极极速版：前置 IP/C段 蜘蛛白名单直通车 =
@@ -1379,14 +1391,40 @@ private function isProxySuspicious(
             ]);
             $this->redis->expire($profileKey, 1800);
 
-            $isRisk = $score >= $riskScoreThreshold 
+$isRisk = $score >= $riskScoreThreshold 
                 || ($crossRegionHits >= $crossRegionThreshold && $highFreqHits >= $highFreqThreshold) 
                 || ($score >= $mediumRiskScore && $sustainedHits >= $sustainedFreqThreshold);
 
             if ($isRisk) {
                 // ==========================================
-                // = 修改点 2：将观察期改为精确基于当前独立 IP =
+                // = 新增：精准诊断拦截诱因，拒绝误报 =
                 // ==========================================
+                $reasonParts = [];
+                if ($score >= $riskScoreThreshold) {
+                    $reasonParts[] = "风险总分超限({$score}分)";
+                }
+                if ($crossRegionHits >= $crossRegionThreshold && $highFreqHits >= $highFreqThreshold) {
+                    $reasonParts[] = "秒拨IP特征(跨省{$crossRegionHits}次+高频采集)";
+                }
+                if ($score >= $mediumRiskScore && $sustainedHits >= $sustainedFreqThreshold) {
+                    $reasonParts[] = "持续高频采集(危险期内{$sustainedHits}次超限)";
+                }
+                if ($isDataCenterAsn) {
+                    $reasonParts[] = "命中IDC机房/云服务器";
+                }
+                if ($uaSuspicious) {
+                    $reasonParts[] = "疑似无头浏览器/爬虫工具";
+                }
+                if ($ipChanged && $ipChangeCount >= 3 && $highFreqHits >= 1 && !$isDataCenterAsn) {
+                    $reasonParts[] = "同设备频繁秒换IP({$ipChangeCount}次)";
+                }
+                
+                $reason = implode(' + ', $reasonParts);
+                if (empty($reason)) {
+                    $reason = "未分类异常组合 (评分:{$score}分)";
+                }
+
+                // 下面是原有的 Redis 处理逻辑
                 $probationKey = "proxy:probation:{$ip}"; 
                 $isProbation = (bool) $this->redis->get($probationKey);
                 
@@ -1397,19 +1435,23 @@ private function isProxySuspicious(
                 }
                 
                 $blockType = ($isDataCenterAsn || $isForeign) ? 'IP全局封禁 (独立IP)' : '设备级封禁 (国内基站)';
+                
+                // ==========================================
+                // = 核心修复：必须将 reason 写入 Redis！ =
+                // ==========================================
                 $logData = json_encode([
                     'ip' => $ip, 
                     'uid' => $uid, 
                     'type' => $blockType, 
                     'time' => date('Y-m-d H:i:s'), 
-                    'score' => $score
+                    'score' => $score,
+                    'reason' => $reason // <--- 增加这行，否则前端永远只能显示兜底词汇
                 ], JSON_UNESCAPED_UNICODE);
+                
                 $this->redis->lPush('proxy:recent_blocks_log', $logData);
                 $this->redis->lTrim('proxy:recent_blocks_log', 0, 999);
                 $this->redis->incr('proxy:total_blocks_count');
-                // ==========================================
-                // = 修改点 3：彻底废弃网段封禁，只封禁当前作恶 IP =
-                // ==========================================
+                
                 if ($isDataCenterAsn || $isForeign) {
                     $this->rememberBlockedProxyIp($ip);
                     $this->redis->setex("proxy:blocked_exact_ip:{$ip}", 14400, '1'); 
@@ -1431,7 +1473,6 @@ public function getBlockedProxyIps(int $limit = 200, int $offset = 0): array
         $limit = max(1, $limit);
         $offset = max(0, $offset);
         try {
-            // 改为读取新增的综合拦截日志列队
             $key = 'proxy:recent_blocks_log';
             $rows = $this->redis->lRange($key, $offset, $offset + $limit - 1);
             $results = [];
@@ -1444,6 +1485,8 @@ public function getBlockedProxyIps(int $limit = 200, int $offset = 0): array
                             'uid' => $data['uid'] ?? '',
                             'type' => $data['type'] ?? '未知',
                             'score' => $data['score'] ?? 0,
+                            // 这里读取上面存入的 reason，如果遇到存量旧数据，才显示未知
+                            'reason' => $data['reason'] ?? '历史记录 (评分: ' . ($data['score'] ?? 0) . '分)',
                             'detected_at' => $data['time'] ?? '',
                         ];
                     }
@@ -1473,7 +1516,47 @@ public function getTotalBlockedCount(): int
             return 0;
         }
     }
-    
+private function recordBlockedStats(int $siteId, ?string $ipHash, bool $isMobile): void
+    {
+        $todayStr = date('Ymd');
+        $pvKey = "site:{$siteId}:blocked_pv:{$todayStr}";
+        $pvMobileKey = "site:{$siteId}:blocked_pv_mobile:{$todayStr}";
+        $hllIpKey = "site:{$siteId}:blocked_hll_ip:{$todayStr}";
+        $hllIpMobileKey = "site:{$siteId}:blocked_hll_ip_mobile:{$todayStr}";
+
+        $this->redis->incr($pvKey);
+        $this->redis->expire($pvKey, 86400 * 3); // 仅保留3天缓存用于当日展示
+        if ($ipHash) {
+            $this->redis->pfAdd($hllIpKey, [$ipHash]);
+            $this->redis->expire($hllIpKey, 86400 * 3);
+        }
+
+        if ($isMobile) {
+            $this->redis->incr($pvMobileKey);
+            $this->redis->expire($pvMobileKey, 86400 * 3);
+            if ($ipHash) {
+                $this->redis->pfAdd($hllIpMobileKey, [$ipHash]);
+                $this->redis->expire($hllIpMobileKey, 86400 * 3);
+            }
+        }
+    }
+
+    public function getBlockedStats(int $siteId, string $range = 'today'): array
+    {
+        $dateStr = $range === 'yesterday' ? date('Ymd', strtotime('-1 day')) : date('Ymd');
+        
+        $pv = (int) $this->redis->get("site:{$siteId}:blocked_pv:{$dateStr}");
+        $mobilePv = (int) $this->redis->get("site:{$siteId}:blocked_pv_mobile:{$dateStr}");
+        $ip = (int) $this->redis->pfCount("site:{$siteId}:blocked_hll_ip:{$dateStr}");
+        $mobileIp = (int) $this->redis->pfCount("site:{$siteId}:blocked_hll_ip_mobile:{$dateStr}");
+
+        return [
+            'pv' => $pv,
+            'mobile_pv' => $mobilePv,
+            'ip' => $ip,
+            'mobile_ip' => $mobileIp,
+        ];
+    }
 private function getNetworkIdentifier(string $ip): string
     {
         // 彻底废除 IPv6 粗暴截取 /64 网段的逻辑，直接返回精确 IP 进行隔离
@@ -4812,31 +4895,16 @@ private function isSearchEngineSpider(string $ua): bool
             return false;
         }
 
-        // 优先级 1：Client Hints 绝对判定 (前端探嗅 > 请求头，现代浏览器防御 UA 伪装的终极武器)
+        // 优先级 1：Client Hints 绝对判定 (现代标准，无视 UA 伪装，已通过前端 sec_m 或请求头获取)
         $secMobile = trim((string) ($payload['sec_ch_ua_mobile'] ?? ''));
         if ($secMobile === '?1' || str_contains(strtolower($secMobile), 'true')) {
             return true;
         }
-
-        // 优先级 2：物理网络类型判定 (只要连着蜂窝网络或便携热点，哪怕 UA 是 PC，也必为移动端)
-        $net = strtolower(trim((string) ($payload['net'] ?? '')));
-        if (in_array($net, ['cellular', 'bluetooth', '2g', '3g', '4g', '5g'], true)) {
-            return true;
+        if ($secMobile === '?0' || str_contains(strtolower($secMobile), 'false')) {
+            return false;
         }
 
-        // 优先级 3：屏幕物理分辨率兜底 (精确打击“请求桌面版网站”的大屏手机)
-        $showp = trim((string) ($payload['showp'] ?? ''));
-        if ($showp !== '' && preg_match('/^([1-9]\d{1,4})x([1-9]\d{1,4})$/', $showp, $matches)) {
-            $width = (int) $matches[1];
-            $height = (int) $matches[2];
-            // 移动设备物理像素短边通常 <= 820 (例如 iPhone 14 Pro Max 是 430x932)
-            $shortEdge = min($width, $height);
-            if ($shortEdge > 0 && $shortEdge <= 820) {
-                return true;
-            }
-        }
-
-        // 优先级 4：传统 UA 正则匹配 (前置探测失效时的最终降级)
+        // 优先级 2：传统 UA 正则匹配 (只保留绝对属于移动端的词汇，剔除 harmonyos 以防误判鸿蒙 PC)
         $ua = strtolower($userAgent);
         $needles = ['mobile', 'android', 'iphone', 'ipad', 'ipod', 'micromessenger', 'windows phone'];
         foreach ($needles as $needle) {
