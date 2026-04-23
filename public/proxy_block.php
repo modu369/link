@@ -120,10 +120,10 @@ render_topbar($branding);
                         <tr>
                             <th width="110">拦截类型</th>
                             <th width="150">风险 IP</th>
-                            <th width="210">拦截诱因</th> 
+                            <th width="260">拦截诱因</th> 
                             <th width="100">风险设备 (UID)</th>
-                            <th width="80">评分</th>
-                            <th width="160">拦截时间</th>
+                            <th width="50">评分</th>
+                            <th width="80">拦截时间</th>
                         </tr>
                         </thead>
                         <tbody>
