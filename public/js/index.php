@@ -148,17 +148,20 @@ if ($isSpider) {
     return document.title ? document.title.substring(0, 200) : '';
   };
 
-  var generateId = function () {
+var generateId = function () {
+    var hex = function(val, pad) { return val.toString(16).padStart(pad, '0'); };
     if (window.crypto && window.crypto.getRandomValues) {
-      var bytes = new Uint8Array(16);
-      window.crypto.getRandomValues(bytes);
-      return Array.from(bytes).map(function (b) {
-        return b.toString(16).padStart(2, '0');
-      }).join('');
+      var b = new Uint8Array(16);
+      window.crypto.getRandomValues(b);
+      b[6] = (b[6] & 0x0f) | 0x40;
+      b[8] = (b[8] & 0x3f) | 0x80;
+      return Array.from(b).map(function(v) { return hex(v, 2); }).join('');
     }
-    return Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
+    return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
   };
-
   var lastPath = '';
 
   var trackPageView = function() {
@@ -195,8 +198,8 @@ if ($isSpider) {
         var storageKey = 'tracker_' + siteId;
         var now = Date.now();
         var sessionData = JSON.parse(localStorage.getItem(storageKey) || '{}');
-        if (!sessionData.id || !sessionData.lastActive || (now - sessionData.lastActive > 1800000)) {
-          sessionData.id = Math.random().toString(16).slice(2);
+       if (!sessionData.id || !sessionData.lastActive || (now - sessionData.lastActive > 1800000)) {
+          sessionData.id = generateId();
           sessionData.started = now;
           sessionData.pages = 0;
         }
