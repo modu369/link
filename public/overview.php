@@ -291,7 +291,7 @@ render_topbar($branding);
                             name: trendData.primary_label,
                             data: trendData.primary[metric] || [],
                             type: 'line',
-                            smooth: true,
+                            smooth: false, // <-- 核心修改：关闭平滑，改为直接折下（硬拐角直线）
                             symbol: 'circle',
                             symbolSize: 8,
                             showSymbol: false,
@@ -313,7 +313,7 @@ render_topbar($branding);
                             name: trendData.compare_label,
                             data: trendData.compare[metric] || [],
                             type: 'line',
-                            smooth: true,
+                            smooth: false, // <-- 核心修改：关闭平滑，改为直接折下（硬拐角直线）
                             symbol: 'circle',
                             symbolSize: 8,
                             showSymbol: false,
@@ -338,7 +338,7 @@ render_topbar($branding);
                             axisPointer: { type: 'line', lineStyle: { color: '#d9d9d9', type: 'solid' } },
                             
                             // ==========================================
-                            // 核心修复：100% 完美还原的时间段格式化与比对
+                            // 时间段格式化与比对保持完美状态
                             // ==========================================
                             formatter: function (params) {
                                 if (!params || !params.length) return '';
@@ -346,7 +346,6 @@ render_topbar($branding);
                                 let rawVal = String(params[0].axisValueLabel || params[0].axisValue).trim();
                                 let displayTitle = rawVal;
                                 
-                                // 极度安全的提取逻辑：只要是小时，强制格式化为 00:00 - 00:59
                                 let isHour = (trendData.granularity === 'hour') || /^\d{1,2}(:\d{2})?$/.test(rawVal);
                                 if (isHour) {
                                     let hNum = parseInt(rawVal, 10);
@@ -364,7 +363,6 @@ render_topbar($branding);
                                 let pVal = pData ? Number(pData.value || 0) : 0;
                                 let cVal = cData ? Number(cData.value || 0) : 0;
 
-                                // 计算百分比涨跌对比
                                 let diffHtml = '';
                                 if (pData && cData) {
                                     let diff = pVal - cVal;
@@ -382,7 +380,6 @@ render_topbar($branding);
                                     }
                                 }
 
-                                // 组装顶级排版 HTML
                                 let html = '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px; color: #808695;">' + 
                                            '<span>' + displayTitle + '</span>' + 
                                            '<span style="margin-left: 24px;">' + diffHtml + '</span>' + 
@@ -391,7 +388,7 @@ render_topbar($branding);
                                 params.forEach(p => {
                                     let safeVal = (p.value !== undefined && p.value !== null && !isNaN(p.value)) ? Number(p.value).toLocaleString() : '0';
                                     html += '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">' +
-                                            '<div style="display: flex; align-items: center; color: #c5c8ce; font-size: 13px;">' + p.marker + p.seriesName+ '：' + '</div>' +
+                                            '<div style="display: flex; align-items: center; color: #c5c8ce; font-size: 13px;">' + p.marker + p.seriesName + '：</div>' +
                                             '<div style="color: #fff; font-weight: 600; font-size: 14px; margin-left: 36px;">' + safeVal + '</div>' +
                                             '</div>';
                                 });
