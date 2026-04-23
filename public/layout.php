@@ -150,7 +150,7 @@ function render_head(string $title = '统计后台'): void
             }
             
             .data-layout { display: flex !important; flex-direction: row !important; padding: 0 !important; align-items: stretch !important; }
-            .content { flex: 1; padding: 24px !important; min-width: 0 !important; background: #f5f7f9 !important; }
+            .content { flex: 1; padding: 24px !important; min-width: 0 !important; background: #f5f7f9 !important; align-content: start !important; }
 
             @media (max-width: 1100px) {
                 .data-layout { flex-direction: column !important; }
