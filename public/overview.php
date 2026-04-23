@@ -27,7 +27,7 @@ render_topbar($branding);
     .hero-dot { width: 42px; height: 42px; border-radius: 12px; background: linear-gradient(135deg, #1690ff, #73c1ff); display: grid; place-items: center; color: #fff; font-size: 18px; font-weight: 700; }
     .hero-meta { color: var(--muted); font-size: 13px; }
     .metric-grid { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; }
-    .metric-tile { background: linear-gradient(135deg, #deedfb 0%, #f7fbff 100%); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: inline-flex; align-items: center; gap: 10px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); flex: 0 1 auto; min-width: 180px; max-width: 100%; }
+    .metric-tile { background: linear-gradient(135deg, #deedfb 0%, #f7fbff 100%); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: inline-flex; align-items: center; gap: 10px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.6); flex: 0 1 auto; min-width: 185px; max-width: 100%; }
     .metric-icon { width: 48px; height: 48px; border-radius: 12px; background: #fff; display: grid; place-items: center; color: #1690ff; font-size: 22px; box-shadow: 0 10px 22px rgba(22,144,255,0.16); flex-shrink: 0; }
     .metric-icon.yesterday { background: linear-gradient(135deg, #ffe6c7 0%, #fff6e9 100%); color: #d97706; box-shadow: 0 10px 22px rgba(217, 119, 6, 0.16); }
     .metric-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
