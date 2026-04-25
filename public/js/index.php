@@ -323,7 +323,7 @@ var sendData = function(isPing) {
               hasPinged = false;
               sendPing();
           }
-      }, 15000);
+      }, 240000);
       
       if (!sent) {
           if (window.fetch) {
