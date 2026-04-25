@@ -1027,44 +1027,6 @@ private function isProxySuspicious(
         }
         $uidMissing = !$uidProvided;
 
-if ($isRisk) {
-                // 动态判断具体的封禁原因
-                $reason = '综合评分超限(Score:'.$score.')';
-                if ($isDataCenterAsn) $reason = 'IDC机房/云服务器特征';
-                elseif ($isForeign) $reason = '海外高频异常';
-                elseif ($crossRegionHits >= $crossRegionThreshold && $highFreqHits >= $highFreqThreshold) $reason = '秒拨IP(高频跨省)';
-                elseif ($score >= $mediumRiskScore && $sustainedHits >= $sustainedFreqThreshold) $reason = '设备级持续高频采集';
-
-                $probationKey = "proxy:probation:{$ip}"; 
-                $isProbation = (bool) $this->redis->get($probationKey);
-                
-                if (!$isProbation) {
-                    $this->redis->setex($probationKey, $this->proxyProbationSeconds, '1');
-                    $this->markProxyRiskStatus($ipHash, true);
-                    return ['blocked' => false, 'risk' => true, 'score' => $score];
-                }
-                
-                $blockType = ($isDataCenterAsn || $isForeign) ? 'IP全局封禁 (独立IP)' : '设备级封禁 (国内基站)';
-                $logData = json_encode([
-                    'ip' => $ip, 
-                    'uid' => $uid, 
-                    'type' => $blockType, 
-                    'time' => date('Y-m-d H:i:s'), 
-                    'score' => $score,
-                    'reason' => $reason // <--- 重点：将原因压入 Redis 日志
-                ], JSON_UNESCAPED_UNICODE);
-                $this->redis->lPush('proxy:recent_blocks_log', $logData);
-                $this->redis->lTrim('proxy:recent_blocks_log', 0, 999);
-                $this->redis->incr('proxy:total_blocks_count');
-                
-                if ($isDataCenterAsn || $isForeign) {
-                    $this->rememberBlockedProxyIp($ip);
-                    $this->redis->setex("proxy:blocked_exact_ip:{$ip}", 14400, '1'); 
-                }
-                
-                $this->redis->setex($blockedKey, 14400, '1'); 
-                return ['blocked' => true, 'risk' => true, 'score' => $score, 'reason' => $reason];
-            }
 
         // ==========================================
         // = 终极极速版：前置 IP/C段 蜘蛛白名单直通车 =
@@ -1094,14 +1056,12 @@ if ($isRisk) {
         $nowMs = (int) round(microtime(true) * 1000);
         $profileKey = "proxy:risk:{$uid}";
         
-        try {
-            $riskScoreThreshold = $this->options['ingest']['risk_score_threshold'] ?? 80;
-            $crossRegionThreshold = $this->options['ingest']['cross_region_threshold'] ?? 3;
-            $highFreqThreshold = $this->options['ingest']['high_freq_threshold'] ?? 4;
-            $sustainedFreqThreshold = $this->options['ingest']['sustained_freq_threshold'] ?? 5;
-            $mediumRiskScore = $this->options['ingest']['medium_risk_score'] ?? 60;
-        } catch (Throwable $e) {
-        }
+        $ingestOpts = $this->options['ingest'] ?? [];
+        $riskScoreThreshold = $ingestOpts['risk_score_threshold'] ?? 80;
+        $crossRegionThreshold = $ingestOpts['cross_region_threshold'] ?? 3;
+        $highFreqThreshold = $ingestOpts['high_freq_threshold'] ?? 4;
+        $sustainedFreqThreshold = $ingestOpts['sustained_freq_threshold'] ?? 5;
+        $mediumRiskScore = $ingestOpts['medium_risk_score'] ?? 60;
         
         $sessionKey = $sessionId !== '' ? "proxy:session:{$sessionId}" : '';
 
@@ -1455,10 +1415,14 @@ $isRisk = $score >= $riskScoreThreshold
                 $this->redis->lTrim('proxy:recent_blocks_log', 0, 999);
                 $this->redis->incr('proxy:total_blocks_count');
                 
-                if ($isDataCenterAsn || $isForeign) {
+if ($isDataCenterAsn || $isForeign) {
                     $this->rememberBlockedProxyIp($ip);
                     $this->redis->setex("proxy:blocked_exact_ip:{$ip}", 14400, '1'); 
                 }
+                
+                // 修复：补全缺失的 $blockedKey 定义，使用与拦截判断一致的键名
+                $networkId = $this->getNetworkIdentifier($ip);
+                $blockedKey = "proxy:blocked_net:{$networkId}";
                 
                 $this->redis->setex($blockedKey, 14400, '1'); 
                 return ['blocked' => true, 'risk' => true, 'score' => $score];
@@ -5492,11 +5456,11 @@ $this->db->exec(
                 name VARCHAR(255) NOT NULL,
                 token VARCHAR(64) NOT NULL UNIQUE,
                 site_ids TEXT NOT NULL,
+                user_id INT UNSIGNED NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
         );
     }
-
     private function ensureSettingsSchema(): void
     {
         $this->db->exec(
