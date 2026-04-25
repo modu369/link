@@ -508,6 +508,44 @@ $rawSessionId = $this->limitText($payload['session_id'] ?? '', 64);
         if (!empty($payload['spider_verified'])) {
             $isBot = true;
         }
+        // 👇👇👇 完美版极速短路：插在这里！ 👇👇👇
+        // ====== 【核心优化：心跳极速短路通道】 ======
+        if (!empty($payload['is_ping'])) {
+            // 极速防御：如果该IP已经被风控拉黑（只需1次极速Redis查询），直接丢弃心跳，不给它创建脏Session的机会
+            if ($ip && $this->isBlockedProxyIp($ip)) {
+                return null; 
+            }
+
+            $sessionData = [
+                'site_id' => $site['id'], 
+                'session_id' => $sessionId, 
+                'start_time' => $occurredAtStr, 
+                'updated_at' => $occurredAtStr,
+                'is_unique' => 0, 
+                'ip_address' => $ip, 
+                'user_agent' => $userAgent,
+                'entry_path' => $path, 
+                'last_path' => $path, 
+                'referrer' => $referrer ?: null,
+                'keyword' => null, 
+                'engine' => '其他', 
+                'country_name' => null,
+                'region_name' => null, 
+                'city_name' => null,
+                'duration_seconds' => $duration, 
+                'page_count' => $pageCount
+            ];
+            
+            if ($batchMode) {
+                return ['session' => $sessionData];
+            }
+            
+            $this->executeBulkInsert('sessions', array_keys($sessionData), [$sessionData], 
+                'ON DUPLICATE KEY UPDATE last_path = VALUES(last_path), updated_at = VALUES(updated_at), duration_seconds = GREATEST(duration_seconds, VALUES(duration_seconds)), page_count = GREATEST(page_count, VALUES(page_count))'
+            );
+            return null; 
+        }
+        // ==========================================
         $isMobile = $this->isMobile($userAgent, $payload);
         $keyword = $this->limitText($this->extractKeyword($referrer) ?? '', 255);
         $keyword = str_replace('|', ' ', $keyword);
@@ -637,13 +675,6 @@ $proxyRisk = $this->isProxySuspicious(
             'duration_seconds' => $duration, 
             'page_count' => $pageCount
         ];
-if (!empty($payload['is_ping'])) {
-            // 我们只将最精确的停留时长 Update 到 sessions 表，绝不计入 pageviews 和 Redis HLL
-            $this->executeBulkInsert('sessions', array_keys($sessionData), [$sessionData], 
-                'ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at), duration_seconds = GREATEST(duration_seconds, VALUES(duration_seconds)), page_count = GREATEST(page_count, VALUES(page_count))'
-            );
-            return null; // 直接阻断，防止刷新 PV 和 UV 计数
-        }
         // 【极客级优化：HLL 架构写入，包含防空判定及独立域名 HLL】
         $todayStr = date('Ymd', strtotime($occurredAtStr));
         $sid = (int) $site['id'];
@@ -2032,7 +2063,7 @@ private function cleanupProxyIpData(string $ip): void
         $pageviewsBatch = [];
         $sessionsBatch = [];
 
-        while ($processed < $maxBatch) {
+while ($processed < $maxBatch) {
             $raw = $this->redis->rPopLPush($this->ingestQueueKey, $this->ingestProcessingKey);
             if ($raw === false || $raw === null) break;
 
@@ -2046,10 +2077,17 @@ private function cleanupProxyIpData(string $ip): void
                 $receivedAt = (int) ($decoded['received_at'] ?? time());
                 // 启用 Batch Mode 获取清洗后的数据组
                 $data = $this->processPageview($decoded['tracking_id'], $decoded['payload'], $receivedAt, true);
+                
+                // 【核心修复】：分别判断，兼容纯心跳数据（只有 session 没有 pageview）
                 if ($data) {
-                    $pageviewsBatch[] = $data['pageview'];
-                    $sessionsBatch[] = $data['session'];
+                    if (!empty($data['pageview'])) {
+                        $pageviewsBatch[] = $data['pageview'];
+                    }
+                    if (!empty($data['session'])) {
+                        $sessionsBatch[] = $data['session'];
+                    }
                 }
+                
                 $this->redis->lRem($this->ingestProcessingKey, $raw, 1);
                 $processed++;
             } catch (Throwable $e) {
@@ -2057,14 +2095,18 @@ private function cleanupProxyIpData(string $ip): void
             }
         }
 
-        // 【最极致的 IO 优化】：事务包裹下的一条巨型 SQL 完成 500 条数据的落地
-        if (!empty($pageviewsBatch)) {
+        // 【最极致的 IO 优化】：事务包裹下的分块批量落地
+        if (!empty($pageviewsBatch) || !empty($sessionsBatch)) {
             $this->db->beginTransaction();
             try {
-                $this->executeBulkInsert('pageviews', array_keys($pageviewsBatch[0]), $pageviewsBatch);
-                $this->executeBulkInsert('sessions', array_keys($sessionsBatch[0]), $sessionsBatch, 
-                    'ON DUPLICATE KEY UPDATE last_path = VALUES(last_path), updated_at = VALUES(updated_at), duration_seconds = GREATEST(duration_seconds, VALUES(duration_seconds)), page_count = GREATEST(page_count, VALUES(page_count))'
-                );
+                if (!empty($pageviewsBatch)) {
+                    $this->executeBulkInsert('pageviews', array_keys($pageviewsBatch[0]), $pageviewsBatch);
+                }
+                if (!empty($sessionsBatch)) {
+                    $this->executeBulkInsert('sessions', array_keys($sessionsBatch[0]), $sessionsBatch, 
+                        'ON DUPLICATE KEY UPDATE last_path = VALUES(last_path), updated_at = VALUES(updated_at), duration_seconds = GREATEST(duration_seconds, VALUES(duration_seconds)), page_count = GREATEST(page_count, VALUES(page_count))'
+                    );
+                }
                 $this->db->commit();
             } catch (Throwable $e) {
                 $this->db->rollBack();
