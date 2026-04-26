@@ -246,6 +246,7 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
                 'items' => [
                     ['key' => 'overview', 'label' => '总览', 'href' => "/overview.php?site={$siteId}&range={$range}"],
                     ['key' => 'trend', 'label' => '趋势分析', 'href' => "/trend.php?site={$siteId}&range={$range}"],
+                    ['key' => 'content_analysis', 'label' => '内容分析', 'href' => "/content_analysis.php?site={$siteId}&range={$range}"],
                     ['key' => 'content', 'label' => '访问明细', 'href' => "/content.php?site={$siteId}&range={$range}"],
                     ['key' => 'mobile', 'label' => '移动端', 'href' => "/mobile.php?site={$siteId}&range={$range}"],
                     ['key' => 'bot', 'label' => '蜘蛛', 'href' => "/bot.php?site={$siteId}&range={$range}"],
