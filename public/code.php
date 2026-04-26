@@ -12,7 +12,7 @@ $baseUrl = rtrim($branding['base_url'] ?? $config['app']['base_url'] ?? 'http://
 
 // 生成新版 async defer 标准直链代码，对搜索引擎蜘蛛100%可见
 $scriptCode = sprintf(
-    '<script src="%s/js/?id=%s" async defer></script>',
+    '<script src="%s/js/?id=%s" defer></script>',
     $baseUrl,
     $trackingId
 );
