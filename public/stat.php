@@ -317,6 +317,34 @@ if ($matchedSpider) {
 // 以下是普通真实人类访客的 PV 记录逻辑
 // ============================================
 
+// ====== 1. 无头浏览器 / 脱机发包硬拦截 (JS环境能力证明) ======
+$showp = $getParam('showp') ?? '';
+// 真实的浏览器一定会执行JS，并顺利获取到屏幕分辨率，格式严格为 "1920x1080"
+if ($showp === '' || !preg_match('/^\d+x\d+$/', $showp)) {
+    // 缺失或格式不对，说明是脱机脚本发包，直接丢弃
+    $outputGifAndExit();
+}
+
+// ====== 2. 动态 Token 防重放校验 (终极防刷) ======
+$ts = (int) ($getParam('ts') ?? 0);
+$tk = (string) ($getParam('tk') ?? '');
+$trackerSalt = $config['app_key'] ?? 'v8_tj_newsecrets_2026';
+
+// 校验 A: 时间戳有效期 (防止黑客拿昨天抓包的 URL 今天无限重放)
+// 设定 24 小时有效期（考虑到有的访客网页开着不关，第二天还会发心跳）
+// 如果时间戳超过当前时间 24 小时，或者时间戳是未来的时间，直接拦截
+if (time() - $ts > 86400 || $ts > time() + 300) {
+    $outputGifAndExit();
+}
+
+// 校验 B: 签名完美匹配 (防止黑客篡改参数或伪造请求)
+$expectedToken = hash('sha256', $trackingId . $ts . $trackerSalt);
+// 使用 hash_equals 防止时序攻击
+if (!hash_equals($expectedToken, $tk)) {
+    $outputGifAndExit();
+}
+// ==========================================================
+
 $cookieParam = (string) ($getParam('ckv') ?? '');
 $cookieParam = trim($cookieParam);
 
