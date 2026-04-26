@@ -438,14 +438,18 @@ public function recordPageview(string $trackingId, array $payload): void
 $ip = $payload['ip'] ?? '';
 $fp = $payload['fingerprint'] ?? '';
 $path = $payload['path'] ?? '/';
-// 将 is_ping 状态加入防抖哈希中，防止跳出率高的用户离开时丢弃 ping 信号
+$sessionId = $payload['session_id'] ?? '';
+$userAgent = $payload['user_agent'] ?? ''; 
 $isPingStr = !empty($payload['is_ping']) ? '1' : '0';
-$debounceKey = "tracker:debounce:{$trackingId}:" . md5($fp . $ip . $path . $isPingStr);
 
-    if (!$this->redis->setnx($debounceKey, '1')) {
-        return; // 命中防抖锁，直接丢弃该重复 PV
-    }
-    $this->redis->expire($debounceKey, 3); // 锁定 3 秒
+// 【修复】：加入分隔符 '|' 防止边界碰撞，并引入 session_id 和 user_agent 作为同 IP 下的隔离墙
+$debounceStr = implode('|', [$sessionId, $fp, $ip, $userAgent, $path, $isPingStr]);
+$debounceKey = "tracker:debounce:{$trackingId}:" . md5($debounceStr);
+
+if (!$this->redis->setnx($debounceKey, '1')) {
+    return; // 命中防抖锁，直接丢弃该重复 PV
+}
+$this->redis->expire($debounceKey, 3); // 锁定 3 秒
 
     if ($this->ingestMode === 'queue') {
         $this->enqueuePageview($trackingId, $payload);
@@ -1219,7 +1223,7 @@ private function isProxySuspicious(
             }
 
             if ($isDataCenterAsn) {
-                $score += 20; 
+                $score += 30; 
                 $highFreqHits += 1;
             }
             if ($countryValue === '' || $countryValue === '未知' || str_contains($countryValue, '保留地址')) {
@@ -1821,15 +1825,20 @@ private function cleanupProxyIpData(string $ip): void
                 'referrer_host' => "SELECT dimension_value, pv, uv, ips, sessions, duration_sum, page_sum, bounce_count
                     FROM (
                         SELECT LEFT(" . $this->referrerHostExpr('p') . ", 255) as dimension_value,
-                            SUM(p.page_count) as pv,
-                            SUM(p.is_unique) as uv,
+                            SUM(s.total_pv) as pv,
+                            SUM(s.is_unique) as uv,
                             COUNT(DISTINCT p.ip_hash) as ips,
                             COUNT(*) as sessions,
-                            SUM(p.duration_seconds) as duration_sum,
-                            SUM(p.page_count) as page_sum,
-                            SUM(CASE WHEN p.page_count <= 1 THEN 1 ELSE 0 END) as bounce_count
+                            SUM(s.max_duration) as duration_sum,
+                            SUM(s.max_pages) as page_sum,
+                            SUM(CASE WHEN s.max_pages <= 1 THEN 1 ELSE 0 END) as bounce_count
                         FROM (
-                            SELECT MIN(id) as first_id, session_id
+                            SELECT session_id,
+                                   MIN(id) as first_id,
+                                   COUNT(*) as total_pv,
+                                   MAX(is_unique) as is_unique,
+                                   MAX(duration_seconds) as max_duration,
+                                   MAX(page_count) as max_pages
                             FROM pageviews
                             WHERE site_id = ? AND session_id IS NOT NULL AND is_proxy_risk = 0
                               AND occurred_at >= ? AND occurred_at < ?
@@ -1970,33 +1979,56 @@ $geoInsert = $this->db->prepare(
                 ]);
             }
 
-            $pageStmt = $this->db->prepare(
+$pageStmt = $this->db->prepare(
                 "INSERT INTO pageview_page_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
-                 SELECT ?, ?, path, pv, uv, ips, 0, 0, 0, 0
+                 SELECT ?, ?, path, pv, uv, ips, sessions, duration_sum, page_sum, bounce_count
                  FROM (
-                    SELECT LEFT(COALESCE(path,'/'), 512) as path,
-                        COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    SELECT LEFT(COALESCE(p.path,'/'), 512) as path,
+                        COUNT(*) as pv, 
+                        SUM(p.is_unique) as uv, 
+                        COUNT(DISTINCT p.ip_hash) as ips,
+                        COUNT(DISTINCT p.session_id) as sessions,
+                        SUM(s.max_duration) as duration_sum,
+                        SUM(s.max_pages) as page_sum,
+                        SUM(CASE WHEN s.max_pages <= 1 THEN 1 ELSE 0 END) as bounce_count
                     FROM pageviews p
-                    WHERE site_id = ? AND is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
+                    JOIN (
+                        SELECT session_id,
+                               MAX(duration_seconds) as max_duration,
+                               MAX(page_count) as max_pages
+                        FROM pageviews
+                        WHERE site_id = ? AND session_id IS NOT NULL AND is_proxy_risk = 0
+                          AND occurred_at >= ? AND occurred_at < ?
+                        GROUP BY session_id
+                    ) s ON p.session_id = s.session_id
+                    WHERE p.site_id = ? AND p.is_proxy_risk = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
                     GROUP BY path
                     ORDER BY ips DESC
                     LIMIT 500
                  ) t"
             );
-            $pageStmt->execute([$siteId, $bucketKey, $siteId, $start, $end]);
+            // 注意：因为这里用到了两个子查询的时间约束，参数数量从 5 个变成了 8 个
+            $pageStmt->execute([$siteId, $bucketKey, $siteId, $start, $end, $siteId, $start, $end]);
 
             $entryStmt = $this->db->prepare(
                 "INSERT INTO pageview_entry_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
                  SELECT ?, ?, path, pv, uv, ips, session_count, duration_sum, page_sum, bounce_count
                  FROM (
                     SELECT LEFT(entry.path, 512) as path,
-                        COUNT(*) as pv, SUM(entry.is_unique) as uv, COUNT(DISTINCT entry.ip_hash) as ips,
+                        SUM(s.total_pv) as pv, 
+                        SUM(s.is_unique) as uv, 
+                        COUNT(DISTINCT entry.ip_hash) as ips,
                         COUNT(*) as session_count,
-                        SUM(entry.duration_seconds) as duration_sum,
-                        SUM(entry.page_count) as page_sum,
-                        SUM(CASE WHEN entry.page_count <= 1 THEN 1 ELSE 0 END) as bounce_count
+                        SUM(s.max_duration) as duration_sum,
+                        SUM(s.max_pages) as page_sum,
+                        SUM(CASE WHEN s.max_pages <= 1 THEN 1 ELSE 0 END) as bounce_count
                     FROM (
-                        SELECT MIN(id) as first_id, session_id
+                        SELECT session_id,
+                               MIN(id) as first_id,
+                               COUNT(*) as total_pv,
+                               MAX(is_unique) as is_unique,
+                               MAX(duration_seconds) as max_duration,
+                               MAX(page_count) as max_pages
                         FROM pageviews
                         WHERE site_id = ? AND session_id IS NOT NULL AND is_proxy_risk = 0
                           AND occurred_at >= ? AND occurred_at < ?
