@@ -1850,6 +1850,16 @@ private function cleanupProxyIpData(string $ip): void
                     JOIN sites s ON s.id = p.site_id
                     WHERE p.site_id = ? AND p.keyword IS NOT NULL AND keyword != '' AND p.is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
                     GROUP BY dimension_value",
+'title' => "SELECT LEFT(title, 255) as dimension_value,
+    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+    FROM pageviews p 
+    WHERE site_id = ? 
+      AND title IS NOT NULL 
+      AND title != '' 
+      AND is_proxy_risk = 0 
+      AND occurred_at >= ? 
+      AND occurred_at < ?
+    GROUP BY dimension_value",
                 'audience' => "SELECT LEFT(CASE WHEN a.first_seen >= ? AND a.first_seen < ? THEN 'new' ELSE 'returning' END, 255) as dimension_value,
                 COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT p.ip_hash) as ips
                 FROM pageviews p
@@ -1915,9 +1925,13 @@ private function cleanupProxyIpData(string $ip): void
                 $ispAgg[$ispKey]['ips'] = ($ispAgg[$ispKey]['ips'] ?? 0) + $ips;
             }
 
-            $geoInsert = $this->db->prepare(
+$geoInsert = $this->db->prepare(
                 'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)'
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)
+                 ON DUPLICATE KEY UPDATE
+                    pv = pv + VALUES(pv),
+                    uv = uv + VALUES(uv),
+                    ip_count = ip_count + VALUES(ip_count)'
             );
 
             foreach ($regionAgg as $label => $data) {
@@ -6850,4 +6864,43 @@ $globalMobileIps = !empty($allMobileIpKeys) ? (int) $this->redis->pfCount($allMo
             mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff)
         );
     }
+    public function getContentAnalysisData(int $siteId, string $range = 'today', int $limit = 100): array
+{
+    $cacheKey = "content_analysis:{$siteId}:{$range}:{$limit}";
+
+    return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $limit) {
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $span = $this->rollupSpanForRange($siteId, $start, $end);
+        if (!$span) {
+            return [];
+        }
+
+        // 复用底层聚合查询
+        $rows = $this->aggregateDimensionRollups($siteId, 'title', $span['start'], $span['end'], $limit * 2);
+        
+        $contents = [];
+        foreach ($rows as $row) {
+            $views = (int) ($row['views'] ?? 0);
+            $uniques = (int) ($row['uniques'] ?? 0);
+            $ips = (int) ($row['ips'] ?? 0);
+            
+            // 【定义热度算法】
+            // 示例：IP 带来 5 分，独立访客 3 分，普通刷新 1 分
+            $heatScore = ($ips * 5) + ($uniques * 3) + ($views * 1);
+
+            $contents[] = [
+                'title' => $row['dimension_value'],
+                'views' => $views,
+                'uniques' => $uniques,
+                'ips' => $ips,
+                'heat_score' => $heatScore
+            ];
+        }
+
+        // 根据热度分倒序排列
+        usort($contents, fn($a, $b) => $b['heat_score'] <=> $a['heat_score']);
+
+        return array_slice($contents, 0, $limit);
+    });
+}
 }
