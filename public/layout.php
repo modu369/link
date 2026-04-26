@@ -259,6 +259,7 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
                     ['key' => 'search_engine', 'label' => '搜索引擎', 'href' => "/search_engine.php?site={$siteId}&range={$range}"],
                     ['key' => 'keyword', 'label' => '关键词', 'href' => "/keyword.php?site={$siteId}&range={$range}"],
                     ['key' => 'external', 'label' => '外部链接', 'href' => "/external.php?site={$siteId}&range={$range}"],
+                    ['key' => 'referrer', 'label' => '来路详情', 'href' => "/referrer.php?site={$siteId}&range={$range}"],
                 ],
             ],
             // 新增：内容分析板块
@@ -277,7 +278,6 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
                     ['key' => 'region', 'label' => '地域分布', 'href' => "/region.php?site={$siteId}&range={$range}"],
                     ['key' => 'isp', 'label' => '运营商', 'href' => "/isp.php?site={$siteId}&range={$range}"],
                     ['key' => 'audience', 'label' => '新老访客', 'href' => "/audience.php?site={$siteId}&range={$range}"],
-                    ['key' => 'referrer', 'label' => '来路详情', 'href' => "/referrer.php?site={$siteId}&range={$range}"],
                 ],
             ],
             'config' => [
