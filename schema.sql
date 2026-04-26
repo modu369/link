@@ -1,9 +1,11 @@
 CREATE TABLE IF NOT EXISTS sites (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id INT UNSIGNED NOT NULL DEFAULT 0,
     name VARCHAR(255) NOT NULL,
     domain VARCHAR(255) NOT NULL,
     tracking_id VARCHAR(32) NOT NULL UNIQUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_user_id (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS site_domains (
@@ -33,10 +35,12 @@ CREATE TABLE IF NOT EXISTS settings (
 
 CREATE TABLE IF NOT EXISTS share_pages (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id INT UNSIGNED NOT NULL DEFAULT 0,
     name VARCHAR(255) NOT NULL,
     token VARCHAR(64) NOT NULL UNIQUE,
     site_ids TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_share_user_id (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS pageviews (
@@ -63,6 +67,7 @@ CREATE TABLE IF NOT EXISTS pageviews (
     country_code VARCHAR(16),
     host VARCHAR(255),
     canonical_host VARCHAR(255),
+    title VARCHAR(255),
     PRIMARY KEY (id, site_id),
     INDEX idx_site_time (site_id, occurred_at),
     INDEX idx_site_session (site_id, session_id),
@@ -72,7 +77,6 @@ CREATE TABLE IF NOT EXISTS pageviews (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 /*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
 
--- 新增：更精确的跨会话/跨IP访客追踪表
 CREATE TABLE IF NOT EXISTS site_visitor_audience (
     site_id INT UNSIGNED NOT NULL,
     visitor_id VARCHAR(128) NOT NULL,
@@ -83,22 +87,7 @@ CREATE TABLE IF NOT EXISTS site_visitor_audience (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 /*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
 
-CREATE TABLE IF NOT EXISTS pageview_rollups (
-    site_id INT UNSIGNED NOT NULL,
-    bucket_start DATETIME NOT NULL,
-    pv BIGINT UNSIGNED NOT NULL DEFAULT 0,
-    uv BIGINT UNSIGNED NOT NULL DEFAULT 0,
-    ip_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-    session_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-    duration_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
-    page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
-    bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-    PRIMARY KEY (site_id, bucket_start),
-    INDEX idx_bucket_time (bucket_start),
-    INDEX idx_cover_totals (site_id, bucket_start, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-/*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
-
+-- 优化后的维度汇总表：移除了所有不以 site_id 开头的二级索引
 CREATE TABLE IF NOT EXISTS pageview_dimension_rollups (
     site_id INT UNSIGNED NOT NULL,
     bucket_start DATETIME NOT NULL,
@@ -112,9 +101,7 @@ CREATE TABLE IF NOT EXISTS pageview_dimension_rollups (
     page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
     bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
     PRIMARY KEY (site_id, bucket_start, dimension_type, dimension_value),
-    INDEX idx_dimension_type (dimension_type, dimension_value),
-    INDEX idx_dimension_time (bucket_start),
-    INDEX idx_share_perf_v2 (dimension_type, site_id, bucket_start),
+    -- 该索引已包含了查询所需的全部字段，且第一列是 site_id，防止死锁
     INDEX idx_cover_query (site_id, dimension_type, bucket_start, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 /*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
@@ -131,7 +118,6 @@ CREATE TABLE IF NOT EXISTS pageview_page_rollups (
     page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
     bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
     PRIMARY KEY (site_id, bucket_start, path),
-    INDEX idx_page_time (bucket_start),
     INDEX idx_query_perf (site_id, bucket_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 /*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
@@ -148,40 +134,15 @@ CREATE TABLE IF NOT EXISTS pageview_entry_rollups (
     page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
     bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
     PRIMARY KEY (site_id, bucket_start, path),
-    INDEX idx_entry_time (bucket_start),
     INDEX idx_query_perf (site_id, bucket_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 /*!50100 PARTITION BY HASH (site_id) PARTITIONS 64 */;
 
-CREATE TABLE IF NOT EXISTS pageview_bot_logs (
-    site_id INT UNSIGNED NOT NULL,
-    bucket_start DATETIME NOT NULL,
-    domain VARCHAR(255) NOT NULL DEFAULT '',
-    path VARCHAR(512) NOT NULL DEFAULT '',
-    referrer TEXT NULL,
-    user_agent TEXT NULL,
-    ip_address VARCHAR(64) NOT NULL DEFAULT '',
-    engine VARCHAR(64) NOT NULL DEFAULT '',
-    occurred_at DATETIME NOT NULL,
-    PRIMARY KEY (site_id, bucket_start, occurred_at, ip_address, path(255)),
-    INDEX idx_bot_time (bucket_start),
-    INDEX idx_bot_site_time (site_id, occurred_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-/*!50100 PARTITION BY HASH (site_id*/
--- 新增普通用户表
 CREATE TABLE IF NOT EXISTS users (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(64) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
-    nickname VARCHAR(64) DEFAULT NULL, -- 个人信息
+    nickname VARCHAR(64) DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- 修改 sites 表，增加 user_id 以实现数据隔离
-ALTER TABLE sites ADD COLUMN user_id INT UNSIGNED NOT NULL DEFAULT 0 AFTER id;
--- 添加索引以加速按用户查询
-CREATE INDEX idx_user_id ON sites (user_id);
-ALTER TABLE share_pages ADD COLUMN user_id INT UNSIGNED NOT NULL DEFAULT 0 AFTER id;
-CREATE INDEX idx_share_user_id ON share_pages (user_id);
-ALTER TABLE pageviews ADD COLUMN title VARCHAR(255) AFTER canonical_host;
