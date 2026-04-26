@@ -83,7 +83,13 @@ if (preg_match('/(baiduspider|googlebot|bingbot|sogou web spider|360spider|yisou
     }
 }
 // =================================================
-
+// ====== 新增：生成防刷动态 Token ======
+// 使用配置文件中的 app_key 作为盐，如果没有则使用默认盐
+$trackerSalt = $config['app_key'] ?? 'v8_tj_newsecrets_2026';
+$currentTs = time();
+// 算法：sha256(站点ID + 当前时间戳 + 盐)
+$dynamicToken = hash('sha256', $trackingId . $currentTs . $trackerSalt);
+// ======================================
 // 必须输出的内容类型
 header('Content-Type: application/javascript; charset=UTF-8');
 
@@ -191,7 +197,9 @@ var generateId = function () {
         ntime: Math.floor(Date.now() / 1000).toString(),
         net: netType,
         sec_m: isSecMobile,
-        tt: getPageTitle()
+        tt: getPageTitle(),
+        ts: '<?php echo $currentTs; ?>',
+        tk: '<?php echo $dynamicToken; ?>'
       });
 
       try {
