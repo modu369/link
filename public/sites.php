@@ -62,7 +62,7 @@ $baseUrl = rtrim($branding['base_url'] ?? $config['app']['base_url'] ?? 'http://
 
 $buildPayload = static function (string $baseUrl, string $trackingId): string {
     return sprintf(
-        '<script src="%s/js/?id=%s" async defer></script>',
+        '<script src="%s/js/?id=%s" defer></script>',
         $baseUrl,
         $trackingId
     );
