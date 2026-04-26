@@ -1557,7 +1557,18 @@ private function recordBlockedStats(int $siteId, ?string $ipHash, bool $isMobile
     }
 private function getNetworkIdentifier(string $ip): string
     {
-        // 彻底废除 IPv6 粗暴截取 /64 网段的逻辑，直接返回精确 IP 进行隔离
+        // 【核心防御】：恢复风控的网段级连坐机制！
+        // 针对刷量团队的“IPv6秒拨池”，一旦触发风控，直接拉黑其整个 /64 网段
+        if (str_contains($ip, ':')) {
+            $parts = explode(':', $ip);
+            if (count($parts) >= 4) {
+                return implode(':', array_slice($parts, 0, 4)) . '::/64';
+            }
+            return $ip;
+        }
+        
+        // 注意：IPv4 保持精确 IP 隔离。
+        // 因为国内 IPv4 极度短缺存在大规模 NAT，封禁 IPv4 C段极易引发大面积误杀无辜用户。
         return $ip;
     }
    private function isBlockedProxyIp(string $ip): bool
