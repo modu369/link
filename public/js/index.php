@@ -8,12 +8,11 @@ if ($trackingId === '' || !preg_match('/^[a-f0-9]{16}$/i', $trackingId)) {
 // === 新增：极速原生 Redis 蜘蛛捕捉 (0 网络延迟，耗时 1ms) ===
 $userAgent = strtolower($_SERVER['HTTP_USER_AGENT'] ?? '');
 $isSpider = false; // 增加蜘蛛状态标记
-
+        $config = require __DIR__ . '/../../config/config.php';
 if (preg_match('/(baiduspider|googlebot|bingbot|sogou web spider|360spider|yisouspider|bytespider|petalbot|yahoo)/i', $userAgent, $matches)) {
     $isSpider = true; // 确认为蜘蛛
     try {
         // 注意文件层级：js 文件夹需要回退两层才能访问到 config 和 src
-        $config = require __DIR__ . '/../../config/config.php';
         require_once __DIR__ . '/../../src/RedisClient.php';
         require_once __DIR__ . '/../../src/Database.php';
 
