@@ -265,7 +265,7 @@ function render_sidebar(array $sites, ?int $siteId, ?array $selectedSite, string
             'content_data' => [
                 'title' => '内容分析',
                 'items' => [
-                    ['key' => 'content_analysis', 'label' => '标题热度', 'href' => "/content_analysis.php?site={$siteId}&range={$range}"],
+                    ['key' => 'content_analysis', 'label' => '内容热度', 'href' => "/content_analysis.php?site={$siteId}&range={$range}"],
                     ['key' => 'pages', 'label' => '受访页', 'href' => "/pages.php?site={$siteId}&range={$range}"],
                     ['key' => 'entry', 'label' => '入口页', 'href' => "/entry.php?site={$siteId}&range={$range}"],
                 ],
