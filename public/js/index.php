@@ -153,7 +153,7 @@ if ($isSpider) {
     return document.title ? document.title.substring(0, 200) : '';
   };
 
-var generateId = function () {
+  var generateId = function () {
     var hex = function(val, pad) { return val.toString(16).padStart(pad, '0'); };
     if (window.crypto && window.crypto.getRandomValues) {
       var b = new Uint8Array(16);
@@ -277,7 +277,15 @@ var generateId = function () {
       params.set('ckv', visitorId);
 
       var sendData = function(isPing) {
-          if (isPing) params.set('ping', '1'); 
+          var dataToSend = params;
+          if (isPing) {
+              dataToSend = new URLSearchParams();
+              dataToSend.set('sid', siteId);
+              dataToSend.set('ckv', params.get('ckv') || '');
+              dataToSend.set('sid2', params.get('sid2') || '');
+              dataToSend.set('p', currentPath);
+              dataToSend.set('ping', '1');
+          }
           
           try {
               var storageKey = 'tracker_' + siteId;
@@ -287,7 +295,7 @@ var generateId = function () {
                   sessionData.duration = Math.max(0, Math.round((now - sessionData.started) / 1000));
                   sessionData.lastActive = now; 
                   
-                  params.set('dur', sessionData.duration);
+                  dataToSend.set('dur', sessionData.duration);
                   localStorage.setItem(storageKey, JSON.stringify(sessionData));
               }
           } catch(e) {}
@@ -298,14 +306,13 @@ var generateId = function () {
           var sent = false;
           if (navigator.sendBeacon) {
               var fd = new FormData();
-              params.forEach(function(value, key) { fd.append(key, value); });
+              dataToSend.forEach(function(value, key) { fd.append(key, value); });
               sent = navigator.sendBeacon(base, fd); 
           }
 
-          // 如果 sendBeacon 不可用或发送失败，则降级使用 fetch 或 image 方案
           if (!sent) {
               var separator = base.indexOf('?') === -1 ? '?' : '&';
-              var targetUrl = base + separator + params.toString();
+              var targetUrl = base + separator + dataToSend.toString();
 
               if (window.fetch) {
                   fetch(targetUrl, { method: 'GET', keepalive: true }).catch(function(err) {});
