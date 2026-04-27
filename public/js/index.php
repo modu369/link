@@ -276,12 +276,7 @@ var generateId = function () {
 
       params.set('ckv', visitorId);
 
-      var customEndpoint = script.getAttribute('data-endpoint');
-      var base = customEndpoint || script.src.replace(/\/js\/[^/]+$/, '/stat.php');
-      var separator = base.indexOf('?') === -1 ? '?' : '&';
-      var targetUrl = base + separator + params.toString();
-
-var sendData = function(isPing) {
+      var sendData = function(isPing) {
           if (isPing) params.set('ping', '1'); 
           
           try {
@@ -305,6 +300,20 @@ var sendData = function(isPing) {
               var fd = new FormData();
               params.forEach(function(value, key) { fd.append(key, value); });
               sent = navigator.sendBeacon(base, fd); 
+          }
+
+          // 如果 sendBeacon 不可用或发送失败，则降级使用 fetch 或 image 方案
+          if (!sent) {
+              var separator = base.indexOf('?') === -1 ? '?' : '&';
+              var targetUrl = base + separator + params.toString();
+
+              if (window.fetch) {
+                  fetch(targetUrl, { method: 'GET', keepalive: true }).catch(function(err) {});
+              } else {
+                  var img = new Image(1, 1);
+                  img.referrerPolicy = 'no-referrer-when-downgrade';
+                  img.src = targetUrl;
+              }
           }
       };
 
@@ -331,21 +340,11 @@ var sendData = function(isPing) {
               sendPing();
           }
       }, 240000);
-      
-      if (!sent) {
-          if (window.fetch) {
-              fetch(targetUrl, { method: 'GET', keepalive: true }).catch(function(err) {});
-          } else {
-              var img = new Image(1, 1);
-              img.referrerPolicy = 'no-referrer-when-downgrade';
-              img.src = targetUrl;
-          }
-      }
   };
 
   trackPageView();
 
-var bindSPA = function() {
+  var bindSPA = function() {
       var _wr = function(type) {
           var orig = window.history[type];
           return function() {
