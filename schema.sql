@@ -146,3 +146,11 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 1. 为维度聚合表增加新访客统计列
+ALTER TABLE pageview_dimension_rollups ADD COLUMN new_uv BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER uv;
+
+-- 2. 更新索引以保证查询性能
+ALTER TABLE pageview_dimension_rollups DROP INDEX idx_cover_query;
+CREATE INDEX idx_cover_query ON pageview_dimension_rollups 
+(site_id, dimension_type, bucket_start, dimension_value, pv, uv, new_uv, ip_count, session_count, duration_sum, page_sum, bounce_count);
