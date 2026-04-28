@@ -6090,44 +6090,25 @@ public function getRegionStats(int $siteId, string $range, int $limit = 50): arr
 
     public function getNewVsReturning(int $siteId, string $range): array
     {
-        // 缓存键名升至 _v3，保存后强制穿透缓存，立即生效
-        $cacheKey = "new_vs_returning:{$siteId}:{$range}_v3";
+        // 缓存键名升至 _v4，确保立即跳过旧的慢查询缓存
+        $cacheKey = "new_vs_returning:{$siteId}:{$range}_v4";
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
             [$start, $end] = $this->rollupRangeBounds($range);
 
-            $startStr = $start->format('Y-m-d H:i:s');
-            $endStr = $end->format('Y-m-d H:i:s');
+            // 1. 获取全站精准去重访客总数 (优先使用 Redis HLL，秒级返回)
+            $totalUv = 0;
+            $uvKeys = $this->getHllKeysForRange($siteId, 'hll_uv', $range);
+            if (!empty($uvKeys)) {
+                $totalUv = (int) $this->redis->pfCount($uvKeys);
+            }
+            // 如果 HLL 过期或不可用，回退到 pageview_rollups 聚合表
+            if ($totalUv === 0) {
+                $totals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
+                $totalUv = (int) ($totals['uniques'] ?? 0);
+            }
 
-            // ==========================================
-            // 终极精准算法：明细级联合查询 + 严格过滤爬虫
-            // ==========================================
-            $stmt = $this->db->prepare("
-                SELECT 
-                    COUNT(DISTINCT p.ip_hash) as total_uv,
-                    COUNT(DISTINCT CASE WHEN a.first_seen >= ? AND a.first_seen < ? THEN p.ip_hash END) as new_uv
-                FROM pageviews p
-                LEFT JOIN site_visitor_audience a ON p.visitor_id = a.visitor_id AND p.site_id = a.site_id
-                WHERE p.site_id = ? 
-                  AND p.occurred_at >= ? 
-                  AND p.occurred_at < ?
-                  AND p.is_proxy_risk = 0
-            ");
-            
-            $stmt->execute([
-                $startStr, $endStr, // 匹配：a.first_seen 的范围
-                $siteId,            // 匹配：p.site_id
-                $startStr, $endStr  // 匹配：p.occurred_at 的范围
-            ]);
-            
-            $res = $stmt->fetch(PDO::FETCH_ASSOC);
-            $totalUv = (int) ($res['total_uv'] ?? 0);
-            $newUv = (int) ($res['new_uv'] ?? 0);
-            $returningUv = max(0, $totalUv - $newUv);
-
-            // ==========================================
-            // 以下代码仅为兼容旧版饼图的 PV/IP 基础展示结构
-            // ==========================================
+            // 2. 彻底抛弃明细表扫描，直接读取 rollup_worker 预热好的聚合结果
             $span = $this->rollupSpanForRange($siteId, $start, $end);
             $rows = $span ? $this->aggregateDimensionRollups($siteId, 'audience', $span['start'], $span['end'], 2) : [];
             
@@ -6136,19 +6117,31 @@ public function getRegionStats(int $siteId, string $range, int $limit = 50): arr
                 $val = $row['dimension_value'] ?? '';
                 if ($val === 'new') {
                     $newViews += (int) ($row['views'] ?? 0);
-                    $newIps += (int) ($row['ips'] ?? 0);
+                    // 因为一个新访客只会在其“首访小时”被聚合为 new
+                    // 不同小时的 new ips 累加即为精准的全天新访客 UV
+                    $newIps += (int) ($row['ips'] ?? 0); 
                 } elseif ($val === 'returning') {
                     $returningViews += (int) ($row['views'] ?? 0);
                     $returningIps += (int) ($row['ips'] ?? 0);
                 }
             }
 
+            // 3. 计算最终的新老访客 UV 分布
+            $newUv = $newIps; 
+            $returningUv = max(0, $totalUv - $newUv);
+
+            // 极端情况对齐 (如 HLL 误差导致新访客 > 总访客)
+            if ($newUv > $totalUv && $totalUv > 0) {
+                $newUv = $totalUv;
+                $returningUv = 0;
+            }
+
             return [
-                'new' => $newViews, // 保留原 PV 字段
+                'new' => $newViews, // 新访客 PV
                 'returning' => $returningViews, 
                 'new_ips' => $newIps,
                 'returning_ips' => $returningIps,
-                'new_uv' => $newUv, // <--- 顶部数据卡片使用的【绝对精准新访客数】
+                'new_uv' => $newUv, // <--- 顶部指标卡显示的【精准新访客数】
                 'returning_uv' => $returningUv,
             ];
         });
