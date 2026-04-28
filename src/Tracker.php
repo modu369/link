@@ -1822,29 +1822,27 @@ private function cleanupProxyIpData(string $ip): void
                     COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
                     FROM pageviews p WHERE site_id = ? AND is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
                     GROUP BY dimension_value",
-                'referrer_host' => "SELECT dimension_value, pv, uv, ips, sessions, duration_sum, page_sum, bounce_count
+                'referrer_host' => "SELECT dimension_value, pv, uv, new_uv, ips, sessions, duration_sum, page_sum, bounce_count
                     FROM (
                         SELECT LEFT(" . $this->referrerHostExpr('p') . ", 255) as dimension_value,
                             SUM(s.total_pv) as pv,
-                            SUM(s.is_unique) as uv,
+                            COUNT(DISTINCT p.ip_hash) as uv,
+                            COUNT(DISTINCT CASE WHEN a.first_seen >= ? AND a.first_seen < ? THEN p.ip_hash END) as new_uv,
                             COUNT(DISTINCT p.ip_hash) as ips,
                             COUNT(*) as sessions,
                             SUM(s.max_duration) as duration_sum,
                             SUM(s.max_pages) as page_sum,
                             SUM(CASE WHEN s.max_pages <= 1 THEN 1 ELSE 0 END) as bounce_count
                         FROM (
-                            SELECT session_id,
-                                   MIN(id) as first_id,
-                                   COUNT(*) as total_pv,
-                                   MAX(is_unique) as is_unique,
-                                   MAX(duration_seconds) as max_duration,
-                                   MAX(page_count) as max_pages
+                            SELECT session_id, MIN(id) as first_id, COUNT(*) as total_pv,
+                                MAX(duration_seconds) as max_duration, MAX(page_count) as max_pages
                             FROM pageviews
                             WHERE site_id = ? AND session_id IS NOT NULL AND is_proxy_risk = 0
                               AND occurred_at >= ? AND occurred_at < ?
                             GROUP BY session_id
                         ) s
                         JOIN pageviews p ON p.id = s.first_id
+                        LEFT JOIN site_visitor_audience a ON p.visitor_id = a.visitor_id AND p.site_id = a.site_id
                         GROUP BY dimension_value
                         ORDER BY ips DESC
                         LIMIT 500
@@ -1880,12 +1878,13 @@ private function cleanupProxyIpData(string $ip): void
             foreach ($dimensionInserts as $dimension => $sql) {
                 $useSessionMetrics = $dimension === 'referrer_host';
                 $insert = $this->db->prepare(
-                    'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
-                     SELECT ?, ?, ?, dimension_value, pv, uv, ips, ' .
+                    'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, new_uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+                     SELECT ?, ?, ?, dimension_value, pv, uv, ' .
+                    ($useSessionMetrics ? 'new_uv' : '0') . ', ips, ' .
                     ($useSessionMetrics ? 'sessions, duration_sum, page_sum, bounce_count' : '0, 0, 0, 0') .
                     ' FROM (' . $sql . ') t'
                 );
-                if ($dimension === 'audience') {
+                if ($dimension === 'audience' || $dimension === 'referrer_host') {
                     $params = [$dayStartKey, $dayEndKey, $siteId, $start, $end];
                 } else {
                     $params = [$siteId, $start, $end];
@@ -2943,8 +2942,8 @@ while ($processed < $maxBatch) {
         $value = $this->limitText($value, 255);
 
         $stmt = $this->db->prepare(
-            'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
-             VALUES (:site_id, :bucket_start, :dimension_type, :dimension_value, 1, :uv, :ip_count, :session_count, :duration_sum, :page_sum, :bounce_count)
+            'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, new_uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
+             VALUES (:site_id, :bucket_start, :dimension_type, :dimension_value, 1, :uv, 0, :ip_count, :session_count, :duration_sum, :page_sum, :bounce_count)
              ON DUPLICATE KEY UPDATE
                 pv = pv + 1,
                 uv = uv + VALUES(uv),
@@ -3057,7 +3056,7 @@ while ($processed < $maxBatch) {
         }
 
         $statement = $this->db->prepare(
-            'SELECT dimension_value, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ips, SUM(session_count) as sessions, SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count
+            'SELECT dimension_value, SUM(pv) as views, SUM(uv) as uniques, SUM(new_uv) as new_uv, SUM(ip_count) as ips, SUM(session_count) as sessions, SUM(duration_sum) as duration_sum, SUM(page_sum) as page_sum, SUM(bounce_count) as bounce_count
              FROM pageview_dimension_rollups
              WHERE site_id = :site_id AND dimension_type = :dimension AND bucket_start >= :start AND bucket_start < :end
              GROUP BY dimension_value
@@ -3917,6 +3916,10 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
             ? $this->rollupSummaryStats($this->aggregateRollups($siteId, $rollupStart, $rollupEnd))
             : [];
 
+        // 【修复】：读取真实的全局新访客数据
+        $audience = $this->getNewVsReturning($siteId, $range);
+        $realNewVisitors = (int) ($audience['new'] ?? 0);
+
         $rows = $this->getEntryRollupRows($siteId, $range, 200);
 
         return [
@@ -3924,7 +3927,7 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
                 'ips' => (int) ($summary['ips'] ?? 0),
                 'views' => (int) ($summary['views'] ?? 0),
                 'uv' => (int) ($summary['uv'] ?? ($summary['uniques'] ?? 0)),
-                'new' => (int) ($summary['new'] ?? ($summary['uniques'] ?? 0)),
+                'new' => $realNewVisitors, // 使用真实数据
                 'sessions' => (int) ($summary['sessions'] ?? 0),
                 'avg_pages' => round((float) ($summary['avg_pages'] ?? 0), 2),
                 'avg_duration' => (float) ($summary['avg_duration'] ?? 0),
@@ -3968,6 +3971,10 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
         $summaryTotals = $this->aggregateTotalsWithRollups($siteId, $rollupStart, $rollupEnd);
         $summary = $this->rollupSummaryStats($summaryTotals);
 
+        // 【修复】：读取真实的全局新访客数据
+        $audience = $this->getNewVsReturning($siteId, $range);
+        $realNewVisitors = (int) ($audience['new'] ?? 0);
+
         $rollupRows = $this->getPageRollupRows($siteId, $range, 200);
 
         return [
@@ -3975,7 +3982,7 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
                 'ips' => (int) ($summary['ips'] ?? 0),
                 'views' => (int) ($summary['views'] ?? 0),
                 'uv' => (int) ($summary['uv'] ?? ($summary['uniques'] ?? 0)),
-                'new' => (int) ($summary['new'] ?? ($summary['uniques'] ?? 0)),
+                'new' => $realNewVisitors, // 使用真实数据
                 'sessions' => (int) ($summary['sessions'] ?? 0),
                 'avg_pages' => round((float) ($summary['avg_pages'] ?? 0), 2),
                 'avg_duration' => (float) ($summary['avg_duration'] ?? 0),
@@ -4035,15 +4042,21 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
 
         $rows = $this->aggregateDimensionRollups($siteId, 'referrer_host', $span['start'], $span['end'], 200);
         $filtered = [];
+        
         foreach ($rows as $row) {
-            $referrer = $row['dimension_value'] ?? '';
-            if ($referrer === '' || $referrer === '直接访问') {
-                continue;
+            $referrer = trim($row['dimension_value'] ?? '');
+            
+            // 【新增】：如果没有来路，标记为直接访问并放行显示
+            if ($referrer === '') {
+                $referrer = '直接访问';
             }
-            if ($domains && $this->isOwnReferrer($referrer, $domains)) {
+            
+            // 剔除自有域名（但必须保留直接访问）
+            if ($referrer !== '直接访问' && $domains && $this->isOwnReferrer($referrer, $domains)) {
                 continue;
             }
 
+            // 提前计算好所有的指标，避免 Undefined variable 报错
             $sessions = (int) ($row['sessions'] ?? 0);
             $avgPages = $sessions > 0 ? (float) ($row['page_sum'] ?? 0) / $sessions : 0;
             $avgDuration = $sessions > 0 ? (float) ($row['duration_sum'] ?? 0) / $sessions : 0;
@@ -4054,6 +4067,7 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
                 'sessions' => $sessions,
                 'ips' => (int) ($row['ips'] ?? 0),
                 'uniques' => (int) ($row['uniques'] ?? 0),
+                'new' => (int) ($row['new_uv'] ?? 0), // 读取真实新访客数据
                 'views' => (int) ($row['views'] ?? 0),
                 'avg_pages' => $avgPages,
                 'avg_duration' => $avgDuration,
@@ -4081,7 +4095,8 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
             $totals['ips'] += (int) ($row['ips'] ?? 0);
             $totals['views'] += (int) ($row['views'] ?? 0);
             $totals['uv'] += (int) ($row['uniques'] ?? 0);
-            $totals['new'] += (int) ($row['uniques'] ?? 0);
+            // 【提速核心】：不再去查库，直接从 worker 预热好的聚合列表里把新访客加起来
+            $totals['new'] += (int) ($row['new'] ?? 0); 
             $totals['sessions'] += $sessions;
             $weightedPages += (float) ($row['avg_pages'] ?? 0) * $sessions;
             $weightedDuration += (float) ($row['avg_duration'] ?? 0) * $sessions;
@@ -4093,6 +4108,8 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
             $totals['avg_duration'] = round($weightedDuration / $totals['sessions'], 2);
             $totals['bounce_rate'] = $weightedBounce / $totals['sessions'];
         }
+        
+        // 彻底删掉了调用 getNewVsReturning 的逻辑，实现 0 次查询 pageviews 明细表
 
         return [
             'summary' => $totals,
@@ -6073,39 +6090,66 @@ public function getRegionStats(int $siteId, string $range, int $limit = 50): arr
 
     public function getNewVsReturning(int $siteId, string $range): array
     {
-        $cacheKey = "new_vs_returning:{$siteId}:{$range}";
+        // 缓存键名升至 _v3，保存后强制穿透缓存，立即生效
+        $cacheKey = "new_vs_returning:{$siteId}:{$range}_v3";
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
             [$start, $end] = $this->rollupRangeBounds($range);
+
+            $startStr = $start->format('Y-m-d H:i:s');
+            $endStr = $end->format('Y-m-d H:i:s');
+
+            // ==========================================
+            // 终极精准算法：明细级联合查询 + 严格过滤爬虫
+            // ==========================================
+            $stmt = $this->db->prepare("
+                SELECT 
+                    COUNT(DISTINCT p.ip_hash) as total_uv,
+                    COUNT(DISTINCT CASE WHEN a.first_seen >= ? AND a.first_seen < ? THEN p.ip_hash END) as new_uv
+                FROM pageviews p
+                LEFT JOIN site_visitor_audience a ON p.visitor_id = a.visitor_id AND p.site_id = a.site_id
+                WHERE p.site_id = ? 
+                  AND p.occurred_at >= ? 
+                  AND p.occurred_at < ?
+                  AND p.is_proxy_risk = 0
+            ");
+            
+            $stmt->execute([
+                $startStr, $endStr, // 匹配：a.first_seen 的范围
+                $siteId,            // 匹配：p.site_id
+                $startStr, $endStr  // 匹配：p.occurred_at 的范围
+            ]);
+            
+            $res = $stmt->fetch(PDO::FETCH_ASSOC);
+            $totalUv = (int) ($res['total_uv'] ?? 0);
+            $newUv = (int) ($res['new_uv'] ?? 0);
+            $returningUv = max(0, $totalUv - $newUv);
+
+            // ==========================================
+            // 以下代码仅为兼容旧版饼图的 PV/IP 基础展示结构
+            // ==========================================
             $span = $this->rollupSpanForRange($siteId, $start, $end);
-            $rows = $span
-                ? $this->aggregateDimensionRollups($siteId, 'audience', $span['start'], $span['end'], 2)
-                : [];
-
-            $newViews = 0;
-            $returningViews = 0;
-            $newIps = 0;
-            $returningIps = 0;
-
+            $rows = $span ? $this->aggregateDimensionRollups($siteId, 'audience', $span['start'], $span['end'], 2) : [];
+            
+            $newViews = 0; $returningViews = 0; $newIps = 0; $returningIps = 0;
             foreach ($rows as $row) {
-                $value = $row['dimension_value'] ?? '';
-
-                if ($value === 'new') {
+                $val = $row['dimension_value'] ?? '';
+                if ($val === 'new') {
                     $newViews += (int) ($row['views'] ?? 0);
                     $newIps += (int) ($row['ips'] ?? 0);
-                }
-
-                if ($value === 'returning') {
+                } elseif ($val === 'returning') {
                     $returningViews += (int) ($row['views'] ?? 0);
                     $returningIps += (int) ($row['ips'] ?? 0);
                 }
             }
 
             return [
-                'new' => $newViews,
-                'returning' => $returningViews,
+                'new' => $newViews, // 保留原 PV 字段
+                'returning' => $returningViews, 
                 'new_ips' => $newIps,
                 'returning_ips' => $returningIps,
+                'new_uv' => $newUv, // <--- 顶部数据卡片使用的【绝对精准新访客数】
+                'returning_uv' => $returningUv,
             ];
         });
     }
