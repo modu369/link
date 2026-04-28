@@ -113,7 +113,6 @@ render_topbar($branding);
                             <button class="active" data-metric="ips">IP</button>
                             <button data-metric="views">PV</button>
                             <button data-metric="uv">UV</button>
-                            <button data-metric="new">新访客</button>
                             <button data-metric="bounce_rate">跳出率</button>
                         </div>
                     </div>
@@ -134,7 +133,6 @@ render_topbar($branding);
                                 <th style="width: 35%">页面路径</th>
                                 <th>IP数</th>
                                 <th>访客数</th>
-                                <th>新访客数</th>
                                 <th>贡献浏览量</th>
                                 <th>平均浏览页数</th>
                                 <th>平均访问时长</th>
@@ -146,7 +144,6 @@ render_topbar($branding);
                                 <td>合计</td>
                                 <td><?= (int) ($summary['ips'] ?? 0) ?></td>
                                 <td><?= (int) ($summary['uv'] ?? 0) ?></td>
-                                <td><?= (int) ($summary['new'] ?? 0) ?></td>
                                 <td><?= (int) ($summary['views'] ?? 0) ?></td>
                                 <td><?= number_format((float) ($summary['avg_pages'] ?? 0), 2) ?></td>
                                 <td><?= entry_duration_format($summary['avg_duration'] ?? 0) ?></td>
@@ -162,7 +159,6 @@ render_topbar($branding);
                                     </td>
                                     <td><?= (int) $row['ips'] ?></td>
                                     <td><?= (int) $row['uniques'] ?></td>
-                                    <td><?= (int) ($row['new'] ?? 0) ?></td>
                                     <td><?= (int) $row['views'] ?></td>
                                     <td><?= number_format((float) $row['avg_pages'], 2) ?></td>
                                     <td><?= entry_duration_format($row['avg_duration']) ?></td>
@@ -187,8 +183,6 @@ render_topbar($branding);
                         ips: entryRows.map(r => Number(r.ips || 0)),
                         views: entryRows.map(r => Number(r.views || 0)),
                         uv: entryRows.map(r => Number(r.uniques || 0)),
-                        // 【修复】确保 JS 正确提取 new 字段
-                        new: entryRows.map(r => Number(r.new || 0)),
                         bounce_rate: entryRows.map(r => Number((r.bounce_rate || 0) * 100))
                     };
                     
