@@ -8,6 +8,7 @@ if ($siteId > 0 && !$selectedSite) {
 }
 // ==================================
 $data = $selectedSite ? $tracker->getVisitorEnv($siteId, $range) : null;
+$view = $_GET['view'] ?? 'device'; // 默认显示设备类别
 
 render_head('系统环境概览 - 统计后台');
 render_topbar($branding);
@@ -23,12 +24,12 @@ render_topbar($branding);
                     <div>
                         <h2 style="margin:0;">系统环境概览</h2>
                     </div>
-                    <?php render_range_filters($allowedRanges, $range, 'env', (int) $selectedSite['id']); ?>
+                    <?php render_range_filters($allowedRanges, $range, 'env', (int) $selectedSite['id'], ['view' => $view]); ?>
                 </div>
 </section>
             <div class="view-tabs">
-                <button class="active" onclick="switchEnvView('device', this)">设备类别</button>
-                <button onclick="switchEnvView('browser', this)">浏览器类型</button>
+                <button class="<?= $view === 'device' ? 'active' : '' ?>" onclick="switchEnvView('device', this)">设备类别</button>
+                <button class="<?= $view === 'browser' ? 'active' : '' ?>" onclick="switchEnvView('browser', this)">浏览器类型</button>
             </div>
 
             <script>
@@ -41,10 +42,37 @@ render_topbar($branding);
                     // 切换显示板块
                     document.getElementById('view-device').style.display = view === 'device' ? 'block' : 'none';
                     document.getElementById('view-browser').style.display = view === 'browser' ? 'block' : 'none';
+
+                    // --- 新增：同步更新 URL 和日期筛选器中的 view 参数 ---
+                    // 更新当前浏览器地址栏，不刷新页面
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('view', view);
+                    window.history.replaceState(null, '', url);
+
+                    // 更新快速筛选按钮 (今日、昨日等) 的 href 参数
+                    document.querySelectorAll('.filter-btn').forEach(el => {
+                        if (el.tagName === 'A') {
+                            const elUrl = new URL(el.href);
+                            elUrl.searchParams.set('view', view);
+                            el.href = elUrl.href;
+                        }
+                    });
+                    
+                    // 更新自定义日期表单中的隐藏 input
+                    document.querySelectorAll('.date-range-form').forEach(f => {
+                        let viewInput = f.querySelector('input[name="view"]');
+                        if (!viewInput) {
+                            viewInput = document.createElement('input');
+                            viewInput.type = 'hidden';
+                            viewInput.name = 'view';
+                            f.appendChild(viewInput);
+                        }
+                        viewInput.value = view;
+                    });
                 }
             </script>
 
-            <section class="card" id="view-device">
+            <section class="card" id="view-device" style="display: <?= $view === 'device' ? 'block' : 'none' ?>;">
                 <div class="section-title"><h3>设备类别</h3><span class="muted">按 IP 聚合</span></div>
                 
                 <div style="margin-bottom:14px; display:flex; justify-content:center;">
@@ -63,7 +91,7 @@ render_topbar($branding);
                 </table>
 </section>
 
-            <section class="card" id="view-browser" style="display: none;">
+            <section class="card" id="view-browser" style="display: <?= $view === 'browser' ? 'block' : 'none' ?>;">
                 <div class="section-title"><h3>浏览器类型</h3><span class="muted">前 50</span></div>
                 
                 <div style="margin-bottom:14px; display:flex; justify-content:center;">
