@@ -3277,23 +3277,39 @@ private function markVisitorAudienceState(int $siteId, string $visitorId): array
     {
         $ua = strtolower($userAgent);
         return match (true) {
-            str_contains($ua, 'micromessenger') => 'WeChat',
-            str_contains($ua, 'baiduboxapp') => '百度',
-            str_contains($ua, 'sogoumse') => '搜狗',
-            str_contains($ua, 'goldbrowser') => '悟空',
-            (bool) preg_match('/mqqbrowser|qqbrowser/', $ua) => 'QQ',
-            str_contains($ua, 'ucbrowser') => 'UC',
+            // 社交/办公平台内置浏览器 (最高优先级)
+            str_contains($ua, 'micromessenger') => '微信',
+            str_contains($ua, 'dingtalk') => '钉钉',
+            str_contains($ua, 'qq/') => 'QQ', // QQ客户端内置，区别于QQ浏览器
+
+            // 国内主流手机/PC浏览器
+            (bool) preg_match('/mqqbrowser|qqbrowser/', $ua) => 'QQ浏览器',
+            str_contains($ua, 'ucbrowser') || str_contains($ua, 'ubrowser') => 'UC',
             str_contains($ua, 'quark') => '夸克',
+            str_contains($ua, 'baiduboxapp') || str_contains($ua, 'baidubrowser') || str_contains($ua, 'baidu') => '百度',
+            str_contains($ua, 'sogoumse') || str_contains($ua, 'metasr') || str_contains($ua, 'sogoumobilebrowser') || str_contains($ua, 'sogou') => '搜狗',
+            str_contains($ua, '2345explorer') || str_contains($ua, '2345chrome') || str_contains($ua, 'mb2345') => '2345',
+            str_contains($ua, 'lbbrowser') => '猎豹',
+            str_contains($ua, '360se') || str_contains($ua, '360ee') || str_contains($ua, 'qihoobrowser') => '360',
+            str_contains($ua, 'goldbrowser') => '悟空',
+            
+            // 手机厂商自带浏览器
             str_contains($ua, 'xiaomi') || str_contains($ua, 'miuibrowser') => '小米',
-            str_contains($ua, 'huawei') => '华为',
+            str_contains($ua, 'huaweibrowser') || str_contains($ua, 'huawei') || str_contains($ua, 'hbpc') => '华为',
             str_contains($ua, 'vivobrowser') => 'Vivo',
-            str_contains($ua, 'heytapbrowser') || str_contains($ua, 'oppobrowser') => 'OPPO',
-            (bool) preg_match('/edg(a|ios)/', $ua) => 'Edge',
+            str_contains($ua, 'heytapbrowser') => 'HeyTap',
+            str_contains($ua, 'oppobrowser') => 'Oppo',
+            str_contains($ua, 'slbrowser') || str_contains($ua, 'lenovo') => '联想',
+            str_contains($ua, 'samsungbrowser') => '三星',
+            
+            // 国际主流浏览器 (最低优先级，防止误判上面的国内浏览器)
+            (bool) preg_match('/edg(\/|a|ios)|edge/', $ua) => 'Edge',
             (bool) preg_match('/chrome|crios/', $ua) => 'Chrome',
             (bool) preg_match('/firefox|fxios/', $ua) => 'Firefox',
-            (bool) preg_match('/safari/', $ua) && !(bool) preg_match('/chrome|crios|edg/', $ua) => 'Safari',
-            (bool) preg_match('/360se|360ee/', $ua) => '360',
             (bool) preg_match('/msie|trident/', $ua) => 'IE',
+            // 如果包含了 Safari，且不包含其它内核修饰符，才是真正的原生 Safari
+            (bool) preg_match('/safari/', $ua) && !(bool) preg_match('/chrome|crios|edg|edge/', $ua) => 'Safari',
+            
             default => '其他浏览器',
         };
     }
@@ -3303,23 +3319,30 @@ private function markVisitorAudienceState(int $siteId, string $visitorId): array
         $prefix = $alias ? $alias . '.' : '';
 
         return "CASE
-            WHEN LOWER({$prefix}user_agent) REGEXP 'micromessenger' THEN 'WeChat'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'baiduboxapp' THEN '百度'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'sogoumse' THEN '搜狗'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'goldbrowser' THEN '悟空'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'mqqbrowser|qqbrowser' THEN 'QQ'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'ucbrowser' THEN 'UC'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'micromessenger' THEN '微信'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'dingtalk' THEN '钉钉'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'qq/' THEN 'QQ'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'mqqbrowser|qqbrowser' THEN 'QQ浏览器'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'ucbrowser|ubrowser' THEN 'UC'
             WHEN LOWER({$prefix}user_agent) REGEXP 'quark' THEN '夸克'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'baiduboxapp|baidubrowser|baidu' THEN '百度'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'sogoumse|metasr|sogoumobilebrowser|sogou' THEN '搜狗'
+            WHEN LOWER({$prefix}user_agent) REGEXP '2345explorer|2345chrome|mb2345' THEN '2345'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'lbbrowser' THEN '猎豹'
+            WHEN LOWER({$prefix}user_agent) REGEXP '360se|360ee|qihoobrowser' THEN '360'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'goldbrowser' THEN '悟空'
             WHEN LOWER({$prefix}user_agent) REGEXP 'xiaomi|miuibrowser' THEN '小米'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'huawei' THEN '华为'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'huaweibrowser|huawei|hbpc' THEN '华为'
             WHEN LOWER({$prefix}user_agent) REGEXP 'vivobrowser' THEN 'Vivo'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'heytapbrowser|oppobrowser' THEN 'OPPO'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'edg(a|ios)' THEN 'Edge'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'heytapbrowser' THEN 'HeyTap'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'oppobrowser' THEN 'Oppo'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'slbrowser|lenovo' THEN '联想'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'samsungbrowser' THEN '三星'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'edg(/|a|ios)|edge' THEN 'Edge'
             WHEN LOWER({$prefix}user_agent) REGEXP 'chrome|crios' THEN 'Chrome'
             WHEN LOWER({$prefix}user_agent) REGEXP 'firefox|fxios' THEN 'Firefox'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'safari' AND LOWER({$prefix}user_agent) NOT REGEXP 'chrome|crios|edg' THEN 'Safari'
-            WHEN LOWER({$prefix}user_agent) REGEXP '360se|360ee' THEN '360'
             WHEN LOWER({$prefix}user_agent) REGEXP 'msie|trident' THEN 'IE'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'safari' AND LOWER({$prefix}user_agent) NOT REGEXP 'chrome|crios|edg|edge' THEN 'Safari'
             ELSE '其他浏览器'
         END";
     }
