@@ -1,311 +1,249 @@
 <?php
 require __DIR__ . '/init.php';
 require __DIR__ . '/layout.php';
-
-// === 强制水平越权拦截 ===
+// === 新增：强制水平越权拦截 ===
 if ($siteId > 0 && !$selectedSite) {
+    // 恶意修改 site_id 参数，或者站点已被删除
     die('您无权访问该站点的数据。');
 }
 // ==================================
+$data = $selectedSite ? $tracker->getRegionData($siteId, $range) : null;
+$view = $_GET['view'] ?? 'world'; // 默认显示全球热力
 
-// 获取当前用户ID，确保屏蔽配置与 external.php 互通
-$userId = $_SESSION['user_id'] ?? ($_SESSION['admin_id'] ?? ($selectedSite['user_id'] ?? 0));
-
-$config = require __DIR__ . '/../config/config.php';
-$db = Database::connection($config['db']);
-$settingKey = "user_{$userId}_blocked_external_refs"; // 完全互通的 Key
-
-$device = $_GET['device'] ?? 'all';
-$visitorType = $_GET['visitor'] ?? 'all';
-$rangeParam = htmlspecialchars($range, ENT_QUOTES, 'UTF-8');
-
-// ==================================
-// 处理屏蔽/解除屏蔽的 POST 请求
-// ==================================
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    $stmt = $db->prepare("SELECT setting_value FROM settings WHERE setting_key = ?");
-    $stmt->execute([$settingKey]);
-    $existing = json_decode($stmt->fetchColumn() ?: '[]', true);
-    
-    $domain = trim($_POST['domain'] ?? '');
-    if ($domain !== '') {
-        if ($_POST['action'] === 'block') {
-            if (!in_array($domain, $existing)) {
-                $existing[] = $domain;
-            }
-        } elseif ($_POST['action'] === 'unblock') {
-            $existing = array_values(array_filter($existing, fn($d) => $d !== $domain));
-        }
-        $stmt = $db->prepare("INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?");
-        $json = json_encode($existing, JSON_UNESCAPED_UNICODE);
-        $stmt->execute([$settingKey, $json, $json]);
-    }
-    
-    // 动作完成后刷新页面，携带原有的筛选参数
-    $qs = http_build_query(['site' => $siteId, 'range' => $range, 'device' => $device, 'visitor' => $visitorType]);
-    header("Location: /referrer.php?{$qs}");
-    exit;
-}
-
-// ==================================
-// 获取屏蔽列表并构建过滤闭包
-// ==================================
-$stmt = $db->prepare("SELECT setting_value FROM settings WHERE setting_key = ?");
-$stmt->execute([$settingKey]);
-$blockedDomains = json_decode($stmt->fetchColumn() ?: '[]', true);
-
-$isBlocked = function($host) use ($blockedDomains) {
-    if (!$host) return false;
-    foreach ($blockedDomains as $bd) {
-        if ($host === $bd) return true;
-        // 支持通配符匹配 (如 *.spam.com 匹配 sub.spam.com)
-        if (str_starts_with($bd, '*.') && str_ends_with($host, substr($bd, 1))) return true;
-    }
-    return false;
-};
-
-// ==================================
-// 获取数据、过滤及分页计算
-// ==================================
-$page = max(1, (int) ($_GET['page'] ?? 1));
-$perPage = 50;
-$filters = ['device' => $device, 'visitor' => $visitorType];
-
-$data = $selectedSite ? $tracker->getReferrerData($siteId, $range, $filters) : null;
-$allReferrers = $data['referrers'] ?? [];
-$summary = $data['ref_summary'] ?? [];
-
-// 如果存在屏蔽规则，利用 parse_url 提取 host 进行实时数据过滤
-if (!empty($blockedDomains) && !empty($allReferrers)) {
-    $allReferrers = array_values(array_filter($allReferrers, function($row) use ($isBlocked) {
-        $host = parse_url($row['referrer'], PHP_URL_HOST) ?? '';
-        return !$isBlocked($host);
-    }));
-}
-
-$totalReferrers = count($allReferrers);
-$totalPages = max(1, (int) ceil($totalReferrers / $perPage));
-if ($page > $totalPages) {
-    $page = $totalPages;
-}
-$referrerPage = array_slice($allReferrers, ($page - 1) * $perPage, $perPage);
-
-function ref_duration_format($seconds): string {
-    $seconds = (int) round($seconds);
-    $m = floor($seconds / 60);
-    $s = $seconds % 60;
-    return sprintf('%02d:%02d', $m, $s);
-}
-
-render_head('来路详情 - 统计后台');
+render_head('地域分布 - 统计后台');
 render_topbar($branding);
 ?>
-<style>
-    .pill-tag { background:#e0f2fe; color:#0284c7; padding:4px 10px; border-radius:999px; font-weight:600; font-size:12px; }
-    
-    /* 屏蔽列表标签及按钮样式 (与 external 互通) */
-    .blocked-tags-container { padding: 12px 16px; background: #fff1f0; border-radius: 6px; margin-bottom: 16px; border: 1px solid #ffccc7; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-    .blocked-tag { display: inline-flex; align-items: center; background: #fff; color: #cf1322; border: 1px solid #ffa39e; padding: 3px 8px; border-radius: 4px; font-size: 13px; font-weight: 500; }
-    .blocked-tag-btn { background: none; border: none; color: #cf1322; cursor: pointer; padding: 0 0 0 6px; font-size: 16px; line-height: 1; }
-    .blocked-tag-btn:hover { color: #a8071a; }
-    
-    .action-btn { background: none; border: none; cursor: pointer; color: #808695; font-size: 13px; text-decoration: underline; margin-right: 12px; transition: color 0.2s; padding: 0; }
-    .action-btn:hover { color: #cf1322; }
-
-    /* 防止超长 URL 撑破表格导致布局错乱 */
-    .url-ellipsis {
-        display: inline-block;
-        max-width: 300px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        vertical-align: middle;
-        color: #1e293b;
-        font-weight: 500;
-    }
-</style>
-
+<script src="/t_statics/js/echarts.min.js"></script>
+<script src="/t_statics/js/world.js"></script>
+<script src="/t_statics/js/china.js"></script>
 <div class="data-layout">
-    <?php render_sidebar($sites, $siteId, $selectedSite, 'referrer', $range); ?>
+    <?php render_sidebar($sites, $siteId, $selectedSite, 'region', $range); ?>
     <main class="content">
-        <?php if (!$selectedSite): ?>
+        <?php if (!$selectedSite || !$data): ?>
             <div class="card empty">请选择或创建站点后查看数据。</div>
         <?php else: ?>
             <section class="card">
                 <div class="section-title">
                     <div>
-                        <h2 style="margin:0;">来路详情</h2>
-                        <p class="muted" style="margin:2px 0 0;">支持设备 / 访客类型筛选，默认剔除自有域名</p>
+                        <h2 style="margin:0;">地域分布</h2>
+                        <p class="muted" style="margin:2px 0 0;">基于 IP，支持国家/地区与省份映射</p>
                     </div>
-                    <?php render_range_filters($allowedRanges, $range, 'referrer', (int) $selectedSite['id'], ['device' => $device, 'visitor' => $visitorType]); ?>
+                    <?php render_range_filters($allowedRanges, $range, 'region', (int) $selectedSite['id'], ['view' => $view]); ?>
                 </div>
-            </section>
+</section>
+            <div class="view-tabs">
+                <button class="<?= $view === 'world' ? 'active' : '' ?>" onclick="switchRegionView('world', this)">全球热力</button>
+                <button class="<?= $view === 'china' ? 'active' : '' ?>" onclick="switchRegionView('china', this)">中国区域</button>
+            </div>
 
-            <section class="card">
-                <div class="section-title" style="gap:12px; flex-wrap:wrap;">
-                    <form method="get" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-                        <input type="hidden" name="site" value="<?= (int) $siteId ?>">
-                        <input type="hidden" name="range" value="<?= $rangeParam ?>">
-                        <input type="hidden" name="page" value="1">
-                        <label class="muted">设备类型</label>
-                        <select name="device" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);">
-                            <option value="all" <?= $device === 'all' ? 'selected' : '' ?>>全部</option>
-                            <option value="desktop" <?= $device === 'desktop' ? 'selected' : '' ?>>电脑端</option>
-                            <option value="mobile" <?= $device === 'mobile' ? 'selected' : '' ?>>移动端</option>
-                        </select>
-                        <label class="muted">访客类型</label>
-                        <select name="visitor" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);">
-                            <option value="all" <?= $visitorType === 'all' ? 'selected' : '' ?>>全部</option>
-                            <option value="new" <?= $visitorType === 'new' ? 'selected' : '' ?>>新访客</option>
-                            <option value="return" <?= $visitorType === 'return' ? 'selected' : '' ?>>老访客</option>
-                        </select>
-                        <button type="submit" class="filter-btn active" style="padding:8px 16px;">筛选</button>
-                    </form>
-                </div>
-                <?php if ($data): ?>
-                <div class="metric-row" style="gap:12px; margin-top: 16px;">
-                    <div class="metric"><div class="muted">IP数</div><div class="value"><?= (int) ($summary['ips'] ?? 0) ?></div></div>
-                    <div class="metric"><div class="muted">浏览量 (PV)</div><div class="value"><?= (int) ($summary['views'] ?? 0) ?></div></div>
-                    <div class="metric"><div class="muted">访客数 (UV)</div><div class="value"><?= (int) ($summary['uv'] ?? 0) ?></div></div>
-                    <div class="metric"><div class="muted">新访客数</div><div class="value"><?= (int) ($summary['new'] ?? 0) ?></div></div>
-                    <div class="metric"><div class="muted">会话数</div><div class="value"><?= (int) ($summary['sessions'] ?? 0) ?></div></div>
-                    <div class="metric"><div class="muted">跳出率</div><div class="value"><?= round(($summary['bounce_rate'] ?? 0) * 100, 2) ?>%</div></div>
-                    <div class="metric"><div class="muted">平均浏览页数</div><div class="value"><?= number_format((float) ($summary['avg_pages'] ?? 0), 2) ?></div></div>
-                    <div class="metric"><div class="muted">平均访问时长</div><div class="value"><?= ref_duration_format($summary['avg_duration'] ?? 0) ?></div></div>
-                </div>
-                <?php endif; ?>
-            </section>
+            <script>
+                function switchRegionView(view, btn) {
+                    const buttons = btn.parentElement.querySelectorAll('button');
+                    buttons.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    
+                    document.getElementById('view-world').style.display = view === 'world' ? 'block' : 'none';
+                    document.getElementById('view-china').style.display = view === 'china' ? 'block' : 'none';
+                    
+                    // 关键修复：ECharts 所在容器恢复显示时，必须触发 resize 事件，否则地图宽度会变成 0
+                    setTimeout(() => {
+                        window.dispatchEvent(new Event('resize'));
+                    }, 50);
 
-            <section class="card">
-                <div class="section-title" style="margin-bottom:12px;">
-                    <h3 style="margin:0;">来路列表</h3>
-                    <span class="muted">每页 <?= $perPage ?> 条</span>
-                </div>
+                    // --- 新增：同步更新 URL 和日期筛选器中的 view 参数 ---
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('view', view);
+                    window.history.replaceState(null, '', url);
 
-                <?php if (!empty($blockedDomains)): ?>
-                    <div class="blocked-tags-container">
-                        <span style="font-size:13px; color:#cf1322; font-weight:600; margin-right:4px;">已屏蔽来源 (与外部链接互通)：</span>
-                        <?php foreach ($blockedDomains as $bd): ?>
-                            <span class="blocked-tag">
-                                <?= htmlspecialchars($bd, ENT_QUOTES, 'UTF-8') ?>
-                                <form method="post" style="display:inline;">
-                                    <input type="hidden" name="action" value="unblock">
-                                    <input type="hidden" name="domain" value="<?= htmlspecialchars($bd, ENT_QUOTES, 'UTF-8') ?>">
-                                    <button type="submit" class="blocked-tag-btn" title="解除屏蔽">&times;</button>
-                                </form>
-                            </span>
-                        <?php endforeach; ?>
-                    </div>
-                <?php endif; ?>
+                    document.querySelectorAll('.filter-btn').forEach(el => {
+                        if (el.tagName === 'A') {
+                            const elUrl = new URL(el.href);
+                            elUrl.searchParams.set('view', view);
+                            el.href = elUrl.href;
+                        }
+                    });
+                    
+                    document.querySelectorAll('.date-range-form').forEach(f => {
+                        let viewInput = f.querySelector('input[name="view"]');
+                        if (!viewInput) {
+                            viewInput = document.createElement('input');
+                            viewInput.type = 'hidden';
+                            viewInput.name = 'view';
+                            f.appendChild(viewInput);
+                        }
+                        viewInput.value = view;
+                    });
+                }
+            </script>
 
-                <div class="table-wrapper">
+            <section class="card" id="view-world" style="display: <?= $view === 'world' ? 'block' : 'none' ?>;">
+                <div class="section-title"><h3>全球热力</h3><span class="muted">可缩放，按 IP 计</span></div>
+                <div id="worldMap" style="width:100%;height:520px;margin-bottom:12px;"></div>
+                <div class="table-wrap">
                     <table>
-                        <thead>
-                        <tr>
-                            <th style="width: 30%">来源 URL</th>
-                            <th>IP数</th>
-                            <th>访客数</th>
-                            <th>新访客数</th>
-                            <th>贡献浏览量</th>
-                            <th>平均浏览页数</th>
-                            <th>平均访问时长</th>
-                            <th>跳出率</th>
-                            <th style="text-align:right; width: 150px;">操作</th>
-                        </tr>
-                        </thead>
+                        <thead><tr><th>国家 / 地区</th><th>IP</th></tr></thead>
                         <tbody>
-                        <?php if (empty($referrerPage)): ?>
-                            <tr><td colspan="9" class="muted" style="text-align:center;">暂无来路数据或数据已被全部屏蔽</td></tr>
+                        <?php if (empty($data['countries'])): ?>
+                            <tr><td colspan="2" class="muted">暂无数据</td></tr>
                         <?php else: ?>
-                            <tr style="font-weight:700; background-color: #fafafa;">
-                                <td>合计 <span class="muted" style="font-weight:normal;font-size:12px;">(屏蔽前总计)</span></td>
-                                <td><?= (int) ($summary['ips'] ?? 0) ?></td>
-                                <td><?= (int) ($summary['uv'] ?? 0) ?></td>
-                                <td><?= (int) ($summary['new'] ?? 0) ?></td>
-                                <td><?= (int) ($summary['views'] ?? 0) ?></td>
-                                <td><?= number_format((float) ($summary['avg_pages'] ?? 0), 2) ?></td>
-                                <td><?= ref_duration_format($summary['avg_duration'] ?? 0) ?></td>
-                                <td><?= round(($summary['bounce_rate'] ?? 0) * 100, 2) ?>%</td>
-                                <td></td>
-                            </tr>
-                            <?php foreach ($referrerPage as $row): ?>
-                                <?php 
-                                    $refUrl = htmlspecialchars($row['referrer'], ENT_QUOTES, 'UTF-8'); 
-                                    $host = parse_url($row['referrer'], PHP_URL_HOST) ?? '';
-                                ?>
+                            <?php foreach ($data['countries'] as $row): ?>
                                 <tr>
-                                    <td>
-                                        <span class="url-ellipsis" title="<?= $refUrl ?>">
-                                            <?= $refUrl ?>
-                                        </span>
-                                    </td>
+                                    <td><?= htmlspecialchars($row['country'], ENT_QUOTES, 'UTF-8') ?></td>
                                     <td><?= (int) $row['ips'] ?></td>
-                                    <td><?= (int) $row['uniques'] ?></td>
-                                    <td><?= (int) ($row['new'] ?? 0) ?></td>
-                                    <td><?= (int) $row['views'] ?></td>
-                                    <td><?= number_format((float) $row['avg_pages'], 2) ?></td>
-                                    <td><?= ref_duration_format($row['avg_duration']) ?></td>
-                                    <td>
-                                        <?php $bounce = round(($row['bounce_rate'] ?? 0) * 100, 2); ?>
-                                        <span style="color: <?= $bounce > 80 ? '#ef4444' : 'inherit' ?>;">
-                                            <?= $bounce ?>%
-                                        </span>
-                                    </td>
-                                    <td style="text-align:right;">
-                                        <?php if ($host): ?>
-                                            <button type="button" class="action-btn" onclick="blockExact('<?= htmlspecialchars($host, ENT_QUOTES, 'UTF-8') ?>')">屏蔽精准</button>
-                                            <button type="button" class="action-btn" style="margin-right:0;" onclick="blockRoot('<?= htmlspecialchars($host, ENT_QUOTES, 'UTF-8') ?>')">屏蔽根域</button>
-                                        <?php else: ?>
-                                            <span class="muted" style="font-size:12px;">无域名</span>
-                                        <?php endif; ?>
-                                    </td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
                         </tbody>
                     </table>
                 </div>
-                <?php
-                    render_pagination(
-                        $page,
-                        $totalPages,
-                        '/referrer.php',
-                        ['site' => (int) $siteId, 'range' => $range, 'device' => $device, 'visitor' => $visitorType]
-                    );
-                ?>
+</section>
+
+            <section class="card" id="view-china" style="display: <?= $view === 'china' ? 'block' : 'none' ?>;">
+                <div class="section-title"><h3>中国区域</h3><span class="muted">省级视图，按 IP 计</span></div>
+                <div id="chinaRegionMap" style="width:100%;height:420px;margin-bottom:12px;"></div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>省份</th><th>IP</th></tr></thead>
+                        <tbody>
+                        <?php if (empty($data['regions'])): ?>
+                            <tr><td colspan="2" class="muted">暂无数据</td></tr>
+                        <?php else: ?>
+                            <?php foreach ($data['regions'] as $row): ?>
+                                <tr>
+                                    <td><?= htmlspecialchars($row['region'], ENT_QUOTES, 'UTF-8') ?></td>
+                                    <td><?= (int) $row['ips'] ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
             </section>
 
             <script>
-                function submitBlockForm(domain) {
-                    const form = document.createElement('form');
-                    form.method = 'POST';
-                    form.innerHTML = `<input type="hidden" name="action" value="block"><input type="hidden" name="domain" value="${domain}">`;
-                    document.body.appendChild(form);
-                    form.submit();
-                }
-
-                function blockExact(domain) {
-                    if (confirm('确定要将该确切的域名加入屏蔽名单吗？\n\n' + domain + '\n\n加入后，来自该域名的流量将不再显示在此列表以及“外部链接”列表中。')) {
-                        submitBlockForm(domain);
+                const countries = <?= json_encode($data['countries'] ?? [], JSON_UNESCAPED_UNICODE) ?>;
+                const provinces = <?= json_encode($data['regions'] ?? [], JSON_UNESCAPED_UNICODE) ?>;
+                if (window.echarts) {
+                    const worldEl = document.getElementById('worldMap');
+                    if (worldEl) {
+                        const worldChart = echarts.init(worldEl);
+                        const worldNameMap = {
+                            CN:'China','中国':'China',
+                            US:'United States of America','USA':'United States of America','United States':'United States of America','美国':'United States of America',
+                            RU:'Russia','Russian Federation':'Russia','俄罗斯':'Russia',
+                            JP:'Japan','日本':'Japan',
+                            KR:'Korea','South Korea':'Korea','韩国':'Korea',
+                            KP:'North Korea','朝鲜':'North Korea',
+                            DE:'Germany','德国':'Germany',
+                            FR:'France','法国':'France',
+                            GB:'United Kingdom','UK':'United Kingdom','United Kingdom':'United Kingdom','英国':'United Kingdom',
+                            IT:'Italy','意大利':'Italy',
+                            ES:'Spain','西班牙':'Spain',
+                            CA:'Canada','加拿大':'Canada',
+                            AU:'Australia','澳大利亚':'Australia',
+                            BR:'Brazil','巴西':'Brazil',
+                            IN:'India','印度':'India',
+                            MX:'Mexico','墨西哥':'Mexico',
+                            ID:'Indonesia','印尼':'Indonesia',
+                            TH:'Thailand','泰国':'Thailand',
+                            SG:'Singapore','新加坡':'Singapore',
+                            MY:'Malaysia','马来西亚':'Malaysia',
+                            PH:'Philippines','菲律宾':'Philippines',
+                            VN:'Vietnam','越南':'Vietnam',
+                            SA:'Saudi Arabia','沙特阿拉伯':'Saudi Arabia',
+                            AE:'United Arab Emirates','阿联酋':'United Arab Emirates',
+                            TR:'Turkey','土耳其':'Turkey',
+                            IR:'Iran','伊朗':'Iran',
+                            ZA:'South Africa','南非':'South Africa',
+                            NG:'Nigeria','尼日利亚':'Nigeria',
+                            EG:'Egypt','埃及':'Egypt',
+                            AR:'Argentina','阿根廷':'Argentina',
+                            CO:'Colombia','哥伦比亚':'Colombia',
+                            CL:'Chile','智利':'Chile',
+                            PE:'Peru','秘鲁':'Peru',
+                            NL:'Netherlands','荷兰':'Netherlands',
+                            BE:'Belgium','比利时':'Belgium',
+                            CH:'Switzerland','瑞士':'Switzerland',
+                            SE:'Sweden','瑞典':'Sweden',
+                            NO:'Norway','挪威':'Norway',
+                            DK:'Denmark','丹麦':'Denmark',
+                            FI:'Finland','芬兰':'Finland',
+                            PL:'Poland','波兰':'Poland',
+                            UA:'Ukraine','乌克兰':'Ukraine',
+                            CZ:'Czech Republic','Czechia':'Czech Republic','捷克':'Czech Republic',
+                            AT:'Austria','奥地利':'Austria',
+                            IE:'Ireland','爱尔兰':'Ireland',
+                            IL:'Israel','以色列':'Israel',
+                            NZ:'New Zealand','新西兰':'New Zealand',
+                            QA:'Qatar','卡塔尔':'Qatar',
+                            KW:'Kuwait','科威特':'Kuwait',
+                            HK:'Hong Kong','香港':'Hong Kong',
+                            TW:'Taiwan','台湾':'Taiwan'
+                        };
+                        const mapCountryName = (r) => {
+                            const code = String(r.country_code || '').toUpperCase();
+                            const raw = (r.country || '').trim();
+                            if (code && worldNameMap[code]) return worldNameMap[code];
+                            if (raw && worldNameMap[raw]) return worldNameMap[raw];
+                            if (code) return code;
+                            return raw || 'Unknown';
+                        };
+                        const worldData = (countries || []).map(r => ({
+                            name: mapCountryName(r),
+                            value: Number(r.ips || 0)
+                        }));
+                        const maxWorld = worldData.reduce((m, r) => Math.max(m, r.value || 0), 0) || 1;
+                        worldChart.setOption({
+                            tooltip: {
+                                trigger: 'item',
+                                formatter: (p) => `${p.name}<br/>IP: ${Number(p.value || 0)}`
+                            },
+                            visualMap: {
+                                min: 0,
+                                max: maxWorld,
+                                text: ['多','少'],
+                                left: 'left',
+                                bottom: '5%',
+                                inRange: { color: ['#deedfb', '#1690ff'] },
+                                calculable: true
+                            },
+                            series: [{
+                                type: 'map',
+                                map: 'world',
+                                nameMap: worldNameMap,
+                                roam: true,
+                                emphasis: { label: { show: false } },
+                                data: worldData
+                            }]
+                        });
+                        window.addEventListener('resize', () => worldChart.resize());
                     }
-                }
 
-                function blockRoot(domain) {
-                    // 智能推导根域名 (处理普通域名和 .com.cn 等复合后缀)
-                    let parts = domain.split('.');
-                    let defaultRoot = '*.' + domain;
-                    
-                    if (parts.length > 2) {
-                        if (parts[parts.length - 1].length === 2 && parts[parts.length - 2].length <= 3) {
-                            defaultRoot = '*.' + parts.slice(-3).join('.');
-                        } else {
-                            defaultRoot = '*.' + parts.slice(-2).join('.');
-                        }
-                    }
-
-                    let userConfirmedRule = prompt('请确认要屏蔽的通配符规则：\n这将屏蔽该规则下的所有子域名。', defaultRoot);
-                    if (userConfirmedRule && userConfirmedRule.trim() !== '') {
-                        submitBlockForm(userConfirmedRule.trim());
+                    const cnEl = document.getElementById('chinaRegionMap');
+                    if (cnEl) {
+                        const cnChart = echarts.init(cnEl);
+                        const cnData = (provinces || []).map(r => ({ name: r.region || '未知', value: Number(r.ips || 0) }));
+                        const maxCn = cnData.reduce((m, r) => Math.max(m, r.value || 0), 0) || 1;
+                        cnChart.setOption({
+                            tooltip: { trigger: 'item', formatter: '{b}<br/>IP: {c}' },
+                            visualMap: {
+                                min: 0,
+                                max: maxCn,
+                                left: 'left',
+                                bottom: '5%',
+                                text: ['多','少'],
+                                inRange: { color: ['#deedfb', '#1690ff'] },
+                                calculable: true
+                            },
+                            series: [{
+                                type: 'map',
+                                map: 'china',
+                                roam: true,
+                                emphasis: { label: { show: true } },
+                                data: cnData
+                            }]
+                        });
+                        window.addEventListener('resize', () => cnChart.resize());
                     }
                 }
             </script>
