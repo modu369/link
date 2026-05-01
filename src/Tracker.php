@@ -3688,12 +3688,12 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
     }
 
     public function getVisitorEnv(int $siteId, string $range = 'today'): array
-    {
-        return [
-            'devices' => $this->getDeviceBreakdown($siteId, $range),
-            'browsers' => $this->getBrowserBreakdown($siteId, $range),
-        ];
-    }
+{
+    return [
+        'devices' => $this->getDeviceBreakdown($siteId, $range),
+        'browsers' => $this->getBrowserBreakdown($siteId, $range, 50), 
+    ];
+}
 
     public function getRegionData(int $siteId, string $range = 'today'): array
     {
