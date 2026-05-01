@@ -5967,14 +5967,21 @@ public function getDeviceBreakdown(int $siteId, string $range): array
             [$start, $end] = $this->rollupRangeBounds($range);
             $span = $this->rollupSpanForRange($siteId, $start, $end);
             if ($span) {
-                $rollup = $this->aggregateDimensionRollups($siteId, 'browser', $span['start'], $span['end'], $limit);
+                // 1. 将查询条数放大（例如乘以 3），防止在 SQL 阶段按 PV 截断时丢弃了高 IP 但低 PV 的小众浏览器
+                $rollup = $this->aggregateDimensionRollups($siteId, 'browser', $span['start'], $span['end'], $limit * 3);
 
                 if (!empty($rollup)) {
-                    return array_map(fn ($row) => [
+                    $browsers = array_map(fn ($row) => [
                         'browser' => $row['dimension_value'],
                         'views' => (int) ($row['views'] ?? 0),
                         'ips' => (int) ($row['ips'] ?? 0),
                     ], $rollup);
+
+                    // 2. 新增：使用 usort 按照 ips (独立 IP 数) 降序排列
+                    usort($browsers, fn($a, $b) => $b['ips'] <=> $a['ips']);
+
+                    // 3. 截取最终需要展示的数量并返回
+                    return array_slice($browsers, 0, $limit);
                 }
             }
             return [];
