@@ -102,7 +102,7 @@ render_topbar($branding);
                 </div>
 
                 <table>
-                    <thead><tr><th>浏览器</th><th>PV</th><th>IP</th></tr></thead>
+                    <thead><tr><th>浏览器</th><th>IP</th><th>PV</th></tr></thead>
                     <tbody>
                     <?php if (empty($data['browsers'])): ?>
                         <tr><td colspan="3" class="muted">暂无数据</td></tr>
@@ -114,8 +114,8 @@ render_topbar($branding);
                         ?>
                             <tr>
                                 <td><?= htmlspecialchars($row['browser'], ENT_QUOTES, 'UTF-8') ?></td>
-                                <td><?= (int) $row['views'] ?></td>
                                 <td><?= (int) $row['ips'] ?></td>
+                                <td><?= (int) $row['views'] ?></td>
                             </tr>
                         <?php endforeach; ?>
                     <?php endif; ?>
