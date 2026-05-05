@@ -16,11 +16,28 @@ render_topbar($branding);
     .pill-tag { background:#deedfb; color:#1690ff; padding:4px 10px; border-radius:999px; font-weight:700; border:1px solid var(--border); }
     .heat-bar { height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin-top: 6px; }
     .heat-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #ef4444); border-radius: 3px; }
+    
+    /* 新增：精美序号样式 */
+    .rank-badge {
+        display: inline-block;
+        width: 24px;
+        height: 24px;
+        line-height: 24px;
+        text-align: center;
+        border-radius: 6px; /* 使用微圆角 */
+        font-weight: bold;
+        font-size: 13px;
+        color: #475569;
+        background: #f1f5f9;
+    }
+    .rank-1 { background: #fef08a; color: #b45309; box-shadow: 0 2px 4px rgba(250, 204, 21, 0.3); } /* 🥇 金 */
+    .rank-2 { background: #e2e8f0; color: #475569; box-shadow: 0 2px 4px rgba(148, 163, 184, 0.2); } /* 🥈 银 */
+    .rank-3 { background: #ffedd5; color: #c2410c; box-shadow: 0 2px 4px rgba(251, 146, 60, 0.2); } /* 🥉 铜 */
 </style>
 
 <div class="data-layout">
     <?php render_sidebar($sites, $siteId, $selectedSite, 'content_analysis', $range); ?>
-<main class="content">
+    <main class="content">
         <?php if (!$selectedSite): ?>
             <div class="card empty">请先选择一个站点。</div>
         <?php else: ?>
@@ -42,6 +59,7 @@ render_topbar($branding);
                         <table>
                             <thead>
                             <tr>
+                                <th style="width: 60px; text-align: center;">排名</th>
                                 <th>网页标题</th>
                                 <th style="width: 18%">综合热度分</th>
                                 <th style="width: 12%">IP 数</th>
@@ -52,12 +70,18 @@ render_topbar($branding);
                             <tbody>
                             <?php 
                             $maxHeat = max(array_column($data, 'heat_score')) ?: 1; 
+                            $rank = 1; // 新增：定义初始序号
                             foreach ($data as $row): 
                                 $percent = round(($row['heat_score'] / $maxHeat) * 100, 1);
+                                // 新增：前三名附加特定的高亮 Class
+                                $rankClass = $rank <= 3 ? 'rank-' . $rank : '';
                             ?>
                                 <tr>
+                                    <td style="text-align: center;">
+                                        <span class="rank-badge <?= $rankClass ?>"><?= $rank ?></span>
+                                    </td>
                                     <td>
-                                        <div style="font-weight: 600; color: #1e293b; max-width: 600px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="<?= htmlspecialchars($row['title']) ?>">
+                                        <div style="font-weight: 600; color: #1e293b; max-width: 650px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="<?= htmlspecialchars($row['title']) ?>">
                                             <?= htmlspecialchars($row['title']) ?>
                                         </div>
                                     </td>
@@ -69,7 +93,10 @@ render_topbar($branding);
                                     <td><?= (int) $row['uniques'] ?></td>
                                     <td><?= (int) $row['views'] ?></td>
                                 </tr>
-                            <?php endforeach; ?>
+                            <?php 
+                                $rank++; // 新增：序号递增
+                            endforeach; 
+                            ?>
                             </tbody>
                         </table>
                     </div>
