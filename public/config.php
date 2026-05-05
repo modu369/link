@@ -109,7 +109,7 @@ render_topbar($branding);
                         <tr>
                             <td><?= htmlspecialchars($domain['domain'], ENT_QUOTES, 'UTF-8') ?></td>
                             <td>
-                                <form method="post" onsubmit="return confirm('确定删除该域名吗？');" style="margin:0;">
+                                <form method="post" onsubmit="return confirm('确定删除域名（ <?= htmlspecialchars($domain['domain'], ENT_QUOTES, 'UTF-8') ?>） 吗？');" style="margin:0;">
                                     <input type="hidden" name="action" value="delete_domain">
                                     <input type="hidden" name="domain_id" value="<?= (int) $domain['id'] ?>">
                                     <button type="submit" class="ghost" style="color:#b91c1c;border-color:#fca5a5;">删除</button>
