@@ -12,7 +12,7 @@ if (!$GLOBALS['is_admin']) {
 $message = null;
 $error = null;
 
-// 处理添加用户逻辑
+// 处理添加/删除用户逻辑
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     
@@ -38,16 +38,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'delete_user') {
         $uid = (int)($_POST['uid'] ?? 0);
         if ($uid > 0) {
+            // 1. 获取该用户所有的站点 ID，用于清理配置类关联数据
+            $stmt = $db->prepare('SELECT id FROM sites WHERE user_id = ?');
+            $stmt->execute([$uid]);
+            $siteIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+            if (!empty($siteIds)) {
+                $inQuery = implode(',', array_fill(0, count($siteIds), '?'));
+                
+                // 删除站点的域名配置
+                $db->prepare("DELETE FROM site_domains WHERE site_id IN ($inQuery)")->execute($siteIds);
+                
+                // 删除站点的屏蔽域名配置
+                $db->prepare("DELETE FROM site_blocked_domains WHERE site_id IN ($inQuery)")->execute($siteIds);
+            }
+
+            // 2. 删除用户的分享页列表
+            $db->prepare('DELETE FROM share_pages WHERE user_id = ?')->execute([$uid]);
+            
+            // 3. 删除用户的所有站点记录
             $db->prepare('DELETE FROM sites WHERE user_id = ?')->execute([$uid]);
             
+            // 4. 最后删除用户本身
             $db->prepare('DELETE FROM users WHERE id = ?')->execute([$uid]);
             
-            $message = "用户及其站点已删除";
+            $message = "用户及其关联的站点、分享、域名配置已成功删除。原始统计数据将由系统自动清理。";
         }
     }
 }
 
-// 【修改点】：使用子查询统计每个用户的站点数量
+// 使用子查询统计每个用户的站点数量
 $users = $db->query('
     SELECT u.id, u.username, u.nickname, u.created_at, 
            (SELECT COUNT(*) FROM sites WHERE user_id = u.id) as site_count 
@@ -107,9 +127,9 @@ render_topbar($branding);
                             <td><span class="pill"><?= (int)$u['site_count'] ?></span></td>
                             <td><?= $u['created_at'] ?></td>
                             <td style="text-align:right; display:flex; gap:8px; justify-content:flex-end;">
-                                <a href="/admin_view_user_sites.php?uid=<?= $u['id'] ?>" class="filter-btn" style="padding:4px 10px; font-size:12px; text-decoration:none;">查看站点</a>
+                                <a href="/admin_view_user_sites.php?uid=<?= $u['id'] ?>" class="filter-btn" style="padding:4px 10px; font-size:12px; text-decoration:none;">查看详情</a>
                                 
-                                <form method="post" style="margin:0;" onsubmit="return confirm('确定要删除该用户及其站点吗？');">
+                                <form method="post" style="margin:0;" onsubmit="return confirm('确定要彻底删除该用户及其关联的站点和分享页吗？');">
                                     <input type="hidden" name="action" value="delete_user">
                                     <input type="hidden" name="uid" value="<?= $u['id'] ?>">
                                     <button type="submit" class="ghost" style="padding:4px 8px; font-size:12px; color:#ef4444; border-color:#fca5a5;">删除</button>
