@@ -38,9 +38,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'delete_user') {
         $uid = (int)($_POST['uid'] ?? 0);
         if ($uid > 0) {
-            // 注意：删除用户建议先检查其下是否有站点，或者在数据库设置级联删除
+            $db->prepare('DELETE FROM sites WHERE user_id = ?')->execute([$uid]);
+            
             $db->prepare('DELETE FROM users WHERE id = ?')->execute([$uid]);
-            $message = "用户已删除";
+            
+            $message = "用户及其站点已删除";
         }
     }
 }
@@ -107,7 +109,7 @@ render_topbar($branding);
                             <td style="text-align:right; display:flex; gap:8px; justify-content:flex-end;">
                                 <a href="/admin_view_user_sites.php?uid=<?= $u['id'] ?>" class="filter-btn" style="padding:4px 10px; font-size:12px; text-decoration:none;">查看站点</a>
                                 
-                                <form method="post" style="margin:0;" onsubmit="return confirm('确定删除该用户吗？');">
+                                <form method="post" style="margin:0;" onsubmit="return confirm('确定要删除该用户及其站点吗？');">
                                     <input type="hidden" name="action" value="delete_user">
                                     <input type="hidden" name="uid" value="<?= $u['id'] ?>">
                                     <button type="submit" class="ghost" style="padding:4px 8px; font-size:12px; color:#ef4444; border-color:#fca5a5;">删除</button>
