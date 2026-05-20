@@ -3291,7 +3291,8 @@ private function markVisitorAudienceState(int $siteId, string $visitorId): array
             str_contains($ua, '2345explorer') || str_contains($ua, '2345chrome') || str_contains($ua, 'mb2345') => '2345',
             str_contains($ua, 'lbbrowser') => '猎豹',
             str_contains($ua, '360se') || str_contains($ua, '360ee') || str_contains($ua, 'qihoobrowser') => '360',
-            str_contains($ua, 'goldbrowser') => '悟空',
+            str_contains($ua, 'wukong-browser') => '悟空 PC',
+            str_contains($ua, 'goldbrowser') || str_contains($ua, 'bytedancewebview') => '悟空',
             
             // 手机厂商自带浏览器
             str_contains($ua, 'xiaomi') || str_contains($ua, 'miuibrowser') => '小米',
@@ -3330,7 +3331,8 @@ private function markVisitorAudienceState(int $siteId, string $visitorId): array
             WHEN LOWER({$prefix}user_agent) REGEXP '2345explorer|2345chrome|mb2345' THEN '2345'
             WHEN LOWER({$prefix}user_agent) REGEXP 'lbbrowser' THEN '猎豹'
             WHEN LOWER({$prefix}user_agent) REGEXP '360se|360ee|qihoobrowser' THEN '360'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'goldbrowser' THEN '悟空'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'wukong-browser' THEN '悟空 PC'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'goldbrowser|bytedancewebview' THEN '悟空'
             WHEN LOWER({$prefix}user_agent) REGEXP 'xiaomi|miuibrowser' THEN '小米'
             WHEN LOWER({$prefix}user_agent) REGEXP 'huaweibrowser|huawei|hbpc' THEN '华为'
             WHEN LOWER({$prefix}user_agent) REGEXP 'vivobrowser' THEN 'Vivo'
