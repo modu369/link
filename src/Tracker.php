@@ -687,7 +687,7 @@ $proxyRisk = $this->isProxySuspicious(
         $dailyUvKey = "site:{$sid}:hll_uv:{$todayStr}";
         $device = $isMobile ? 'mobile' : 'desktop';
         $dailyDeviceIpKey = "site:{$sid}:hll_ip_{$device}:{$todayStr}";
-
+        $dailyAudienceIpKey = "site:{$sid}:hll_ip_{$audienceLabel}:{$todayStr}";
         $dimHostVal = $canonicalHost ?: '未知域名';
         $dimHostDeviceVal = $dimHostVal . '|' . $device;
         // 使用 MD5 防止域名中的特殊符号破坏 Redis 结构
@@ -700,11 +700,12 @@ $proxyRisk = $this->isProxySuspicious(
             $this->redis->pfAdd($dailyDeviceIpKey, [$ipHash]);
             $this->redis->pfAdd($dailyHostKey, [$ipHash]);
             $this->redis->pfAdd($dailyHostDeviceKey, [$ipHash]);
-            
+            $this->redis->pfAdd($dailyAudienceIpKey, [$ipHash]);
             $this->redis->expire($dailyIpKey, 86400 * 8);
             $this->redis->expire($dailyDeviceIpKey, 86400 * 8);
             $this->redis->expire($dailyHostKey, 86400 * 8);
             $this->redis->expire($dailyHostDeviceKey, 86400 * 8);
+            $this->redis->expire($dailyAudienceIpKey, 86400 * 8);
         }
         if ($visitorId) {
             $this->redis->pfAdd($dailyUvKey, [$visitorId]);
@@ -6122,47 +6123,82 @@ public function getRegionStats(int $siteId, string $range, int $limit = 50): arr
 
     public function getNewVsReturning(int $siteId, string $range): array
     {
-        // 缓存键名升至 _v4，确保立即跳过旧的慢查询缓存
-        $cacheKey = "new_vs_returning:{$siteId}:{$range}_v4";
+        // 缓存键名升至 _v5，确保立即跳过旧的慢查询缓存
+        $cacheKey = "new_vs_returning:{$siteId}:{$range}_v5";
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
             [$start, $end] = $this->rollupRangeBounds($range);
 
-            // 1. 获取全站精准去重访客总数 (优先使用 Redis HLL，秒级返回)
+            // 1. 获取全站精准去重 UV 和 绝对去重总 IP
             $totalUv = 0;
+            $totalIp = 0;
             $uvKeys = $this->getHllKeysForRange($siteId, 'hll_uv', $range);
+            $ipKeys = $this->getHllKeysForRange($siteId, 'hll_ip', $range);
+            
             if (!empty($uvKeys)) {
                 $totalUv = (int) $this->redis->pfCount($uvKeys);
             }
-            // 如果 HLL 过期或不可用，回退到 pageview_rollups 聚合表
-            if ($totalUv === 0) {
+            if (!empty($ipKeys)) {
+                $totalIp = (int) $this->redis->pfCount($ipKeys);
+            }
+            
+            // 降级兜底
+            if ($totalUv === 0 || $totalIp === 0) {
                 $totals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
-                $totalUv = (int) ($totals['uniques'] ?? 0);
+                $totalUv = $totalUv ?: (int) ($totals['uniques'] ?? 0);
+                $totalIp = $totalIp ?: (int) ($totals['ip_count'] ?? 0);
             }
 
-            // 2. 彻底抛弃明细表扫描，直接读取 rollup_worker 预热好的聚合结果
+            // 2. 读取 SQL 聚合基础数据（获取 PV 以及为历史数据提供基数）
             $span = $this->rollupSpanForRange($siteId, $start, $end);
             $rows = $span ? $this->aggregateDimensionRollups($siteId, 'audience', $span['start'], $span['end'], 2) : [];
             
-            $newViews = 0; $returningViews = 0; $newIps = 0; $returningIps = 0;
+            $newViews = 0; $returningViews = 0; $sqlNewIps = 0; $sqlReturningIps = 0;
             foreach ($rows as $row) {
                 $val = $row['dimension_value'] ?? '';
                 if ($val === 'new') {
                     $newViews += (int) ($row['views'] ?? 0);
-                    // 因为一个新访客只会在其“首访小时”被聚合为 new
-                    // 不同小时的 new ips 累加即为精准的全天新访客 UV
-                    $newIps += (int) ($row['ips'] ?? 0); 
+                    $sqlNewIps += (int) ($row['ips'] ?? 0); 
                 } elseif ($val === 'returning') {
                     $returningViews += (int) ($row['views'] ?? 0);
-                    $returningIps += (int) ($row['ips'] ?? 0);
+                    $sqlReturningIps += (int) ($row['ips'] ?? 0);
                 }
             }
 
-            // 3. 计算最终的新老访客 UV 分布
-            $newUv = $newIps; 
+            // 3. 读取全新的 HLL 独立精准去重新老访客 IP
+            $newIpKeys = $this->getHllKeysForRange($siteId, 'hll_ip_new', $range);
+            $returningIpKeys = $this->getHllKeysForRange($siteId, 'hll_ip_returning', $range);
+            
+            // 检查是否有 HLL 新版数据产生
+            if (!empty($newIpKeys) && $this->redis->exists($newIpKeys[0] ?? '') !== 0) {
+                $finalNewIps = (int) $this->redis->pfCount($newIpKeys);
+                $finalReturningIps = (int) $this->redis->pfCount($returningIpKeys);
+            } else {
+                // 如果是历史数据，则直接使用 SQL 累加虚高值作为基数
+                $finalNewIps = $sqlNewIps;
+                $finalReturningIps = $sqlReturningIps;
+            }
+
+            // ==========================================
+            // = 核心修正：等比收敛算法，强制对齐总 IP =
+            // ==========================================
+            // 由于存在同一个公网 IP (网吧/公司) 下同时包含新老设备的情况，
+            // 导致绝对真实的 (New IP + Returning IP) 也会略微 > Total IP。
+            // 加上如果属于老数据的 SQL 累加，这个差距会极大。
+            // 在此将其按比例强制压缩，使其和恰好等于全局去重总 IP，杜绝图表不合理。
+            $sumIps = $finalNewIps + $finalReturningIps;
+            if ($sumIps > $totalIp && $totalIp > 0) {
+                $ratio = $totalIp / $sumIps;
+                $finalNewIps = (int) round($finalNewIps * $ratio);
+                // 使用减法而非乘法，确保相加之和绝对等于 totalIp，不留 1 个 IP 的小数浮点误差
+                $finalReturningIps = max(0, $totalIp - $finalNewIps);
+            }
+
+            // 4. 计算最终的新老访客 UV 分布（保持逻辑对齐）
+            $newUv = $finalNewIps; 
             $returningUv = max(0, $totalUv - $newUv);
 
-            // 极端情况对齐 (如 HLL 误差导致新访客 > 总访客)
+            // 极端情况防御对齐
             if ($newUv > $totalUv && $totalUv > 0) {
                 $newUv = $totalUv;
                 $returningUv = 0;
@@ -6171,9 +6207,9 @@ public function getRegionStats(int $siteId, string $range, int $limit = 50): arr
             return [
                 'new' => $newViews, // 新访客 PV
                 'returning' => $returningViews, 
-                'new_ips' => $newIps,
-                'returning_ips' => $returningIps,
-                'new_uv' => $newUv, // <--- 顶部指标卡显示的【精准新访客数】
+                'new_ips' => $finalNewIps,           // <--- 已彻底修复的 IP 数据
+                'returning_ips' => $finalReturningIps, // <--- 已彻底修复的 IP 数据
+                'new_uv' => $newUv, 
                 'returning_uv' => $returningUv,
             ];
         });
