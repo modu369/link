@@ -42,14 +42,18 @@ if ($domainFilter !== 'all' && !in_array($domainFilter, $domainOptions, true)) {
 }
 
 $data = $selectedSite ? $tracker->getKeywordData($siteId, $range, $domainFilter === 'all' ? null : $domainFilter) : null;
-$engineCounts = $data ? ($data['engine_counts'] ?? []) : [];
 $keywordRows = $data ? ($data['keywords'] ?? []) : [];
-if ($engine !== 'all') {
-    $keywordRows = array_values(array_filter($keywordRows, function (array $row) use ($engine) {
-        $engines = array_map('trim', explode('/', (string) ($row['engines'] ?? '')));
-        return in_array($engine, $engines, true);
-    }));
-}
+
+// === 1. 过滤掉纯小写英文和纯小写英文加数字的垃圾词 ===
+$keywordRows = array_values(array_filter($keywordRows, function (array $row) {
+    $keyword = trim((string)($row['keyword'] ?? ''));
+    if (preg_match('/^[a-z0-9]+$/', $keyword) && preg_match('/[a-z]/', $keyword)) {
+        return false;
+    }
+    return true;
+}));
+
+// === 2. 域名过滤（必须提前执行，确保统计的基数准确） ===
 if ($domainFilter !== 'all') {
     $keywordRows = array_values(array_filter($keywordRows, function (array $row) use ($domainFilter) {
         $entryRaw = trim((string) ($row['entry'] ?? ''));
@@ -59,6 +63,36 @@ if ($domainFilter !== 'all') {
         $entryRaw = ltrim($entryRaw, '/');
         $host = strtolower(explode('/', $entryRaw)[0] ?? '');
         return $host === strtolower($domainFilter);
+    }));
+}
+
+// === 3. 重新计算各搜索引擎的词数（替代原有的 $engineCounts） ===
+$newEngineCounts = [];
+foreach ($keywordRows as $row) {
+    // 按 "/" 拆分出所有的搜索引擎 (比如 "百度 / 谷歌")
+    $enginesList = array_map('trim', explode('/', (string)($row['engines'] ?? '')));
+    foreach ($enginesList as $eng) {
+        if ($eng === '') continue;
+        if (!isset($newEngineCounts[$eng])) {
+            $newEngineCounts[$eng] = 0;
+        }
+        $newEngineCounts[$eng]++;
+    }
+}
+$engineCounts = [];
+foreach ($newEngineCounts as $eng => $count) {
+    $engineCounts[] = ['engine' => $eng, 'total' => $count];
+}
+// 按词数从大到小降序排列
+usort($engineCounts, function($a, $b) {
+    return $b['total'] <=> $a['total'];
+});
+
+// === 4. 引擎类别过滤（仅作用于下方表格显示，不影响上方统计栏） ===
+if ($engine !== 'all') {
+    $keywordRows = array_values(array_filter($keywordRows, function (array $row) use ($engine) {
+        $enginesList = array_map('trim', explode('/', (string) ($row['engines'] ?? '')));
+        return in_array($engine, $enginesList, true);
     }));
 }
 $totalKeywords = count($keywordRows);
