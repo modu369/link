@@ -139,7 +139,15 @@ if ($isSpider) {
   }
   if (!siteId) return;
 
-  var getRealReferrer = function() {
+var getRealReferrer = function() {
+    try {
+      if (window.parent !== window && typeof window.parent.__real_ref !== 'undefined') {
+        if (window.parent.__real_ref !== null) {
+          return window.parent.__real_ref;
+        }
+      }
+    } catch(e) {}
+
     var ref = '';
     try { ref = window.top.document.referrer; } catch(e) {
       try { ref = window.parent.document.referrer; } catch(e2) {
