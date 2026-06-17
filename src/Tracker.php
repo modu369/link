@@ -3444,10 +3444,17 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
             return [];
         }
 
+        // 修改：使用 LEFT JOIN 从维度表(device=mobile)把移动端 IP 聚合出来
         $statement = $this->db->prepare(
-            "SELECT DATE(bucket_start) as day, SUM(pv) as views, SUM(uv) as uniques, SUM(ip_count) as ip_count
-             FROM pageview_rollups
-             WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end
+            "SELECT DATE(r.bucket_start) as day, 
+                    SUM(r.pv) as views, 
+                    SUM(r.uv) as uniques, 
+                    SUM(r.ip_count) as ip_count,
+                    SUM(COALESCE(d.ip_count, 0)) as mobile_ips
+             FROM pageview_rollups r
+             LEFT JOIN pageview_dimension_rollups d 
+               ON r.site_id = d.site_id AND r.bucket_start = d.bucket_start AND d.dimension_type = 'device' AND d.dimension_value = 'mobile'
+             WHERE r.site_id = :site_id AND r.bucket_start >= :start AND r.bucket_start < :end
              GROUP BY day
              ORDER BY day ASC"
         );
@@ -3460,18 +3467,21 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
 
         $rows = $statement->fetchAll();
 
-        // 【后续补充】：使用当天的 HLL 精确覆盖图表中的按天 IP/UV
         foreach ($rows as &$row) {
             $ymd = date('Ymd', strtotime($row['day']));
             $ipKey = "site:{$siteId}:hll_ip:{$ymd}";
             $uvKey = "site:{$siteId}:hll_uv:{$ymd}";
+            // 新增：提取 Redis 里的移动端 IP 精确值
+            $mobileIpKey = "site:{$siteId}:hll_ip_mobile:{$ymd}"; 
             
-            // 如果 Redis 中存在 HLL 记录（即升级之后产生的数据），则使用精确值
             if ($this->redis->exists($ipKey)) {
                 $row['ip_count'] = (int) $this->redis->pfCount($ipKey);
             }
             if ($this->redis->exists($uvKey)) {
                 $row['uniques'] = (int) $this->redis->pfCount($uvKey);
+            }
+            if ($this->redis->exists($mobileIpKey)) {
+                $row['mobile_ips'] = (int) $this->redis->pfCount($mobileIpKey);
             }
         }
 
@@ -3484,11 +3494,18 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
             return [];
         }
 
+        // 修改：连表查出 hourly 维度的移动端 IP
         $statement = $this->db->prepare(
-            "SELECT bucket_start as hour, pv as views, uv as uniques, ip_count as ips
-             FROM pageview_rollups
-             WHERE site_id = :site_id AND bucket_start >= :start AND bucket_start < :end
-             ORDER BY bucket_start ASC"
+            "SELECT r.bucket_start as hour, 
+                    r.pv as views, 
+                    r.uv as uniques, 
+                    r.ip_count as ips,
+                    COALESCE(d.ip_count, 0) as mobile_ips
+             FROM pageview_rollups r
+             LEFT JOIN pageview_dimension_rollups d 
+               ON r.site_id = d.site_id AND r.bucket_start = d.bucket_start AND d.dimension_type = 'device' AND d.dimension_value = 'mobile'
+             WHERE r.site_id = :site_id AND r.bucket_start >= :start AND r.bucket_start < :end
+             ORDER BY r.bucket_start ASC"
         );
 
         $statement->execute([
@@ -6307,11 +6324,13 @@ public function getRegionStats(int $siteId, string $range, int $limit = 50): arr
                 'views' => (int) $row['views'],
                 'uniques' => (int) $row['uniques'],
                 'ips' => (int) $row['ips'],
+                'mobile_ips' => (int) ($row['mobile_ips'] ?? 0), // 新增
             ];
         }
 
         $labels = [];
-        $series = ['views' => [], 'uniques' => [], 'ips' => []];
+        // 新增 series 字段
+        $series = ['views' => [], 'uniques' => [], 'ips' => [], 'mobile_ips' => []];
 
         for ($i = 0; $i < 24; $i++) {
             $label = $dayStart->modify("+{$i} hour")->format('H:00');
@@ -6319,6 +6338,7 @@ public function getRegionStats(int $siteId, string $range, int $limit = 50): arr
             $series['views'][] = $map[$label]['views'] ?? 0;
             $series['uniques'][] = $map[$label]['uniques'] ?? 0;
             $series['ips'][] = $map[$label]['ips'] ?? 0;
+            $series['mobile_ips'][] = $map[$label]['mobile_ips'] ?? 0; // 新增
         }
 
         return ['labels' => $labels, 'series' => $series];
@@ -6333,11 +6353,13 @@ public function getRegionStats(int $siteId, string $range, int $limit = 50): arr
                 'views' => (int) $row['views'],
                 'uniques' => (int) $row['uniques'],
                 'ips' => (int) $row['ip_count'],
+                'mobile_ips' => (int) ($row['mobile_ips'] ?? 0), // 新增
             ];
         }
 
         $labels = [];
-        $series = ['views' => [], 'uniques' => [], 'ips' => []];
+        // 新增 series 字段
+        $series = ['views' => [], 'uniques' => [], 'ips' => [], 'mobile_ips' => []];
         $period = new DatePeriod($start, new DateInterval('P1D'), $end->modify('+1 day'));
 
         foreach ($period as $date) {
@@ -6346,11 +6368,11 @@ public function getRegionStats(int $siteId, string $range, int $limit = 50): arr
             $series['views'][] = $map[$day]['views'] ?? 0;
             $series['uniques'][] = $map[$day]['uniques'] ?? 0;
             $series['ips'][] = $map[$day]['ips'] ?? 0;
+            $series['mobile_ips'][] = $map[$day]['mobile_ips'] ?? 0; // 新增
         }
 
         return ['labels' => $labels, 'series' => $series];
     }
-
     public function rangeWindow(string $range): array
     {
         $now = new DateTimeImmutable('now');
