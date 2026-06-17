@@ -132,14 +132,17 @@ render_topbar($branding);
                 </div>
             </section>
 
-<?php if ($showTrend): ?>
+            <?php if ($showTrend): ?>
                 <section class="card">
                     <div class="section-title" style="justify-content: space-between; gap: 12px; flex-wrap: wrap;">
                         <div class="trend-controls">
                             <h3 style="margin:0;">趋势热力</h3>
-                            <span class="pill-tag"><?= $trend['granularity'] === 'hour' ? '小时对比' : '按天走势' ?></span>
+                            <div class="trend-toggle main-type-toggle" style="display:flex; gap:8px;">
+                                <button class="active" data-type="total">总趋势</button>
+                                <button data-type="mobile">移动趋势</button>
+                            </div>
                         </div>
-                        <div class="trend-toggle">
+                        <div class="trend-toggle metric-toggle">
                             <button class="active" data-metric="ips">IP</button>
                             <button data-metric="uniques">UV</button>
                             <button data-metric="views">PV</button>
@@ -269,17 +272,22 @@ render_topbar($branding);
 
             <script src="/t_statics/js/echarts.min.js"></script>
             <script src="/t_statics/js/china.js"></script>
-<script>
+            <script>
                 <?php if ($showTrend): ?>
                 const trendData = <?= json_encode($trend, JSON_UNESCAPED_UNICODE) ?>;
                 const ctxDaily = document.getElementById('dailyTrendChart');
                 let trendChart = null;
+                let currentType = 'total';
+                let currentMetric = 'ips';
 
-                const renderTrend = (metric = 'ips') => {
+                const renderTrend = () => {
                     if (!ctxDaily || !window.echarts || !trendData) return;
                     
                     if (trendChart) trendChart.dispose();
                     trendChart = echarts.init(ctxDaily);
+
+                    // 核心逻辑：如果是移动趋势，则强制读取 mobile_ips 数据
+                    let actualMetric = currentType === 'mobile' ? 'mobile_ips' : currentMetric;
 
                     const series = [];
                     const legends = [];
@@ -289,7 +297,7 @@ render_topbar($branding);
                         legends.push(trendData.primary_label);
                         series.push({
                             name: trendData.primary_label,
-                            data: trendData.primary[metric] || [],
+                            data: trendData.primary[actualMetric] || new Array(trendData.labels.length).fill(0),
                             type: 'line',
                             smooth: false, // <-- 核心修改：关闭平滑，改为直接折下（硬拐角直线）
                             symbol: 'circle',
@@ -311,7 +319,7 @@ render_topbar($branding);
                         legends.push(trendData.compare_label);
                         series.push({
                             name: trendData.compare_label,
-                            data: trendData.compare[metric] || [],
+                            data: trendData.compare[actualMetric] || new Array(trendData.labels.length).fill(0),
                             type: 'line',
                             smooth: false, // <-- 核心修改：关闭平滑，改为直接折下（硬拐角直线）
                             symbol: 'circle',
@@ -426,15 +434,33 @@ render_topbar($branding);
                     window.addEventListener('resize', () => trendChart.resize());
                 };
 
-                document.querySelectorAll('.trend-toggle button').forEach(btn => {
+                // 绑定主趋势切换事件
+                document.querySelectorAll('.main-type-toggle button').forEach(btn => {
                     btn.addEventListener('click', () => {
-                        document.querySelectorAll('.trend-toggle button').forEach(b => b.classList.remove('active'));
+                        document.querySelectorAll('.main-type-toggle button').forEach(b => b.classList.remove('active'));
                         btn.classList.add('active');
-                        renderTrend(btn.dataset.metric);
+                        currentType = btn.dataset.type;
+                        
+                        // 当选择“移动趋势”时，隐藏右侧的 IP/UV/PV 选项
+                        const metricToggle = document.querySelector('.metric-toggle');
+                        if (metricToggle) {
+                            metricToggle.style.display = currentType === 'mobile' ? 'none' : 'flex';
+                        }
+                        renderTrend();
                     });
                 });
 
-                renderTrend('ips');
+                // 绑定右侧指标切换事件
+                document.querySelectorAll('.metric-toggle button').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        document.querySelectorAll('.metric-toggle button').forEach(b => b.classList.remove('active'));
+                        btn.classList.add('active');
+                        currentMetric = btn.dataset.metric;
+                        renderTrend();
+                    });
+                });
+
+                renderTrend();
                 <?php endif; ?>
 
                 // 饼图通用配置
