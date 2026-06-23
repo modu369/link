@@ -1852,6 +1852,10 @@ private function cleanupProxyIpData(string $ip): void
                     COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
                     FROM pageviews p WHERE site_id = ? AND is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
                     GROUP BY dimension_value",
+                'search_engine_domain' => "SELECT LEFT(CONCAT(" . $this->searchEngineCase('p') . ", '|', COALESCE(canonical_host, host, '未知域名')), 255) as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p WHERE site_id = ? AND is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
+                    GROUP BY dimension_value",
                 'keyword_engine' => "SELECT LEFT(CONCAT(COALESCE(keyword,''), '|', " . $this->searchEngineCase('p') . ", '|', COALESCE(canonical_host, host, s.domain, ''), COALESCE(NULLIF(path,''), '/')), 255) as dimension_value,
                     COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
                     FROM pageviews p
@@ -2846,6 +2850,9 @@ while ($processed < $maxBatch) {
 
         if ($engine !== '' && $engine !== '其他') {
             $entries[] = ['search_engine', $engine];
+            if ($canonicalHost !== '') {
+                $entries[] = ['search_engine_domain', $this->limitText($engine . '|' . $canonicalHost, 255)];
+            }
         }
 
         if ($referrerHost !== '') {
@@ -3569,10 +3576,10 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
         ];
     }
 
-    public function getSearchEngineData(int $siteId, string $range = 'today'): array
+    public function getSearchEngineData(int $siteId, string $range = 'today', ?string $domain = null): array
     {
         return [
-            'engines' => $this->getSearchEngines($siteId, $range),
+            'engines' => $this->getSearchEngines($siteId, $range, $domain),
         ];
     }
 
@@ -5827,36 +5834,58 @@ private function searchEngineCase(string $alias = ''): string
         END";
     }
 
-    private function getSearchEngines(int $siteId, string $range): array
+    private function getSearchEngines(int $siteId, string $range, ?string $domain = null): array
     {
-        $cacheKey = "search_engines:{$siteId}:{$range}";
+        $cacheKey = "search_engines:{$siteId}:{$range}:" . ($domain ?? 'all');
 
-        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
+        return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $domain) {
             [$start, $end] = $this->rollupRangeBounds($range);
             $span = $this->rollupSpanForRange($siteId, $start, $end);
             if (!$span) {
                 return [];
             }
 
+            // === 走带域名筛选的新聚合表 ===
+            if ($domain !== null && $domain !== '' && $domain !== 'all') {
+                $rollup = $this->aggregateDimensionRollups($siteId, 'search_engine_domain', $span['start'], $span['end'], 500);
+                $mapped = [];
+                $domainLower = strtolower($domain);
+                
+                foreach ($rollup as $row) {
+                    $val = $row['dimension_value'] ?? '';
+                    [$engine, $host] = array_pad(explode('|', $val, 2), 2, '');
+                    
+                    if ($engine === '其他' || strtolower($host) !== $domainLower) {
+                        continue;
+                    }
+                    if (!isset($mapped[$engine])) {
+                        $mapped[$engine] = ['engine' => $engine, 'ips' => 0];
+                    }
+                    $mapped[$engine]['ips'] += (int) ($row['ips'] ?? 0);
+                }
+                
+                $results = array_values($mapped);
+                usort($results, fn($a, $b) => $b['ips'] <=> $a['ips']);
+                return $results;
+            }
+
+            // === 默认全局查询 ===
             $rollup = $this->aggregateDimensionRollups($siteId, 'search_engine', $span['start'], $span['end'], 50);
 
             if (!empty($rollup)) {
                 $mapped = [];
-
                 foreach ($rollup as $row) {
                     $engine = $row['dimension_value'] ?? '其他';
-
                     if ($engine === '其他') {
                         continue;
                     }
-
                     $mapped[] = [
                         'engine' => $engine,
-                        'views' => (int) ($row['views'] ?? 0),
                         'ips' => (int) ($row['ips'] ?? 0),
                     ];
                 }
-
+                
+                usort($mapped, fn($a, $b) => $b['ips'] <=> $a['ips']);
                 return $mapped;
             }
             return [];
