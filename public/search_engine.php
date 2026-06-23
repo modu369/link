@@ -1,17 +1,43 @@
 <?php
 require __DIR__ . '/init.php';
 require __DIR__ . '/layout.php';
+
 // === 新增：强制水平越权拦截 ===
 if ($siteId > 0 && !$selectedSite) {
     // 恶意修改 site_id 参数，或者站点已被删除
     die('您无权访问该站点的数据。');
 }
 // ==================================
-$data = $selectedSite ? $tracker->getSearchEngineData($siteId, $range) : null;
+
+// === 新增：域名筛选逻辑 ===
+$siteDomains = $selectedSite ? $tracker->getSiteDomains($siteId) : [];
+$domainOptions = [];
+if ($selectedSite) {
+    $domainOptions[] = $selectedSite['domain'];
+}
+foreach ($siteDomains as $domainRow) {
+    if (!empty($domainRow['domain'])) {
+        $domainOptions[] = $domainRow['domain'];
+    }
+}
+$domainOptions = array_values(array_unique(array_filter($domainOptions)));
+
+$domainFilter = $_GET['domain'] ?? 'all';
+if ($domainFilter !== 'all' && !in_array($domainFilter, $domainOptions, true)) {
+    $domainFilter = 'all';
+}
+
+// 获取数据，传入域名过滤器
+$data = $selectedSite ? $tracker->getSearchEngineData($siteId, $range, $domainFilter === 'all' ? null : $domainFilter) : null;
 
 render_head('搜索引擎 - 统计后台');
 render_topbar($branding);
 ?>
+<style>
+    .bot-filters { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; }
+    .bot-filter-item { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); }
+    .bot-filters select { padding:8px 10px; border:1px solid var(--border); border-radius:8px; min-width:180px; }
+</style>
 <div class="data-layout">
     <?php render_sidebar($sites, $siteId, $selectedSite, 'search_engine', $range); ?>
     <main class="content">
@@ -19,27 +45,41 @@ render_topbar($branding);
             <div class="card empty">请选择或创建站点后查看数据。</div>
         <?php else: ?>
             <section class="card">
-                <div class="section-title">
+                <div class="section-title" style="gap:12px;flex-wrap:wrap;align-items:flex-start;">
                     <div>
                         <h2 style="margin:0;">来路分析 · 搜索引擎</h2>
-                        <p class="muted" style="margin:2px 0 0;">按搜索引擎聚合 PV / IP</p>
+                        <p class="muted" style="margin:2px 0 0;">按搜索引擎聚合 IP</p>
                     </div>
-                    <?php render_range_filters($allowedRanges, $range, 'search_engine', (int) $selectedSite['id']); ?>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                        <form method="get" class="bot-filters">
+                            <input type="hidden" name="site" value="<?= (int) $siteId ?>" />
+                            <input type="hidden" name="range" value="<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>" />
+                            <div class="bot-filter-item">
+                                <span>域名</span>
+                                <select id="domain" name="domain" onchange="this.form.submit()">
+                                    <option value="all" <?= $domainFilter === 'all' ? 'selected' : '' ?>>全部</option>
+                                    <?php foreach ($domainOptions as $option): ?>
+                                        <option value="<?= htmlspecialchars($option, ENT_QUOTES, 'UTF-8') ?>" <?= $domainFilter === $option ? 'selected' : '' ?>><?= htmlspecialchars($option, ENT_QUOTES, 'UTF-8') ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </form>
+                        <?php render_range_filters($allowedRanges, $range, 'search_engine', (int) $selectedSite['id'], ['domain' => $domainFilter]); ?>
+                    </div>
                 </div>
             </section>
 
             <section class="card">
-                <div class="section-title"><h3>搜索引擎列表</h3><span class="muted">按 PV 排序</span></div>
+                <div class="section-title"><h3>搜索引擎列表</h3><span class="muted">按 IP 排序</span></div>
                 <table>
-                    <thead><tr><th>搜索引擎</th><th>PV</th><th>IP</th></tr></thead>
+                    <thead><tr><th>搜索引擎</th><th>IP</th></tr></thead>
                     <tbody>
                     <?php if (empty($data['engines'])): ?>
-                        <tr><td colspan="3" class="muted">暂无搜索引擎来路</td></tr>
+                        <tr><td colspan="2" class="muted">暂无搜索引擎来路</td></tr>
                     <?php else: ?>
                         <?php foreach ($data['engines'] as $row): ?>
                             <tr>
                                 <td><?= htmlspecialchars($row['engine'], ENT_QUOTES, 'UTF-8') ?></td>
-                                <td><?= (int) $row['views'] ?></td>
                                 <td><?= (int) $row['ips'] ?></td>
                             </tr>
                         <?php endforeach; ?>
