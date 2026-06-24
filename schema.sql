@@ -154,3 +154,7 @@ ALTER TABLE pageview_dimension_rollups ADD COLUMN new_uv BIGINT UNSIGNED NOT NUL
 ALTER TABLE pageview_dimension_rollups DROP INDEX idx_cover_query;
 CREATE INDEX idx_cover_query ON pageview_dimension_rollups 
 (site_id, dimension_type, bucket_start, dimension_value, pv, uv, new_uv, ip_count, session_count, duration_sum, page_sum, bounce_count);
+ALTER TABLE site_domains 
+ADD COLUMN status TINYINT(1) DEFAULT 1 COMMENT '1=正常, 0=异常(可能被阻断)',
+ADD COLUMN last_check_at TIMESTAMP NULL DEFAULT NULL COMMENT '最后检测时间',
+ADD COLUMN mute_until TIMESTAMP NULL DEFAULT NULL COMMENT '静默提醒至该时间';
