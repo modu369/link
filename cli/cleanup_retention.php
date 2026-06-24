@@ -52,13 +52,13 @@ echo "[Maintenance] Checking IP/ASN database updates...\n";
 // 更新 IP 库
 $ipdbPath = $config['ipdb']['path'] ?? (__DIR__ . '/../data/qqwry.ipdb');
 $ipdbUrl = trim((string) ($config['ipdb']['url'] ?? 'https://raw.githubusercontent.com/nmgliangwei/qqwry.ipdb/main/qqwry.ipdb'));
-downloadDatabaseIfNeeded($ipdbUrl, $ipdbPath, max(1, (int) ($config['ipdb']['refresh_hours'] ?? 168)));
+downloadDatabaseIfNeeded($ipdbUrl, $ipdbPath, max(1, (int) ($config['ipdb']['refresh_hours'] ?? 72)));
 
 // 更新 ASN 库
 $asnEnabled = (bool) ($config['asn']['enabled'] ?? true); // 修复：默认开启
 if ($asnEnabled) {
     $asn = $config['asn'] ?? [];
-    $refreshHours = max(1, (int) ($asn['refresh_hours'] ?? 168)); // 默认 7 天
+    $refreshHours = max(1, (int) ($asn['refresh_hours'] ?? 72)); // 默认 3 天
     
     // v4 库 (补充了默认的官方下载地址和路径)
     $pathV4 = $asn['path_v4'] ?? (__DIR__ . '/../data/ip2asn-v4.tsv');
@@ -100,3 +100,46 @@ try {
 }
 
 echo "[Maintenance] All tasks finished successfully at " . date('Y-m-d H:i:s') . "\n";
+// ==========================================
+// 4. 定时批量检测站点域名连通性
+// ==========================================
+echo "[Domain Check] Starting batch domain check...\n";
+
+// 引入 domain_check.php 并只使用它刚才封装好的检测函数
+require_once __DIR__ . '/../public/domain_check.php';
+
+try {
+    $batchSize = 200;
+    $offset = 0;
+    $totalChecked = 0;
+    $totalAbnormal = 0;
+
+    while (true) {
+        // 取出所有站点绑定的域名
+        $domains = $db->query("SELECT d.id, d.domain FROM site_domains d JOIN sites s ON d.site_id = s.id LIMIT {$batchSize} OFFSET {$offset}")->fetchAll(PDO::FETCH_ASSOC);
+        if (empty($domains)) break;
+
+        foreach ($domains as $row) {
+            $domainId = $row['id'];
+            $domain = $row['domain'];
+            
+            // 使用完全一致的外部接口进行检测
+            $checkRes = check_domain_health($domain);
+            
+            // UI逻辑里只要不是 0/3，就说明还有救。这里设 status=1 (正常), 0=异常阻断
+            $status = ($checkRes['successCount'] > 0) ? 1 : 0;
+            
+            // 更新数据库
+            $stmt = $db->prepare("UPDATE site_domains SET status = ?, last_check_at = NOW() WHERE id = ?");
+            $stmt->execute([$status, $domainId]);
+            
+            $totalChecked++;
+            if ($status === 0) $totalAbnormal++;
+        }
+        $offset += $batchSize;
+        sleep(2); // 限制速度
+    }
+    echo "[Domain Check] Completed. Checked: {$totalChecked}, Abnormal: {$totalAbnormal}.\n";
+} catch (Throwable $e) {
+    echo "[Domain Check] Error: {$e->getMessage()}\n";
+}
