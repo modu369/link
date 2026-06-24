@@ -1,5 +1,45 @@
 <?php
 require __DIR__ . '/init.php';
+// === 新增：拦截 AJAX 批量静默操作请求 ===
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['CONTENT_TYPE']) && strpos($_SERVER['CONTENT_TYPE'], 'application/json') !== false) {
+    $input = json_decode(file_get_contents('php://input'), true);
+    
+    if (isset($input['action']) && $input['action'] === 'mute_domains' && !empty($input['domain_ids'])) {
+        header('Content-Type: application/json');
+        
+        // 1. 校验用户鉴权和站点 ID
+        if (!isset($siteId) || !$siteId) {
+            echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+            exit;
+        }
+        
+        // 2. 严格校验传入的参数是否为数组（防止报错）
+        if (!is_array($input['domain_ids'])) {
+            echo json_encode(['success' => false, 'message' => 'Invalid parameters']);
+            exit;
+        }
+
+        try {
+            // 3. 强制把数组里的所有内容转换为整数，彻底杜绝任何形式的注入风险
+            $domainIds = array_map('intval', $input['domain_ids']);
+            
+            $placeholders = implode(',', array_fill(0, count($domainIds), '?'));
+            $params = $domainIds;
+            $params[] = $siteId; // 防止水平越权
+            
+            global $db;
+            $stmt = $db->prepare("UPDATE site_domains SET mute_until = DATE_ADD(NOW(), INTERVAL 7 DAY) WHERE id IN ($placeholders) AND site_id = ?");
+            $stmt->execute($params);
+            
+            echo json_encode(['success' => true]);
+        } catch (Throwable $e) {
+            // 生产环境不暴露具体 SQL 错误，统一返回
+            echo json_encode(['success' => false, 'message' => 'DB Error']);
+        }
+        exit; // 接口处理完毕，停止渲染页面
+    }
+}
+// =====================================
 require __DIR__ . '/layout.php';
 // === 新增：强制水平越权拦截 ===
 if ($siteId > 0 && !$selectedSite) {
@@ -46,6 +86,54 @@ render_topbar($branding);
 <div class="data-layout">
     <?php render_sidebar($sites, $siteId, $selectedSite, 'overview', $range); ?>
     <main class="content">
+        <?php 
+        // === 新增：获取异常域名并渲染 UI ===
+        $abnormalDomains = [];
+        $abnormalText = '';
+        $abnormalIdsJson = '[]';
+        if ($selectedSite) {
+            global $db;
+            $stmt = $db->prepare("SELECT id, domain FROM site_domains WHERE site_id = ? AND status = 0 AND (mute_until IS NULL OR mute_until < NOW())");
+            $stmt->execute([$siteId]);
+            $abnormalDomains = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            if (!empty($abnormalDomains)) {
+                $domainNames = array_map(function($d) { return htmlspecialchars($d['domain'], ENT_QUOTES, 'UTF-8') . ' （0/3）'; }, $abnormalDomains);
+                $abnormalText = implode('，', $domainNames);
+                $abnormalIdsJson = json_encode(array_column($abnormalDomains, 'id'));
+            }
+        }
+        ?>
+        <?php if (!empty($abnormalDomains)): ?>
+        <div id="domain-alert-box" style="background: linear-gradient(135deg, #fff1f0 0%, #fff2f0 100%); border: 1px solid #ffccc7; border-radius: 12px; padding: 16px 20px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 8px 24px rgba(245, 34, 45, 0.08); transition: opacity 0.3s ease;">
+            <div style="display: flex; align-items: center; gap: 14px;">
+                <div style="background: #ff4d4f; color: #fff; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; flex-shrink: 0; box-shadow: 0 4px 12px rgba(255, 77, 79, 0.35);">
+                    <svg style="width: 20px; height: 20px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                </div>
+                <div style="color: #cf1322;">
+                    <strong style="font-size: 15px; display: block; margin-bottom: 2px;">域名连通性异常</strong>
+                    <span style="font-size: 13px; opacity: 0.9;"><?= $abnormalText ?> 可能被阻断，需要检测并更换域名！</span>
+                </div>
+            </div>
+            <button onclick="muteAllDomains(<?= htmlspecialchars($abnormalIdsJson, ENT_QUOTES, 'UTF-8') ?>)" style="background: #ff4d4f; border: 1px solid #ff4d4f; color: #fff; padding: 8px 18px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 13px; transition: all 0.2s; white-space: nowrap; box-shadow: 0 2px 0 rgba(0,0,0,0.05);">知道了</button>
+        </div>
+        <script>
+        function muteAllDomains(domainIds) {
+            fetch(window.location.href, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ action: 'mute_domains', domain_ids: domainIds })
+            }).then(res => res.json()).then(res => {
+                if (res.success) {
+                    const alertBox = document.getElementById('domain-alert-box');
+                    alertBox.style.opacity = '0';
+                    setTimeout(() => alertBox.style.display = 'none', 300);
+                } else {
+                    alert('操作失败，请重试');
+                }
+            }).catch(err => console.error(err));
+        }
+        </script>
+        <?php endif; ?>
         <?php if (!$selectedSite || !$data): ?>
             <div class="card empty">请选择或创建站点后查看数据。</div>
         <?php else: ?>
