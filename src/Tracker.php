@@ -6701,88 +6701,82 @@ private function getSetting(string $key): ?array
         $pageviewsDays = $pageviewsDays === null ? $days : max(0, $pageviewsDays);
         $this->cleanupDataOlderThan($days, $pageviewsDays, $batchSize);
     }
-
     private function cleanupDataOlderThan(int $rollupDays, int $pageviewsDays, ?int $batchSize = null): void
-{
-    if ($rollupDays <= 0 && $pageviewsDays <= 0) {
-        return;
-    }
+    {
+        if ($rollupDays <= 0 && $pageviewsDays <= 0) {
+            return;
+        }
 
-    $batchSize = $batchSize && $batchSize > 0 ? $batchSize : 50000;
-    
-    // 获取系统中所有存在的 site_id
-    $siteIds = $this->db->query("SELECT id FROM sites")->fetchAll(PDO::FETCH_COLUMN);
-    if (empty($siteIds)) return;
+        $batchSize = $batchSize && $batchSize > 0 ? $batchSize : 50000;
+        
+        // 【核心修复】：除了现存站点，强制捞取所有产生过历史数据的 site_id（捕获历史遗留的幽灵数据）
+        $siteIds = $this->db->query("
+            SELECT id FROM sites
+            UNION
+            SELECT site_id FROM pageview_rollups GROUP BY site_id
+        ")->fetchAll(PDO::FETCH_COLUMN);
 
-    if ($rollupDays > 0) {
-        $rollupCutoffPoint = (new \DateTimeImmutable('now'))->modify("-{$rollupDays} days");
-        $rollupCutoff = $rollupCutoffPoint->format('Y-m-d H:i:s');
-        $rollupCutoffDate = $rollupCutoffPoint->format('Y-m-d');
+        if (empty($siteIds)) {
+            return;
+        }
 
-        // 增加 Try-Catch 防止单一表报错中断全局清理
-        try {
-            foreach ($siteIds as $siteId) {
-                // 此时带上了 site_id，完美击中 HASH 分区，且能利用复合主键/索引，拒绝全表扫描锁表
-                $this->deleteBatched(
-                    'DELETE FROM pageview_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
-                    [':sid' => $siteId, ':cutoff' => $rollupCutoff],
-                    $batchSize
-                );
-                $this->deleteBatched(
-                    'DELETE FROM pageview_dimension_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
-                    [':sid' => $siteId, ':cutoff' => $rollupCutoff],
-                    $batchSize
-                );
-                $this->deleteBatched(
-                    'DELETE FROM pageview_page_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
-                    [':sid' => $siteId, ':cutoff' => $rollupCutoff],
-                    $batchSize
-                );
-                $this->deleteBatched(
-                    'DELETE FROM pageview_entry_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
-                    [':sid' => $siteId, ':cutoff' => $rollupCutoff],
-                    $batchSize
-                );
-                $this->deleteBatched(
-                    'DELETE FROM pageview_bot_logs WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
-                    [':sid' => $siteId, ':cutoff' => $rollupCutoff],
-                    $batchSize
-                );
-                $this->deleteBatched(
-                    'DELETE FROM site_visitor_audience WHERE site_id = :sid AND last_seen_date < :cutoff_date LIMIT :batch',
-                    [':sid' => $siteId, ':cutoff_date' => $rollupCutoffDate],
-                    $batchSize
-                );
+        if ($rollupDays > 0) {
+            $rollupCutoffPoint = (new \DateTimeImmutable('now'))->modify("-{$rollupDays} days");
+            $rollupCutoff = $rollupCutoffPoint->format('Y-m-d H:i:s');
+            $rollupCutoffDate = $rollupCutoffPoint->format('Y-m-d');
+
+            try {
+                foreach ($siteIds as $siteId) {
+                    $this->deleteBatched(
+                        'DELETE FROM pageview_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
+                        [':sid' => $siteId, ':cutoff' => $rollupCutoff], $batchSize
+                    );
+                    $this->deleteBatched(
+                        'DELETE FROM pageview_dimension_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
+                        [':sid' => $siteId, ':cutoff' => $rollupCutoff], $batchSize
+                    );
+                    $this->deleteBatched(
+                        'DELETE FROM pageview_page_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
+                        [':sid' => $siteId, ':cutoff' => $rollupCutoff], $batchSize
+                    );
+                    $this->deleteBatched(
+                        'DELETE FROM pageview_entry_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
+                        [':sid' => $siteId, ':cutoff' => $rollupCutoff], $batchSize
+                    );
+                    $this->deleteBatched(
+                        'DELETE FROM pageview_bot_logs WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
+                        [':sid' => $siteId, ':cutoff' => $rollupCutoff], $batchSize
+                    );
+                    $this->deleteBatched(
+                        'DELETE FROM site_visitor_audience WHERE site_id = :sid AND last_seen_date < :cutoff_date LIMIT :batch',
+                        [':sid' => $siteId, ':cutoff_date' => $rollupCutoffDate], $batchSize
+                    );
+                }
+            } catch (Throwable $e) {
+                error_log("[Maintenance Error] Rollup cleanup failed: " . $e->getMessage());
             }
-        } catch (Throwable $e) {
-            error_log("[Maintenance Error] Rollup cleanup failed: " . $e->getMessage());
+        }
+
+        if ($pageviewsDays > 0) {
+            $pageviewsCutoffPoint = (new \DateTimeImmutable('now'))->modify("-{$pageviewsDays} days");
+            $pageviewsCutoff = $pageviewsCutoffPoint->format('Y-m-d H:i:s');
+
+            try {
+                foreach ($siteIds as $siteId) {
+                    $this->deleteBatched(
+                        'DELETE FROM pageviews WHERE site_id = :sid AND occurred_at < :cutoff LIMIT :batch',
+                        [':sid' => $siteId, ':cutoff' => $pageviewsCutoff], $batchSize
+                    );
+                    $this->deleteBatched(
+                        'DELETE FROM sessions WHERE site_id = :sid AND start_time < :cutoff LIMIT :batch',
+                        [':sid' => $siteId, ':cutoff' => $pageviewsCutoff], $batchSize
+                    );
+                }
+            } catch (Throwable $e) {
+                error_log("[Maintenance Error] Pageviews cleanup failed: " . $e->getMessage());
+            }
         }
     }
-
-    if ($pageviewsDays > 0) {
-        $pageviewsCutoffPoint = (new \DateTimeImmutable('now'))->modify("-{$pageviewsDays} days");
-        $pageviewsCutoff = $pageviewsCutoffPoint->format('Y-m-d H:i:s');
-
-        try {
-            foreach ($siteIds as $siteId) {
-                // 对 pageviews 表同理处理，利用 idx_site_time 索引
-                $this->deleteBatched(
-                    'DELETE FROM pageviews WHERE site_id = :sid AND occurred_at < :cutoff LIMIT :batch',
-                    [':sid' => $siteId, ':cutoff' => $pageviewsCutoff],
-                    $batchSize
-                );
-                $this->deleteBatched(
-                    'DELETE FROM sessions WHERE site_id = :sid AND start_time < :cutoff LIMIT :batch',
-                    [':sid' => $siteId, ':cutoff' => $pageviewsCutoff],
-                    $batchSize
-                );
-            }
-        } catch (Throwable $e) {
-            error_log("[Maintenance Error] Pageviews cleanup failed: " . $e->getMessage());
-        }
-    }
-}
-
 public function createSharePage(string $name, array $siteIds): array
     {
         $siteIds = array_values(array_unique(array_filter(array_map('intval', $siteIds))));
@@ -7003,82 +6997,6 @@ $globalMobileIps = !empty($allMobileIpKeys) ? (int) $this->redis->pfCount($allMo
         }
     }
 
-    private function cleanupDataOlderThan(int $rollupDays, int $pageviewsDays, ?int $batchSize = null): void
-    {
-        if ($rollupDays <= 0 && $pageviewsDays <= 0) {
-            return;
-        }
-
-        $batchSize = $batchSize && $batchSize > 0 ? $batchSize : 50000;
-        
-        // 【核心修复】：除了现存站点，强制捞取所有产生过历史数据的 site_id（捕获历史遗留的幽灵数据）
-        $siteIds = $this->db->query("
-            SELECT id FROM sites
-            UNION
-            SELECT site_id FROM pageview_rollups GROUP BY site_id
-        ")->fetchAll(PDO::FETCH_COLUMN);
-
-        if (empty($siteIds)) {
-            return;
-        }
-
-        if ($rollupDays > 0) {
-            $rollupCutoffPoint = (new \DateTimeImmutable('now'))->modify("-{$rollupDays} days");
-            $rollupCutoff = $rollupCutoffPoint->format('Y-m-d H:i:s');
-            $rollupCutoffDate = $rollupCutoffPoint->format('Y-m-d');
-
-            try {
-                foreach ($siteIds as $siteId) {
-                    $this->deleteBatched(
-                        'DELETE FROM pageview_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff' => $rollupCutoff], $batchSize
-                    );
-                    $this->deleteBatched(
-                        'DELETE FROM pageview_dimension_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff' => $rollupCutoff], $batchSize
-                    );
-                    $this->deleteBatched(
-                        'DELETE FROM pageview_page_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff' => $rollupCutoff], $batchSize
-                    );
-                    $this->deleteBatched(
-                        'DELETE FROM pageview_entry_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff' => $rollupCutoff], $batchSize
-                    );
-                    $this->deleteBatched(
-                        'DELETE FROM pageview_bot_logs WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff' => $rollupCutoff], $batchSize
-                    );
-                    $this->deleteBatched(
-                        'DELETE FROM site_visitor_audience WHERE site_id = :sid AND last_seen_date < :cutoff_date LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff_date' => $rollupCutoffDate], $batchSize
-                    );
-                }
-            } catch (Throwable $e) {
-                error_log("[Maintenance Error] Rollup cleanup failed: " . $e->getMessage());
-            }
-        }
-
-        if ($pageviewsDays > 0) {
-            $pageviewsCutoffPoint = (new \DateTimeImmutable('now'))->modify("-{$pageviewsDays} days");
-            $pageviewsCutoff = $pageviewsCutoffPoint->format('Y-m-d H:i:s');
-
-            try {
-                foreach ($siteIds as $siteId) {
-                    $this->deleteBatched(
-                        'DELETE FROM pageviews WHERE site_id = :sid AND occurred_at < :cutoff LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff' => $pageviewsCutoff], $batchSize
-                    );
-                    $this->deleteBatched(
-                        'DELETE FROM sessions WHERE site_id = :sid AND start_time < :cutoff LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff' => $pageviewsCutoff], $batchSize
-                    );
-                }
-            } catch (Throwable $e) {
-                error_log("[Maintenance Error] Pageviews cleanup failed: " . $e->getMessage());
-            }
-        }
-    }
     /**
      * 仅保留当前 SQL 中出现的命名参数，避免出现多余参数导致的 HY093 错误
      */
