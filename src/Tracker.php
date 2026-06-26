@@ -4564,7 +4564,7 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
 public function getPredictions(int $siteId): array
     {
         $now = new DateTimeImmutable('now');
-        $minuteBucket = (int) floor($now->getTimestamp() / 180); // 3分钟粒度缓存
+        $minuteBucket = (int) floor($now->getTimestamp() / 180); // 3分钟缓存
         $cacheKey = "predictions:{$siteId}:{$minuteBucket}";
 
         $cached = $this->redis->get($cacheKey);
@@ -4572,7 +4572,7 @@ public function getPredictions(int $siteId): array
             return json_decode($cached, true);
         }
 
-        // 1. 获取全局精准的今日与昨日数据
+        // 1. 获取全局精确的今日与昨日全天数据
         $todayTotals = $this->getTotals($siteId, 'today');
         $yesterdayTotals = $this->getTotals($siteId, 'yesterday');
         $deviceData = $this->getDeviceBreakdown($siteId, 'today');
@@ -4588,11 +4588,19 @@ public function getPredictions(int $siteId): array
         $yestMobileViews = max(0, (int)($yesterdayDeviceData['mobile']['views'] ?? 0));
         $yestMobileIps = max(0, (int)($yesterdayDeviceData['mobile']['ips'] ?? 0));
 
-        // 2. 时间进度 (0.001 ~ 1.0)
+        // 2. 计算时间进度比例
         $timeFraction = ((int)$now->format('H') * 3600 + (int)$now->format('i') * 60 + (int)$now->format('s')) / 86400;
-        $timeFraction = max(0.001, min(1.0, $timeFraction));
 
-        // 3. 获取昨天【同一时刻】的进度基准
+        if ($timeFraction >= 0.99) {
+            $predictions = [
+                'views' => $currViews, 'ips' => $currIps,
+                'mobile_views' => $currMobileViews, 'mobile_ips' => $currMobileIps,
+            ];
+            $this->redis->setex($cacheKey, 180, json_encode($predictions));
+            return $predictions;
+        }
+
+        // 3. 获取昨天【同一时刻】的截止进度
         $todayStart = $now->setTime(0, 0, 0);
         $yesterdayStart = $todayStart->sub(new DateInterval('P1D'));
         $yesterdaySameTime = $yesterdayStart->setTime((int) $now->format('H'), (int) $now->format('i'), (int) $now->format('s'));
@@ -4601,50 +4609,54 @@ public function getPredictions(int $siteId): array
         $yestPaceViews = (int)($yestPaceTotals['views'] ?? 0);
         $yestPaceIps = (int)($yestPaceTotals['ips'] ?? 0);
 
-        // 4. 核心预测闭包引擎（分别独立预测 PV 和 IP）
+        // 估算昨天同一时刻的移动端流量（按昨天全天的移动端比例分配）
+        $yestMobileViewRatio = $yestViews > 0 ? ($yestMobileViews / $yestViews) : 0;
+        $yestMobileIpRatio = $yestIps > 0 ? ($yestMobileIps / $yestIps) : 0;
+        $yestPaceMobileViews = (int) round($yestPaceViews * $yestMobileViewRatio);
+        $yestPaceMobileIps = (int) round($yestPaceIps * $yestMobileIpRatio);
+
+        // 4. 全新核心算法：【基准增量阻尼预测模型】
         $predict = function($curr, $yestFull, $yestPace) use ($timeFraction) {
             if ($curr <= 0) return 0;
-            if ($timeFraction >= 0.99) return $curr; // 临近午夜，不再预测，直接返回当前值
             
-            $linear = $curr / $timeFraction; // 纯线性速率
-
-            // 昨天彻底没流量，今天是爆发新增
-            if ($yestFull <= 10) {
-                return (int) round($linear * 1.05); // 给 5% 的爆发上浮预期
+            // 昨天在接下来的时间里，还剩下多少流量没跑完？
+            $yestRest = max(0, $yestFull - $yestPace);
+            
+            if ($yestPace <= 0) {
+                // 🌟 解决你的终极痛点：昨天同期毫无流量（0），今天早上突然有量。
+                // 这说明今天的量是纯增量！预期预测值 = 今天的实时量 + 昨天剩下原本该来的量
+                return $curr + $yestRest; 
             }
 
-            // 昨天有流量，且通过对比算出了涨跌幅
-            if ($yestPace > 0) {
-                $growthRatio = $curr / $yestPace;
-                $growthRatio = min($growthRatio, 4.0); // 限制最高4倍涨幅，防清晨早发车导致的倍数爆炸
-                $ratioPred = $yestFull * $growthRatio;
-                
-                // 平滑加权：早上信任昨天的同比倍率，下午/晚上逐渐信任今天的实时线性速率
-                $weight = pow($timeFraction, 0.6); 
-                return (int) round(($linear * $weight) + ($ratioPred * (1 - $weight)));
-            }
+            // 计算今天的实时流量对比昨天同期的涨跌趋势
+            $rawTrend = $curr / $yestPace;
+            
+            // 限制趋势极大值/极小值，防小基数爆炸（最高暴涨3倍，最低跌至0.3倍）
+            $rawTrend = max(0.3, min(3.0, $rawTrend));
 
-            // 兜底：昨天同一时刻是 0，但昨天全天有流量（说明昨天流量来得晚），直接走线性
-            return (int) round($linear);
+            // 核心优化：时间阻尼系数。早晨数据太少不可信，强制向1.0(与昨天持平)拉扯；越到下午/晚上，越放任并信任实际趋势
+            $dampening = sqrt($timeFraction); 
+            $dampenedTrend = 1.0 + ($rawTrend - 1.0) * $dampening;
+
+            // 最终预测 = 今天实打实已经拿到的量 + (预估剩下的量 * 阻尼调整后的趋势)
+            $predicted = $curr + ($yestRest * $dampenedTrend);
+
+            return (int) round($predicted);
         };
 
-        // 5. 各自独立执行预测，拒绝互相干扰
+        // 5. 独立预测各项指标
         $predViews = $predict($currViews, $yestViews, $yestPaceViews);
         $predIps = $predict($currIps, $yestIps, $yestPaceIps);
+        $predMobileViews = $predict($currMobileViews, $yestMobileViews, $yestPaceMobileViews);
+        $predMobileIps = $predict($currMobileIps, $yestMobileIps, $yestPaceMobileIps);
 
-        // 估算移动端昨天的同一时刻进度
-        $yestMobilePaceViews = $yestPaceViews > 0 ? (int)round($yestPaceViews * ($yestMobileViews / max(1, $yestViews))) : 0;
-        $yestMobilePaceIps = $yestPaceIps > 0 ? (int)round($yestPaceIps * ($yestMobileIps / max(1, $yestIps))) : 0;
-
-        $predMobileViews = $predict($currMobileViews, $yestMobileViews, $yestMobilePaceViews);
-        $predMobileIps = $predict($currMobileIps, $yestMobileIps, $yestMobilePaceIps);
-
-        // 6. 绝对底线防御（任何情况下的预测值，都绝对不能低于今天已经产生的真实数据）
+        // 6. 逻辑边界硬性约束防御
         $predictions = [
             'views' => max($currViews, $predViews),
             'ips' => max($currIps, $predIps),
-            'mobile_views' => max($currMobileViews, $predMobileViews),
-            'mobile_ips' => max($currMobileIps, $predMobileIps),
+            // 确保移动端预测不低于当前现状，且【绝对不可能】高于总预测
+            'mobile_views' => min($predViews, max($currMobileViews, $predMobileViews)),
+            'mobile_ips' => min($predIps, max($currMobileIps, $predMobileIps)),
         ];
 
         $this->redis->setex($cacheKey, 180, json_encode($predictions));
