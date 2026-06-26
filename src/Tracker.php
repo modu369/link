@@ -4574,7 +4574,7 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
         $end = $dateString . ' 23:59:59';
 
         $stmt = $this->db->prepare("
-            SELECT HOUR(bucket_start) as h, SUM(views) as v, SUM(uniques) as u
+            SELECT HOUR(bucket_start) as h, SUM(pv) as v, SUM(ip_count) as u
             FROM pageview_rollups
             WHERE site_id = ? AND bucket_start >= ? AND bucket_start <= ?
             GROUP BY HOUR(bucket_start)
@@ -4583,7 +4583,7 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
         $rollupRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         $stmtMobile = $this->db->prepare("
-            SELECT HOUR(bucket_start) as h, SUM(views) as v, SUM(uniques) as u
+            SELECT HOUR(bucket_start) as h, SUM(pv) as v, SUM(ip_count) as u
             FROM pageview_dimension_rollups
             WHERE site_id = ? AND dimension_type = 'device' AND dimension_value = 'mobile'
               AND bucket_start >= ? AND bucket_start <= ?
@@ -4677,7 +4677,7 @@ public function getPredictions(int $siteId): array
         $h = (int)$now->format('H');
         $m = (int)$now->format('i');
         $s = (int)$now->format('s');
-        $fracHour = ($m * 60 + s) / 3600;
+        $fracHour = ($m * 60 + $s) / 3600;
 
         $getPace = function($data, $hour, $frac) {
             $prev = $hour > 0 ? $data['pace'][$hour - 1] : ['views'=>0,'ips'=>0,'mobile_views'=>0,'mobile_ips'=>0];
