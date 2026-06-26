@@ -4561,10 +4561,10 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
         return 0.0;
     }
 
-    public function getPredictions(int $siteId): array
+public function getPredictions(int $siteId): array
     {
         $now = new DateTimeImmutable('now');
-        $minuteBucket = (int) floor($now->getTimestamp() / 300); // 5 分钟粒度缓存
+        $minuteBucket = (int) floor($now->getTimestamp() / 180); // 3分钟粒度缓存
         $cacheKey = "predictions:{$siteId}:{$minuteBucket}";
 
         $cached = $this->redis->get($cacheKey);
@@ -4572,86 +4572,82 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
             return json_decode($cached, true);
         }
 
-        // 1. 获取真实、包含 HLL 修正的精确当天/昨日数据，彻底修复基数虚高问题
+        // 1. 获取全局精准的今日与昨日数据
         $todayTotals = $this->getTotals($siteId, 'today');
         $yesterdayTotals = $this->getTotals($siteId, 'yesterday');
+        $deviceData = $this->getDeviceBreakdown($siteId, 'today');
+        $yesterdayDeviceData = $this->getDeviceBreakdown($siteId, 'yesterday');
 
-        $todayViews = max(0, (int)($todayTotals['views'] ?? 0));
-        $todayIps = max(0, (int)($todayTotals['ip_count'] ?? 0));
-        
-        $yesterdayFullViews = max(0, (int)($yesterdayTotals['views'] ?? 0));
-        $yesterdayFullIps = max(0, (int)($yesterdayTotals['ip_count'] ?? 0));
+        $currViews = max(0, (int)($todayTotals['views'] ?? 0));
+        $currIps = max(0, (int)($todayTotals['ip_count'] ?? 0));
+        $currMobileViews = max(0, (int)($deviceData['mobile']['views'] ?? 0));
+        $currMobileIps = max(0, (int)($deviceData['mobile']['ips'] ?? 0));
 
-        // 2. 计算纯时间进度 (当前秒数 / 86400)
+        $yestViews = max(0, (int)($yesterdayTotals['views'] ?? 0));
+        $yestIps = max(0, (int)($yesterdayTotals['ip_count'] ?? 0));
+        $yestMobileViews = max(0, (int)($yesterdayDeviceData['mobile']['views'] ?? 0));
+        $yestMobileIps = max(0, (int)($yesterdayDeviceData['mobile']['ips'] ?? 0));
+
+        // 2. 时间进度 (0.001 ~ 1.0)
         $timeFraction = ((int)$now->format('H') * 3600 + (int)$now->format('i') * 60 + (int)$now->format('s')) / 86400;
+        $timeFraction = max(0.001, min(1.0, $timeFraction));
 
-        // 获取昨天同时段的 PV，用于计算流量的 "形状进度"
+        // 3. 获取昨天【同一时刻】的进度基准
         $todayStart = $now->setTime(0, 0, 0);
         $yesterdayStart = $todayStart->sub(new DateInterval('P1D'));
         $yesterdaySameTime = $yesterdayStart->setTime((int) $now->format('H'), (int) $now->format('i'), (int) $now->format('s'));
-        $yesterdayPaceStats = $this->getRangeStats($siteId, $yesterdayStart, $yesterdaySameTime);
-        $yesterdayPartialViews = max(0, (int)($yesterdayPaceStats['views'] ?? 0));
+        $yestPaceTotals = $this->getRangeStats($siteId, $yesterdayStart, $yesterdaySameTime);
+        
+        $yestPaceViews = (int)($yestPaceTotals['views'] ?? 0);
+        $yestPaceIps = (int)($yestPaceTotals['ips'] ?? 0);
 
-        // 3. 计算综合进度比例
-        $progressFraction = $yesterdayFullViews > 0 ? ($yesterdayPartialViews / $yesterdayFullViews) : $timeFraction;
-
-        // 平滑与兜底处理：如果昨天基数太小，或者算出的进度异常，则降级为时间进度
-        if ($progressFraction <= 0.05 || $yesterdayFullViews < 50) {
-            $progressFraction = $timeFraction;
-        }
-        $progressFraction = max(0.01, min(1.0, $progressFraction));
-
-        // 【关键修复】如果已经接近午夜（最后约 14 分钟，>99%），直接视为 100% 进度，预测值等于当前值
-        if ($timeFraction >= 0.99) {
-            $progressFraction = 1.0;
-        }
-
-        $predictedViews = $todayViews;
-        $predictedIps = $todayIps;
-
-        // 4. 根据当前时间段决定预测算法
-        if ($timeFraction < 0.1) {
-            // 凌晨前段（比如0点~2点）当天基数太小，使用昨日最终或历史均值按剩余时间加权
-            $averages = $this->getHistoricalAverages($siteId, 30);
-            $expectedViews = $yesterdayFullViews > 0 ? $yesterdayFullViews : max(0, (int)($averages['views'] ?? 0));
-            $expectedIps = $yesterdayFullIps > 0 ? $yesterdayFullIps : max(0, (int)($averages['ips'] ?? 0));
+        // 4. 核心预测闭包引擎（分别独立预测 PV 和 IP）
+        $predict = function($curr, $yestFull, $yestPace) use ($timeFraction) {
+            if ($curr <= 0) return 0;
+            if ($timeFraction >= 0.99) return $curr; // 临近午夜，不再预测，直接返回当前值
             
-            $predictedViews = (int) round($todayViews + $expectedViews * (1 - $timeFraction));
-            $predictedIps = (int) round($todayIps + $expectedIps * (1 - $timeFraction));
-        } else {
-            // 正常时段，利用进度比例直接外推
-            $predictedViews = (int) round($todayViews / $progressFraction);
-            $predictedIps = (int) round($todayIps / $progressFraction);
-        }
+            $linear = $curr / $timeFraction; // 纯线性速率
 
-        // 绝对兜底：全站预测值绝对不能低于当前实时产生的值
-        $predictedViews = max($todayViews, $predictedViews);
-        $predictedIps = max($todayIps, $predictedIps);
+            // 昨天彻底没流量，今天是爆发新增
+            if ($yestFull <= 10) {
+                return (int) round($linear * 1.05); // 给 5% 的爆发上浮预期
+            }
 
-        // 5. 移动端精准预测
-        $deviceData = $this->getDeviceBreakdown($siteId, 'today');
-        $currentMobileViews = max(0, (int)($deviceData['mobile']['views'] ?? 0));
-        $currentMobileIps = max(0, (int)($deviceData['mobile']['ips'] ?? 0));
+            // 昨天有流量，且通过对比算出了涨跌幅
+            if ($yestPace > 0) {
+                $growthRatio = $curr / $yestPace;
+                $growthRatio = min($growthRatio, 4.0); // 限制最高4倍涨幅，防清晨早发车导致的倍数爆炸
+                $ratioPred = $yestFull * $growthRatio;
+                
+                // 平滑加权：早上信任昨天的同比倍率，下午/晚上逐渐信任今天的实时线性速率
+                $weight = pow($timeFraction, 0.6); 
+                return (int) round(($linear * $weight) + ($ratioPred * (1 - $weight)));
+            }
 
-        // 提取实时的移动端占比进行推算
-        $mobileViewRatio = $todayViews > 0 ? ($currentMobileViews / $todayViews) : 0;
-        $mobileIpRatio = $todayIps > 0 ? ($currentMobileIps / $todayIps) : 0;
+            // 兜底：昨天同一时刻是 0，但昨天全天有流量（说明昨天流量来得晚），直接走线性
+            return (int) round($linear);
+        };
 
-        $predictedMobileViews = (int) round($predictedViews * $mobileViewRatio);
-        $predictedMobileIps = (int) round($predictedIps * $mobileIpRatio);
+        // 5. 各自独立执行预测，拒绝互相干扰
+        $predViews = $predict($currViews, $yestViews, $yestPaceViews);
+        $predIps = $predict($currIps, $yestIps, $yestPaceIps);
 
-        // 绝对兜底：移动端预测值绝对不能低于移动端已产生的值
-        $predictedMobileViews = max($currentMobileViews, $predictedMobileViews);
-        $predictedMobileIps = max($currentMobileIps, $predictedMobileIps);
+        // 估算移动端昨天的同一时刻进度
+        $yestMobilePaceViews = $yestPaceViews > 0 ? (int)round($yestPaceViews * ($yestMobileViews / max(1, $yestViews))) : 0;
+        $yestMobilePaceIps = $yestPaceIps > 0 ? (int)round($yestPaceIps * ($yestMobileIps / max(1, $yestIps))) : 0;
 
+        $predMobileViews = $predict($currMobileViews, $yestMobileViews, $yestMobilePaceViews);
+        $predMobileIps = $predict($currMobileIps, $yestMobileIps, $yestMobilePaceIps);
+
+        // 6. 绝对底线防御（任何情况下的预测值，都绝对不能低于今天已经产生的真实数据）
         $predictions = [
-            'views' => $predictedViews,
-            'ips' => $predictedIps,
-            'mobile_views' => $predictedMobileViews,
-            'mobile_ips' => $predictedMobileIps, 
+            'views' => max($currViews, $predViews),
+            'ips' => max($currIps, $predIps),
+            'mobile_views' => max($currMobileViews, $predMobileViews),
+            'mobile_ips' => max($currMobileIps, $predMobileIps),
         ];
 
-        $this->redis->setex($cacheKey, 300, json_encode($predictions));
+        $this->redis->setex($cacheKey, 180, json_encode($predictions));
 
         return $predictions;
     }
