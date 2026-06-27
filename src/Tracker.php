@@ -4560,76 +4560,11 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
         }
         return 0.0;
     }
-// === 新增：将历史每天的小时级进度快照存入 Redis，保留 8 天 ===
-    private function getHistoricalDayData(int $siteId, string $dateString): array
-    {
-        $cacheKey = "tracker:pred_history:{$siteId}:{$dateString}";
-        $cached = $this->redis->get($cacheKey);
-        if ($cached) {
-            return json_decode($cached, true);
-        }
 
-        // 若 Redis 中没有（或者过期被销毁），则从数据库重新生成该日的 24 小时数据
-        $start = $dateString . ' 00:00:00';
-        $end = $dateString . ' 23:59:59';
-
-        $stmt = $this->db->prepare("
-            SELECT HOUR(bucket_start) as h, SUM(pv) as v, SUM(ip_count) as u
-            FROM pageview_rollups
-            WHERE site_id = ? AND bucket_start >= ? AND bucket_start <= ?
-            GROUP BY HOUR(bucket_start)
-        ");
-        $stmt->execute([$siteId, $start, $end]);
-        $rollupRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $stmtMobile = $this->db->prepare("
-            SELECT HOUR(bucket_start) as h, SUM(pv) as v, SUM(ip_count) as u
-            FROM pageview_dimension_rollups
-            WHERE site_id = ? AND dimension_type = 'device' AND dimension_value = 'mobile'
-              AND bucket_start >= ? AND bucket_start <= ?
-            GROUP BY HOUR(bucket_start)
-        ");
-        $stmtMobile->execute([$siteId, $start, $end]);
-        $mobileRows = $stmtMobile->fetchAll(PDO::FETCH_ASSOC);
-
-        // 初始化 24 小时的空数据
-        $hours = array_fill(0, 24, ['v' => 0, 'u' => 0, 'mv' => 0, 'mu' => 0]);
-
-        foreach ($rollupRows as $row) {
-            $hours[(int)$row['h']]['v'] = (int)$row['v'];
-            $hours[(int)$row['h']]['u'] = (int)$row['u'];
-        }
-        foreach ($mobileRows as $row) {
-            $hours[(int)$row['h']]['mv'] = (int)$row['v'];
-            $hours[(int)$row['h']]['mu'] = (int)$row['u'];
-        }
-
-        // 计算 0-23 点的累加进度 (Cumulative sums)
-        $cumulative = [];
-        $runV = 0; $runU = 0; $runMv = 0; $runMu = 0;
-
-        foreach ($hours as $h => $data) {
-            $runV += $data['v']; $runU += $data['u'];
-            $runMv += $data['mv']; $runMu += $data['mu'];
-            $cumulative[$h] = [
-                'views' => $runV, 'ips' => $runU,
-                'mobile_views' => $runMv, 'mobile_ips' => $runMu
-            ];
-        }
-
-        $result = ['full' => $cumulative[23], 'pace' => $cumulative];
-
-        // 核心配合逻辑：仅将已经过去的日期写入 Redis，并自动销毁 (8天=691200秒)
-        if ($dateString < date('Y-m-d')) {
-            $this->redis->setex($cacheKey, 8 * 86400, json_encode($result));
-        }
-
-        return $result;
-    }
-public function getPredictions(int $siteId): array
+    public function getPredictions(int $siteId): array
     {
         $now = new DateTimeImmutable('now');
-        $minuteBucket = (int) floor($now->getTimestamp() / 180);
+        $minuteBucket = (int) floor($now->getTimestamp() / 300); // 5 分钟粒度缓存
         $cacheKey = "predictions:{$siteId}:{$minuteBucket}";
 
         $cached = $this->redis->get($cacheKey);
@@ -4637,139 +4572,87 @@ public function getPredictions(int $siteId): array
             return json_decode($cached, true);
         }
 
-        // 1. 获取今日实时数据
+        // 1. 获取真实、包含 HLL 修正的精确当天/昨日数据，彻底修复基数虚高问题
         $todayTotals = $this->getTotals($siteId, 'today');
-        $deviceData = $this->getDeviceBreakdown($siteId, 'today');
+        $yesterdayTotals = $this->getTotals($siteId, 'yesterday');
+
+        $todayViews = max(0, (int)($todayTotals['views'] ?? 0));
+        $todayIps = max(0, (int)($todayTotals['ip_count'] ?? 0));
         
-        $currViews = max(0, (int)($todayTotals['views'] ?? 0));
-        $currIps = max(0, (int)($todayTotals['ip_count'] ?? 0));
-        $currMobileViews = max(0, (int)($deviceData['mobile']['views'] ?? 0));
-        $currMobileIps = max(0, (int)($deviceData['mobile']['ips'] ?? 0));
+        $yesterdayFullViews = max(0, (int)($yesterdayTotals['views'] ?? 0));
+        $yesterdayFullIps = max(0, (int)($yesterdayTotals['ip_count'] ?? 0));
 
+        // 2. 计算纯时间进度 (当前秒数 / 86400)
         $timeFraction = ((int)$now->format('H') * 3600 + (int)$now->format('i') * 60 + (int)$now->format('s')) / 86400;
-        $timeFraction = max(0.0001, min(1.0, $timeFraction));
 
+        // 获取昨天同时段的 PV，用于计算流量的 "形状进度"
+        $todayStart = $now->setTime(0, 0, 0);
+        $yesterdayStart = $todayStart->sub(new DateInterval('P1D'));
+        $yesterdaySameTime = $yesterdayStart->setTime((int) $now->format('H'), (int) $now->format('i'), (int) $now->format('s'));
+        $yesterdayPaceStats = $this->getRangeStats($siteId, $yesterdayStart, $yesterdaySameTime);
+        $yesterdayPartialViews = max(0, (int)($yesterdayPaceStats['views'] ?? 0));
+
+        // 3. 计算综合进度比例
+        $progressFraction = $yesterdayFullViews > 0 ? ($yesterdayPartialViews / $yesterdayFullViews) : $timeFraction;
+
+        // 平滑与兜底处理：如果昨天基数太小，或者算出的进度异常，则降级为时间进度
+        if ($progressFraction <= 0.05 || $yesterdayFullViews < 50) {
+            $progressFraction = $timeFraction;
+        }
+        $progressFraction = max(0.01, min(1.0, $progressFraction));
+
+        // 【关键修复】如果已经接近午夜（最后约 14 分钟，>99%），直接视为 100% 进度，预测值等于当前值
         if ($timeFraction >= 0.99) {
-            $predictions = [
-                'views' => $currViews, 'ips' => $currIps,
-                'mobile_views' => $currMobileViews, 'mobile_ips' => $currMobileIps,
-            ];
-            $this->redis->setex($cacheKey, 180, json_encode($predictions));
-            return $predictions;
+            $progressFraction = 1.0;
         }
 
-        // 2. 无缝自愈备份：拉取过去 7 天的快照存入 Redis
-        // 机制：只要预测被调用，就会自动补齐过去 7 天的 Redis 缓存。
-        // 这样在数据库第 5 天清理明细前，数据就已经安全地转移到了 Redis 桥梁中！
-        $historyData = [];
-        for ($i = 1; $i <= 7; $i++) {
-            $dateStr = $now->sub(new DateInterval("P{$i}D"))->format('Y-m-d');
-            $historyData[$i] = $this->getHistoricalDayData($siteId, $dateStr);
+        $predictedViews = $todayViews;
+        $predictedIps = $todayIps;
+
+        // 4. 根据当前时间段决定预测算法
+        if ($timeFraction < 0.1) {
+            // 凌晨前段（比如0点~2点）当天基数太小，使用昨日最终或历史均值按剩余时间加权
+            $averages = $this->getHistoricalAverages($siteId, 30);
+            $expectedViews = $yesterdayFullViews > 0 ? $yesterdayFullViews : max(0, (int)($averages['views'] ?? 0));
+            $expectedIps = $yesterdayFullIps > 0 ? $yesterdayFullIps : max(0, (int)($averages['ips'] ?? 0));
+            
+            $predictedViews = (int) round($todayViews + $expectedViews * (1 - $timeFraction));
+            $predictedIps = (int) round($todayIps + $expectedIps * (1 - $timeFraction));
+        } else {
+            // 正常时段，利用进度比例直接外推
+            $predictedViews = (int) round($todayViews / $progressFraction);
+            $predictedIps = (int) round($todayIps / $progressFraction);
         }
 
-        // 3. 提取 昨天(1)、前天(2)、上周同日(7) 的全天基准
-        $yestFull = $historyData[1]['full'];
-        $dayBeforeFull = $historyData[2]['full'];
-        $lastWeekFull = $historyData[7]['full'];
+        // 绝对兜底：全站预测值绝对不能低于当前实时产生的值
+        $predictedViews = max($todayViews, $predictedViews);
+        $predictedIps = max($todayIps, $predictedIps);
 
-        // 4. 精确到分钟的平滑进度插值计算 (Minute-Level Interpolation)
-        // 从小时级的数据中，精算出此时此刻（比如 09:28）的同期精确数据
-        $h = (int)$now->format('H');
-        $m = (int)$now->format('i');
-        $s = (int)$now->format('s');
-        $fracHour = ($m * 60 + $s) / 3600;
+        // 5. 移动端精准预测
+        $deviceData = $this->getDeviceBreakdown($siteId, 'today');
+        $currentMobileViews = max(0, (int)($deviceData['mobile']['views'] ?? 0));
+        $currentMobileIps = max(0, (int)($deviceData['mobile']['ips'] ?? 0));
 
-        $getPace = function($data, $hour, $frac) {
-            $prev = $hour > 0 ? $data['pace'][$hour - 1] : ['views'=>0,'ips'=>0,'mobile_views'=>0,'mobile_ips'=>0];
-            $curr = $data['pace'][$hour];
-            return [
-                'views' => (int)round($prev['views'] + ($curr['views'] - $prev['views']) * $frac),
-                'ips' => (int)round($prev['ips'] + ($curr['ips'] - $prev['ips']) * $frac),
-                'mobile_views' => (int)round($prev['mobile_views'] + ($curr['mobile_views'] - $prev['mobile_views']) * $frac),
-                'mobile_ips' => (int)round($prev['mobile_ips'] + ($curr['mobile_ips'] - $prev['mobile_ips']) * $frac),
-            ];
-        };
+        // 提取实时的移动端占比进行推算
+        $mobileViewRatio = $todayViews > 0 ? ($currentMobileViews / $todayViews) : 0;
+        $mobileIpRatio = $todayIps > 0 ? ($currentMobileIps / $todayIps) : 0;
 
-        $yestPace = $getPace($historyData[1], $h, $fracHour);
-        $dayBeforePace = $getPace($historyData[2], $h, $fracHour);
-        $lastWeekPace = $getPace($historyData[7], $h, $fracHour);
+        $predictedMobileViews = (int) round($predictedViews * $mobileViewRatio);
+        $predictedMobileIps = (int) round($predictedIps * $mobileIpRatio);
 
-        // 5. 史诗级智能混合基准 (Smart Triple-Blend)
-        // 权重分配：昨天 60%，上周同日 30%（解决周末周一断崖陷阱），前天 10%
-        $blend = function($key, $fullOrPace) use ($yestFull, $dayBeforeFull, $lastWeekFull, $yestPace, $dayBeforePace, $lastWeekPace) {
-            $y = $fullOrPace === 'full' ? $yestFull[$key] : $yestPace[$key];
-            $d = $fullOrPace === 'full' ? $dayBeforeFull[$key] : $dayBeforePace[$key];
-            $w = $fullOrPace === 'full' ? $lastWeekFull[$key] : $lastWeekPace[$key];
+        // 绝对兜底：移动端预测值绝对不能低于移动端已产生的值
+        $predictedMobileViews = max($currentMobileViews, $predictedMobileViews);
+        $predictedMobileIps = max($currentMobileIps, $predictedMobileIps);
 
-            $valid = [];
-            if ($y > 5) $valid['y'] = $y;
-            if ($d > 5) $valid['d'] = $d;
-            if ($w > 5) $valid['w'] = $w; // 上周同日的数据
-
-            if (empty($valid)) return 0;
-
-            // 完美 3 天都有数据
-            if (count($valid) === 3) return (int)round(($y * 0.60) + ($w * 0.30) + ($d * 0.10));
-            // 兜底降级处理
-            if (isset($valid['y']) && isset($valid['w'])) return (int)round(($y * 0.70) + ($w * 0.30));
-            if (isset($valid['y']) && isset($valid['d'])) return (int)round(($y * 0.75) + ($d * 0.25));
-            if (isset($valid['w']) && isset($valid['d'])) return (int)round(($w * 0.70) + ($d * 0.30));
-            
-            return array_values($valid)[0];
-        };
-
-        $baseFullViews = $blend('views', 'full');
-        $baseFullIps = $blend('ips', 'full');
-        $baseFullMobileViews = $blend('mobile_views', 'full');
-        $baseFullMobileIps = $blend('mobile_ips', 'full');
-
-        $basePaceViews = $blend('views', 'pace');
-        $basePaceIps = $blend('ips', 'pace');
-        $basePaceMobileViews = $blend('mobile_views', 'pace');
-        $basePaceMobileIps = $blend('mobile_ips', 'pace');
-
-        // 6. 核心企业级平滑预测引擎
-        $predict = function($curr, $baseFull, $basePace) use ($timeFraction) {
-            if ($curr <= 0) return 0;
-            $baseRest = max(0, $baseFull - $basePace);
-            
-            // 历史真空区：退化为阻尼线性推断
-            if ($baseFull <= 0 || $basePace <= 0) {
-                $linear = $curr / $timeFraction;
-                $dampener = 0.6 + (0.4 * $timeFraction);
-                return (int) round($linear * $dampener);
-            }
-
-            // 拉普拉斯平滑计算
-            $smoothing = 100;
-            $rawTrend = ($curr + $smoothing) / ($basePace + $smoothing);
-            
-            // 时间卡钳限制：早晨极度保守，晚上放开
-            $maxTrend = 1.1 + ($timeFraction * 1.4);
-            $minTrend = 0.7 - ($timeFraction * 0.4);
-            $clampedTrend = max($minTrend, min($maxTrend, $rawTrend));
-
-            // 置信度抑制：1.5次方压制早晨的噪音放大
-            $confidence = pow($timeFraction, 1.5);
-            $finalTrend = 1.0 + (($clampedTrend - 1.0) * $confidence);
-
-            return (int) round($curr + ($baseRest * $finalTrend));
-        };
-
-        $predViews = $predict($currViews, $baseFullViews, $basePaceViews);
-        $predIps = $predict($currIps, $baseFullIps, $basePaceIps);
-        $predMobileViews = $predict($currMobileViews, $baseFullMobileViews, $basePaceMobileViews);
-        $predMobileIps = $predict($currMobileIps, $baseFullMobileIps, $basePaceMobileIps);
-
-        // 7. 防御物理断层校验
         $predictions = [
-            'views' => max($currViews, $predViews),
-            'ips' => max($currIps, $predIps),
-            'mobile_views' => min(max($currViews, $predViews), max($currMobileViews, $predMobileViews)),
-            'mobile_ips' => min(max($currIps, $predIps), max($currMobileIps, $predMobileIps)),
+            'views' => $predictedViews,
+            'ips' => $predictedIps,
+            'mobile_views' => $predictedMobileViews,
+            'mobile_ips' => $predictedMobileIps, 
         ];
 
-        $this->redis->setex($cacheKey, 180, json_encode($predictions));
+        $this->redis->setex($cacheKey, 300, json_encode($predictions));
+
         return $predictions;
     }
 
@@ -6818,6 +6701,7 @@ private function getSetting(string $key): ?array
         $pageviewsDays = $pageviewsDays === null ? $days : max(0, $pageviewsDays);
         $this->cleanupDataOlderThan($days, $pageviewsDays, $batchSize);
     }
+
     private function cleanupDataOlderThan(int $rollupDays, int $pageviewsDays, ?int $batchSize = null): void
     {
         if ($rollupDays <= 0 && $pageviewsDays <= 0) {
@@ -6825,75 +6709,70 @@ private function getSetting(string $key): ?array
         }
 
         $batchSize = $batchSize && $batchSize > 0 ? $batchSize : 50000;
-        
-        // 【核心修复】：除了现存站点，强制捞取所有产生过历史数据的 site_id（捕获历史遗留的幽灵数据）
-        $siteIds = $this->db->query("
-            SELECT id FROM sites
-            UNION
-            SELECT site_id FROM pageview_rollups GROUP BY site_id
-        ")->fetchAll(PDO::FETCH_COLUMN);
-
-        if (empty($siteIds)) {
-            return;
-        }
 
         if ($rollupDays > 0) {
             $rollupCutoffPoint = (new \DateTimeImmutable('now'))->modify("-{$rollupDays} days");
             $rollupCutoff = $rollupCutoffPoint->format('Y-m-d H:i:s');
             $rollupCutoffDate = $rollupCutoffPoint->format('Y-m-d');
 
-            try {
-                foreach ($siteIds as $siteId) {
-                    $this->deleteBatched(
-                        'DELETE FROM pageview_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff' => $rollupCutoff], $batchSize
-                    );
-                    $this->deleteBatched(
-                        'DELETE FROM pageview_dimension_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff' => $rollupCutoff], $batchSize
-                    );
-                    $this->deleteBatched(
-                        'DELETE FROM pageview_page_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff' => $rollupCutoff], $batchSize
-                    );
-                    $this->deleteBatched(
-                        'DELETE FROM pageview_entry_rollups WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff' => $rollupCutoff], $batchSize
-                    );
-                    $this->deleteBatched(
-                        'DELETE FROM pageview_bot_logs WHERE site_id = :sid AND bucket_start < :cutoff LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff' => $rollupCutoff], $batchSize
-                    );
-                    $this->deleteBatched(
-                        'DELETE FROM site_visitor_audience WHERE site_id = :sid AND last_seen_date < :cutoff_date LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff_date' => $rollupCutoffDate], $batchSize
-                    );
-                }
-            } catch (Throwable $e) {
-                error_log("[Maintenance Error] Rollup cleanup failed: " . $e->getMessage());
-            }
+            // Rollup tables are small enough to delete in a single pass while still using time indexes.
+            $this->deleteBatched(
+                'DELETE FROM pageview_rollups WHERE bucket_start < :cutoff LIMIT :batch',
+                [':cutoff' => $rollupCutoff],
+                $batchSize
+            );
+
+            $this->deleteBatched(
+                'DELETE FROM pageview_dimension_rollups WHERE bucket_start < :cutoff LIMIT :batch',
+                [':cutoff' => $rollupCutoff],
+                $batchSize
+            );
+
+            $this->deleteBatched(
+                'DELETE FROM pageview_page_rollups WHERE bucket_start < :cutoff LIMIT :batch',
+                [':cutoff' => $rollupCutoff],
+                $batchSize
+            );
+
+            $this->deleteBatched(
+                'DELETE FROM pageview_entry_rollups WHERE bucket_start < :cutoff LIMIT :batch',
+                [':cutoff' => $rollupCutoff],
+                $batchSize
+            );
+
+            $this->deleteBatched(
+                'DELETE FROM pageview_bot_logs WHERE bucket_start < :cutoff LIMIT :batch',
+                [':cutoff' => $rollupCutoff],
+                $batchSize
+            );
+
+            $this->deleteBatched(
+                'DELETE FROM site_visitor_audience WHERE last_seen_date < :cutoff_date LIMIT :batch',
+                [':cutoff_date' => $rollupCutoffDate],
+                $batchSize
+            );
+
         }
 
         if ($pageviewsDays > 0) {
             $pageviewsCutoffPoint = (new \DateTimeImmutable('now'))->modify("-{$pageviewsDays} days");
             $pageviewsCutoff = $pageviewsCutoffPoint->format('Y-m-d H:i:s');
 
-            try {
-                foreach ($siteIds as $siteId) {
-                    $this->deleteBatched(
-                        'DELETE FROM pageviews WHERE site_id = :sid AND occurred_at < :cutoff LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff' => $pageviewsCutoff], $batchSize
-                    );
-                    $this->deleteBatched(
-                        'DELETE FROM sessions WHERE site_id = :sid AND start_time < :cutoff LIMIT :batch',
-                        [':sid' => $siteId, ':cutoff' => $pageviewsCutoff], $batchSize
-                    );
-                }
-            } catch (Throwable $e) {
-                error_log("[Maintenance Error] Pageviews cleanup failed: " . $e->getMessage());
-            }
+            // Pageviews can be very large; delete in batches to limit lock time and reduce replication lag.
+            $this->deleteBatched(
+                'DELETE FROM pageviews WHERE occurred_at < :cutoff LIMIT :batch',
+                [':cutoff' => $pageviewsCutoff],
+                $batchSize
+            );
+            // 新增：连带清理过期的 sessions
+            $this->deleteBatched(
+                'DELETE FROM sessions WHERE start_time < :cutoff LIMIT :batch',
+                [':cutoff' => $pageviewsCutoff],
+                $batchSize
+            );
         }
     }
+
 public function createSharePage(string $name, array $siteIds): array
     {
         $siteIds = array_values(array_unique(array_filter(array_map('intval', $siteIds))));
@@ -7076,23 +6955,16 @@ $globalMobileIps = !empty($allMobileIpKeys) ? (int) $this->redis->pfCount($allMo
     }
     public function deleteSite(int $siteId): void
     {
+        // === 新增：严格越权拦截，验证该站点是否属于当前操作者 ===
         if (!$this->getSite($siteId)) {
             throw new RuntimeException('越权操作：无权删除该站点或站点不存在');
         }
+        // ========================================================
         $this->db->beginTransaction();
         try {
-            // 【核心修复】：彻底阻断“幽灵数据”产生，一次性清理该站点在所有相关表中的数据
-            $tables = [
-                'pageviews', 'sessions', 'pageview_rollups', 'pageview_dimension_rollups',
-                'pageview_page_rollups', 'pageview_entry_rollups', 'pageview_bot_logs',
-                'site_visitor_audience', 'site_blocked_domains', 'site_domains'
-            ];
-            
-            foreach ($tables as $table) {
-                $this->db->prepare("DELETE FROM {$table} WHERE site_id = :id")->execute([':id' => $siteId]);
-            }
+            $deleteStats = $this->db->prepare('DELETE FROM pageviews WHERE site_id = :id');
+            $deleteStats->execute([':id' => $siteId]);
 
-            // 清理分享页中的该站点引用
             $shares = $this->getSharePages();
             foreach ($shares as $share) {
                 $siteIds = array_filter($share['site_ids'], fn($sid) => (int) $sid !== (int) $siteId);
@@ -7113,7 +6985,6 @@ $globalMobileIps = !empty($allMobileIpKeys) ? (int) $this->redis->pfCount($allMo
             throw $e;
         }
     }
-
     /**
      * 仅保留当前 SQL 中出现的命名参数，避免出现多余参数导致的 HY093 错误
      */
