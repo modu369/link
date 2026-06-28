@@ -1681,7 +1681,6 @@ private function cleanupProxyIpData(string $ip): void
             return;
         }
 
-        // 修改点：同时获取受到污染的 visitor_id
         $stmt = $this->db->prepare(
             "SELECT site_id, visitor_id,
                     DATE_FORMAT(occurred_at, '%Y-%m-%d %H:00:00') as bucket_start
@@ -1696,27 +1695,50 @@ private function cleanupProxyIpData(string $ip): void
             return;
         }
 
-        $this->db->beginTransaction();
-        try {
-            // 提取该恶意 IP 对应的所有 visitor_id
-            $badVisitors = array_values(array_unique(array_filter(array_column($badTraffic, 'visitor_id'))));
+        // --- 【架构优化】：指数退避死锁重试机制 ---
+        $maxRetries = 3;
+        $dbSuccess = false;
 
-            $updateStmt = $this->db->prepare(
-                'UPDATE pageviews SET is_proxy_risk = 1 WHERE ip_address = :ip AND is_proxy_risk = 0'
-            );
-            $updateStmt->execute([':ip' => $ip]);
+        for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
+            $this->db->beginTransaction();
+            try {
+                // 提取该恶意 IP 对应的所有 visitor_id
+                $badVisitors = array_values(array_unique(array_filter(array_column($badTraffic, 'visitor_id'))));
 
-            // 修改点：从新的 visitor 表中删除被污染的 UV 记录
-            if (!empty($badVisitors)) {
-                $placeholders = implode(',', array_fill(0, count($badVisitors), '?'));
-                $deleteAudience = $this->db->prepare("DELETE FROM site_visitor_audience WHERE visitor_id IN ($placeholders)");
-                $deleteAudience->execute($badVisitors);
+                $updateStmt = $this->db->prepare(
+                    'UPDATE pageviews SET is_proxy_risk = 1 WHERE ip_address = :ip AND is_proxy_risk = 0'
+                );
+                $updateStmt->execute([':ip' => $ip]);
+
+                if (!empty($badVisitors)) {
+                    // 【防死锁优化】：对 ID 进行排序，维持加锁顺序一致性
+                    sort($badVisitors, SORT_STRING);
+                    $placeholders = implode(',', array_fill(0, count($badVisitors), '?'));
+                    $deleteAudience = $this->db->prepare("DELETE FROM site_visitor_audience WHERE visitor_id IN ($placeholders)");
+                    $deleteAudience->execute($badVisitors);
+                }
+                
+                $this->db->commit();
+                $dbSuccess = true;
+                break; // 成功则跳出重试循环
+            } catch (PDOException $e) {
+                $this->db->rollBack();
+                if ($e->getCode() === '40001' || str_contains($e->getMessage(), '1213') || str_contains($e->getMessage(), '1205')) {
+                    if ($attempt < $maxRetries) {
+                        // 随机抖动休眠，错峰重试避开“活锁”
+                        usleep(mt_rand(10000, 50000) * $attempt);
+                        continue; 
+                    }
+                }
+                return; // 如果不是并发锁错误或者超过最大重试次数，直接退出
+            } catch (Throwable $e) {
+                $this->db->rollBack();
+                return; 
             }
-            
-            $this->db->commit();
-        } catch (Throwable $e) {
-            $this->db->rollBack();
-            return; 
+        }
+
+        if (!$dbSuccess) {
+            return; // 事务彻底失败则终止重构流程
         }
 
         // 重新聚合按小时度量的数据
@@ -1749,6 +1771,21 @@ private function cleanupProxyIpData(string $ip): void
     public function rebuildRollupBucket(int $siteId, DateTimeImmutable $bucketStart, DateTimeImmutable $bucketEnd): array
     {
         $bucketKey = $bucketStart->format('Y-m-d H:i:s');
+        
+        // 【架构优化】：引入细粒度分布式互斥锁，从根源消除同一数据桶的并发间隙锁冲突
+        $lockKey = "tracker:lock:rollup:{$siteId}:" . md5($bucketKey);
+        
+        // 尝试获取锁，如果无法获取，说明其他 Worker 正在处理该桶，直接安全退出
+        if (!$this->redis->setnx($lockKey, '1')) {
+            return [
+                'site_id' => $siteId,
+                'bucket' => $bucketKey,
+                'status' => 'skipped_due_to_lock'
+            ];
+        }
+        // 强制设置过期时间（3分钟），防止 Worker 意外崩溃导致死锁孤岛
+        $this->redis->expire($lockKey, 180);
+
         $start = $bucketStart->format('Y-m-d H:i:s');
         $end = $bucketEnd->format('Y-m-d H:i:s');
         $dayStart = $bucketStart->setTime(0, 0, 0);
@@ -1862,22 +1899,22 @@ private function cleanupProxyIpData(string $ip): void
                     JOIN sites s ON s.id = p.site_id
                     WHERE p.site_id = ? AND p.keyword IS NOT NULL AND keyword != '' AND p.is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
                     GROUP BY dimension_value",
-'title' => "SELECT LEFT(title, 255) as dimension_value,
-    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
-    FROM pageviews p 
-    WHERE site_id = ? 
-      AND title IS NOT NULL 
-      AND title != '' 
-      AND is_proxy_risk = 0 
-      AND occurred_at >= ? 
-      AND occurred_at < ?
-    GROUP BY dimension_value",
+                'title' => "SELECT LEFT(title, 255) as dimension_value,
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
+                    FROM pageviews p 
+                    WHERE site_id = ? 
+                      AND title IS NOT NULL 
+                      AND title != '' 
+                      AND is_proxy_risk = 0 
+                      AND occurred_at >= ? 
+                      AND occurred_at < ?
+                    GROUP BY dimension_value",
                 'audience' => "SELECT LEFT(CASE WHEN a.first_seen >= ? AND a.first_seen < ? THEN 'new' ELSE 'returning' END, 255) as dimension_value,
-                COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT p.ip_hash) as ips
-                FROM pageviews p
-                LEFT JOIN site_visitor_audience a ON a.site_id = p.site_id AND a.visitor_id = p.visitor_id
-                WHERE p.site_id = ? AND p.is_proxy_risk = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
-                GROUP BY dimension_value",
+                    COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT p.ip_hash) as ips
+                    FROM pageviews p
+                    LEFT JOIN site_visitor_audience a ON a.site_id = p.site_id AND a.visitor_id = p.visitor_id
+                    WHERE p.site_id = ? AND p.is_proxy_risk = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
+                    GROUP BY dimension_value",
             ];
 
             foreach ($dimensionInserts as $dimension => $sql) {
@@ -1938,7 +1975,7 @@ private function cleanupProxyIpData(string $ip): void
                 $ispAgg[$ispKey]['ips'] = ($ispAgg[$ispKey]['ips'] ?? 0) + $ips;
             }
 
-$geoInsert = $this->db->prepare(
+            $geoInsert = $this->db->prepare(
                 'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
                  VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)
                  ON DUPLICATE KEY UPDATE
@@ -1948,42 +1985,16 @@ $geoInsert = $this->db->prepare(
             );
 
             foreach ($regionAgg as $label => $data) {
-                $geoInsert->execute([
-                    $siteId,
-                    $bucketKey,
-                    'region',
-                    mb_substr($label, 0, 255),
-                    $data['pv'],
-                    $data['uv'],
-                    $data['ips'],
-                ]);
+                $geoInsert->execute([$siteId, $bucketKey, 'region', mb_substr($label, 0, 255), $data['pv'], $data['uv'], $data['ips']]);
             }
-
             foreach ($countryAgg as $label => $data) {
-                $geoInsert->execute([
-                    $siteId,
-                    $bucketKey,
-                    'country',
-                    mb_substr($label, 0, 255),
-                    $data['pv'],
-                    $data['uv'],
-                    $data['ips'],
-                ]);
+                $geoInsert->execute([$siteId, $bucketKey, 'country', mb_substr($label, 0, 255), $data['pv'], $data['uv'], $data['ips']]);
             }
-
             foreach ($ispAgg as $label => $data) {
-                $geoInsert->execute([
-                    $siteId,
-                    $bucketKey,
-                    'isp',
-                    mb_substr($label, 0, 255),
-                    $data['pv'],
-                    $data['uv'],
-                    $data['ips'],
-                ]);
+                $geoInsert->execute([$siteId, $bucketKey, 'isp', mb_substr($label, 0, 255), $data['pv'], $data['uv'], $data['ips']]);
             }
 
-$pageStmt = $this->db->prepare(
+            $pageStmt = $this->db->prepare(
                 "INSERT INTO pageview_page_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
                  SELECT ?, ?, path, pv, uv, ips, sessions, duration_sum, page_sum, bounce_count
                  FROM (
@@ -2011,7 +2022,6 @@ $pageStmt = $this->db->prepare(
                     LIMIT 500
                  ) t"
             );
-            // 注意：因为这里用到了两个子查询的时间约束，参数数量从 5 个变成了 8 个
             $pageStmt->execute([$siteId, $bucketKey, $siteId, $start, $end, $siteId, $start, $end]);
 
             $entryStmt = $this->db->prepare(
@@ -2047,6 +2057,9 @@ $pageStmt = $this->db->prepare(
             $entryStmt->execute([$siteId, $bucketKey, $siteId, $start, $end]);
 
             $this->db->commit();
+            
+            // 事务提交成功，释放锁
+            $this->redis->del($lockKey);
 
             return [
                 'site_id' => $siteId,
@@ -2058,6 +2071,8 @@ $pageStmt = $this->db->prepare(
             ];
         } catch (Throwable $e) {
             $this->db->rollBack();
+            // 发生异常，释放锁
+            $this->redis->del($lockKey);
             return [
                 'site_id' => $siteId,
                 'bucket' => $bucketKey,
@@ -2124,7 +2139,7 @@ $pageStmt = $this->db->prepare(
         $pageviewsBatch = [];
         $sessionsBatch = [];
 
-while ($processed < $maxBatch) {
+        while ($processed < $maxBatch) {
             $raw = $this->redis->rPopLPush($this->ingestQueueKey, $this->ingestProcessingKey);
             if ($raw === false || $raw === null) break;
 
@@ -2139,7 +2154,6 @@ while ($processed < $maxBatch) {
                 // 启用 Batch Mode 获取清洗后的数据组
                 $data = $this->processPageview($decoded['tracking_id'], $decoded['payload'], $receivedAt, true);
                 
-                // 【核心修复】：分别判断，兼容纯心跳数据（只有 session 没有 pageview）
                 if ($data) {
                     if (!empty($data['pageview'])) {
                         $pageviewsBatch[] = $data['pageview'];
@@ -2164,11 +2178,25 @@ while ($processed < $maxBatch) {
                     $this->executeBulkInsert('pageviews', array_keys($pageviewsBatch[0]), $pageviewsBatch);
                 }
                 if (!empty($sessionsBatch)) {
+                    // 【核心破局点】：强制按照 session_id 的字典序进行排序。
+                    // 这确保了无论多少个 Ingest Worker 并发，它们向 MySQL 申请行锁的顺序都是一致的 (A->B->C)，彻底杜绝 (A等B，B等A) 的死锁环。
+                    usort($sessionsBatch, function ($a, $b) {
+                        return strcmp($a['session_id'], $b['session_id']);
+                    });
+                    
                     $this->executeBulkInsert('sessions', array_keys($sessionsBatch[0]), $sessionsBatch, 
                         'ON DUPLICATE KEY UPDATE last_path = VALUES(last_path), updated_at = VALUES(updated_at), duration_seconds = GREATEST(duration_seconds, VALUES(duration_seconds)), page_count = GREATEST(page_count, VALUES(page_count))'
                     );
                 }
                 $this->db->commit();
+            } catch (PDOException $e) {
+                $this->db->rollBack();
+                // 1213: Deadlock, 1205: Lock wait timeout
+                if ($e->getCode() === '40001' || str_contains($e->getMessage(), '1213') || str_contains($e->getMessage(), '1205')) {
+                    error_log("Ingest Queue Auto-Recovered from Deadlock. Batch will be retried. Error: " . $e->getMessage());
+                } else {
+                    error_log("Bulk Insert PDO Error: " . $e->getMessage());
+                }
             } catch (Throwable $e) {
                 $this->db->rollBack();
                 error_log("Bulk Insert Error: " . $e->getMessage());
