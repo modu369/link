@@ -837,6 +837,18 @@ private function truncateIpv6(?string $ip): ?string
             return $fallback;
         }
 
+        // 【核心修复】：防止 1366 Incorrect string value 导致整批数据插入崩溃
+        // 检查字符串是否为 100% 合法的 UTF-8 编码
+        if (!mb_check_encoding($value, 'UTF-8')) {
+            // 1. 在国内业务中，非 UTF-8 极大概率是搜索引擎的 GBK 编码（如百度的乱码）
+            // 先尝试将其按 GBK 恢复为正常的 UTF-8 中文
+            $value = @mb_convert_encoding($value, 'UTF-8', 'GBK');
+            
+            // 2. 兜底清洗：如果依然存在因 URL 强行截断导致的“残缺字节”（如 \xE8\xA7%）
+            // 这行代码会将其彻底抹除或替换为问号，确保交给 MySQL 的绝对是纯净合法的 UTF-8
+            $value = @mb_convert_encoding($value, 'UTF-8', 'UTF-8');
+        }
+
         if (function_exists('mb_substr')) {
             return mb_substr($value, 0, $max, 'UTF-8');
         }
