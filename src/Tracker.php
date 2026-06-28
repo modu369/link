@@ -4572,59 +4572,128 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
             return json_decode($cached, true);
         }
 
-        // 1. 获取真实、包含 HLL 修正的精确当天/昨日数据，彻底修复基数虚高问题
+        // 1. 获取真实、包含 HLL 修正的精确当天数据
         $todayTotals = $this->getTotals($siteId, 'today');
-        $yesterdayTotals = $this->getTotals($siteId, 'yesterday');
-
         $todayViews = max(0, (int)($todayTotals['views'] ?? 0));
         $todayIps = max(0, (int)($todayTotals['ip_count'] ?? 0));
         
-        $yesterdayFullViews = max(0, (int)($yesterdayTotals['views'] ?? 0));
-        $yesterdayFullIps = max(0, (int)($yesterdayTotals['ip_count'] ?? 0));
-
         // 2. 计算纯时间进度 (当前秒数 / 86400)
         $timeFraction = ((int)$now->format('H') * 3600 + (int)$now->format('i') * 60 + (int)$now->format('s')) / 86400;
 
-        // 获取昨天同时段的 PV，用于计算流量的 "形状进度"
-        $todayStart = $now->setTime(0, 0, 0);
-        $yesterdayStart = $todayStart->sub(new DateInterval('P1D'));
-        $yesterdaySameTime = $yesterdayStart->setTime((int) $now->format('H'), (int) $now->format('i'), (int) $now->format('s'));
-        $yesterdayPaceStats = $this->getRangeStats($siteId, $yesterdayStart, $yesterdaySameTime);
-        $yesterdayPartialViews = max(0, (int)($yesterdayPaceStats['views'] ?? 0));
-
-        // 3. 计算综合进度比例
-        $progressFraction = $yesterdayFullViews > 0 ? ($yesterdayPartialViews / $yesterdayFullViews) : $timeFraction;
-
-        // 平滑与兜底处理：如果昨天基数太小，或者算出的进度异常，则降级为时间进度
-        if ($progressFraction <= 0.05 || $yesterdayFullViews < 50) {
-            $progressFraction = $timeFraction;
+        // 3. 核心：计算过去 8 天的环比进度 (按5分钟精度，缓存8天在Redis)
+        $bHour = (int) $now->format('H');
+        $bMin = (int) $now->format('i');
+        $minuteBucketDay = (int) floor(($bHour * 60 + $bMin) / 5);
+        
+        $validDays = 0;
+        $totalProgressViews = 0;
+        $totalProgressIps = 0;
+        
+        for ($i = 1; $i <= 8; $i++) {
+            $pastDate = $now->sub(new DateInterval('P' . $i . 'D'));
+            $ymd = $pastDate->format('Ymd');
+            
+            $paceCacheKey = "pace_v2:{$siteId}:{$ymd}:{$minuteBucketDay}";
+            $cachedPace = $this->redis->get($paceCacheKey);
+            
+            if ($cachedPace) {
+                $data = json_decode($cachedPace, true);
+            } else {
+                $dayStart = $pastDate->setTime(0, 0, 0);
+                $dayEnd = $dayStart->modify('+1 day');
+                
+                // 从归档表快速提取24小时分部数据，避免全表扫描
+                $hourlyStats = $this->getRollupHourlyStats($siteId, $dayStart, $dayEnd, true);
+                
+                $fullViews = 0;
+                $fullIps = 0;
+                $partialViews = 0;
+                $partialIps = 0;
+                
+                foreach ($hourlyStats as $stat) {
+                    $h = (int) (new DateTimeImmutable($stat['hour']))->format('H');
+                    $v = (int) ($stat['views'] ?? 0);
+                    $ip = (int) ($stat['ips'] ?? 0);
+                    
+                    $fullViews += $v;
+                    $fullIps += $ip;
+                    
+                    if ($h < $bHour) {
+                        $partialViews += $v;
+                        $partialIps += $ip;
+                    } elseif ($h === $bHour) {
+                        // 精确插值：只计算当前小时已经过去的分钟流量
+                        $fraction = $bMin / 60.0;
+                        $partialViews += (int) round($v * $fraction);
+                        $partialIps += (int) round($ip * $fraction);
+                    }
+                }
+                
+                // 利用 HLL 精确修正全天去重 IP 数量，确保比例准确
+                $fullIpKey = "site:{$siteId}:hll_ip:{$ymd}";
+                if ($this->redis->exists($fullIpKey)) {
+                    $hllIps = (int) $this->redis->pfCount($fullIpKey);
+                    if ($hllIps > 0) {
+                        $ratio = $fullIps > 0 ? ($partialIps / $fullIps) : 0;
+                        $fullIps = $hllIps;
+                        $partialIps = (int) round($fullIps * $ratio);
+                    }
+                }
+                
+                $data = [
+                    'fv' => $fullViews,
+                    'fi' => $fullIps,
+                    'pv' => $partialViews,
+                    'pi' => $partialIps
+                ];
+                // 缓存该5分钟切片的历史快照 8 天
+                $this->redis->setex($paceCacheKey, 86400 * 8, json_encode($data));
+            }
+            
+            // 过滤：只有全天流量 > 50，且该切片流量 > 0 时才参考，遇到断代/丢失直接跳过
+            if ($data['fv'] > 50 && $data['pv'] > 0) {
+                $totalProgressViews += ($data['pv'] / $data['fv']);
+                if ($data['fi'] > 10 && $data['pi'] > 0) {
+                    $totalProgressIps += ($data['pi'] / $data['fi']);
+                } else {
+                    $totalProgressIps += ($data['pv'] / $data['fv']);
+                }
+                $validDays++;
+            }
         }
-        $progressFraction = max(0.01, min(1.0, $progressFraction));
 
-        // 【关键修复】如果已经接近午夜（最后约 14 分钟，>99%），直接视为 100% 进度，预测值等于当前值
+        // 求取 8 天的平均流量进度模型
+        $progressFractionViews = $validDays > 0 ? ($totalProgressViews / $validDays) : $timeFraction;
+        $progressFractionIps = $validDays > 0 ? ($totalProgressIps / $validDays) : $timeFraction;
+        
+        // 兜底：如果算出来的进度太不合理，回退到时间进度
+        if ($progressFractionViews <= 0.05) $progressFractionViews = $timeFraction;
+        if ($progressFractionIps <= 0.05) $progressFractionIps = $timeFraction;
+        
+        $progressFractionViews = max(0.01, min(1.0, $progressFractionViews));
+        $progressFractionIps = max(0.01, min(1.0, $progressFractionIps));
+
+        // 如果已经接近午夜（最后约 14 分钟，>99%），直接视为 100% 进度，预测值直接收敛为当前值
         if ($timeFraction >= 0.99) {
-            $progressFraction = 1.0;
+            $progressFractionViews = 1.0;
+            $progressFractionIps = 1.0;
         }
-
-        $predictedViews = $todayViews;
-        $predictedIps = $todayIps;
 
         // 4. 根据当前时间段决定预测算法
         if ($timeFraction < 0.1) {
-            // 凌晨前段（比如0点~2点）当天基数太小，使用昨日最终或历史均值按剩余时间加权
-            $averages = $this->getHistoricalAverages($siteId, 30);
-            $expectedViews = $yesterdayFullViews > 0 ? $yesterdayFullViews : max(0, (int)($averages['views'] ?? 0));
-            $expectedIps = $yesterdayFullIps > 0 ? $yesterdayFullIps : max(0, (int)($averages['ips'] ?? 0));
+            // 凌晨前段（比如0点~2点）当天基数太小，使用 8 天历史均值按剩余时间加权平滑过渡
+            $averages = $this->getHistoricalAverages($siteId, 8);
+            $expectedViews = max(0, (int)($averages['views'] ?? 0));
+            $expectedIps = max(0, (int)($averages['ips'] ?? 0));
             
             $predictedViews = (int) round($todayViews + $expectedViews * (1 - $timeFraction));
             $predictedIps = (int) round($todayIps + $expectedIps * (1 - $timeFraction));
         } else {
-            // 正常时段，利用进度比例直接外推
-            $predictedViews = (int) round($todayViews / $progressFraction);
-            $predictedIps = (int) round($todayIps / $progressFraction);
+            // 正常时段，利用环比推算比例外推
+            $predictedViews = (int) round($todayViews / $progressFractionViews);
+            $predictedIps = (int) round($todayIps / $progressFractionIps);
         }
 
-        // 绝对兜底：全站预测值绝对不能低于当前实时产生的值
         $predictedViews = max($todayViews, $predictedViews);
         $predictedIps = max($todayIps, $predictedIps);
 
@@ -4633,14 +4702,12 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
         $currentMobileViews = max(0, (int)($deviceData['mobile']['views'] ?? 0));
         $currentMobileIps = max(0, (int)($deviceData['mobile']['ips'] ?? 0));
 
-        // 提取实时的移动端占比进行推算
         $mobileViewRatio = $todayViews > 0 ? ($currentMobileViews / $todayViews) : 0;
         $mobileIpRatio = $todayIps > 0 ? ($currentMobileIps / $todayIps) : 0;
 
         $predictedMobileViews = (int) round($predictedViews * $mobileViewRatio);
         $predictedMobileIps = (int) round($predictedIps * $mobileIpRatio);
 
-        // 绝对兜底：移动端预测值绝对不能低于移动端已产生的值
         $predictedMobileViews = max($currentMobileViews, $predictedMobileViews);
         $predictedMobileIps = max($currentMobileIps, $predictedMobileIps);
 
@@ -4651,6 +4718,7 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
             'mobile_ips' => $predictedMobileIps, 
         ];
 
+        // 高频请求拦截：将最终预测结果短效缓存 5 分钟
         $this->redis->setex($cacheKey, 300, json_encode($predictions));
 
         return $predictions;
