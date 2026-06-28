@@ -1664,21 +1664,24 @@ private function getNetworkIdentifier(string $ip): string
 
         $processed = 0;
         foreach ($targets as $ip => $detectedAt) {
-            $this->cleanupProxyIpData((string) $ip);
-            try {
-                $this->redis->zRem($queueKey, (string) $ip);
-                $processed++;
-            } catch (Throwable $e) {
+            // 【核心防御】：只有明确返回 true（无锁冲突且事务成功），才从 Redis 队列移除
+            // 如果返回 false，保留在队列中，下一轮 Worker 唤醒时自动无损接管
+            if ($this->cleanupProxyIpData((string) $ip) === true) {
+                try {
+                    $this->redis->zRem($queueKey, (string) $ip);
+                    $processed++;
+                } catch (Throwable $e) {
+                }
             }
         }
         return $processed;
     }
 
-private function cleanupProxyIpData(string $ip): void
+private function cleanupProxyIpData(string $ip): bool 
     {
         $ip = trim($ip);
         if ($ip === '') {
-            return;
+            return true; 
         }
 
         $stmt = $this->db->prepare(
@@ -1692,56 +1695,34 @@ private function cleanupProxyIpData(string $ip): void
         $badTraffic = $stmt->fetchAll();
 
         if (empty($badTraffic)) {
-            return;
+            return true; // 没有需要清洗的脏数据，直接视为成功
         }
 
-        // --- 【架构优化】：指数退避死锁重试机制 ---
-        $maxRetries = 3;
-        $dbSuccess = false;
+        $badVisitors = array_values(array_unique(array_filter(array_column($badTraffic, 'visitor_id'))));
 
-        for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
-            $this->db->beginTransaction();
-            try {
-                // 提取该恶意 IP 对应的所有 visitor_id
-                $badVisitors = array_values(array_unique(array_filter(array_column($badTraffic, 'visitor_id'))));
+        $this->db->beginTransaction();
+        try {
+            $updateStmt = $this->db->prepare(
+                'UPDATE pageviews SET is_proxy_risk = 1 WHERE ip_address = :ip AND is_proxy_risk = 0'
+            );
+            $updateStmt->execute([':ip' => $ip]);
 
-                $updateStmt = $this->db->prepare(
-                    'UPDATE pageviews SET is_proxy_risk = 1 WHERE ip_address = :ip AND is_proxy_risk = 0'
-                );
-                $updateStmt->execute([':ip' => $ip]);
-
-                if (!empty($badVisitors)) {
-                    // 【防死锁优化】：对 ID 进行排序，维持加锁顺序一致性
-                    sort($badVisitors, SORT_STRING);
-                    $placeholders = implode(',', array_fill(0, count($badVisitors), '?'));
-                    $deleteAudience = $this->db->prepare("DELETE FROM site_visitor_audience WHERE visitor_id IN ($placeholders)");
-                    $deleteAudience->execute($badVisitors);
-                }
-                
-                $this->db->commit();
-                $dbSuccess = true;
-                break; // 成功则跳出重试循环
-            } catch (PDOException $e) {
-                $this->db->rollBack();
-                if ($e->getCode() === '40001' || str_contains($e->getMessage(), '1213') || str_contains($e->getMessage(), '1205')) {
-                    if ($attempt < $maxRetries) {
-                        // 随机抖动休眠，错峰重试避开“活锁”
-                        usleep(mt_rand(10000, 50000) * $attempt);
-                        continue; 
-                    }
-                }
-                return; // 如果不是并发锁错误或者超过最大重试次数，直接退出
-            } catch (Throwable $e) {
-                $this->db->rollBack();
-                return; 
+            if (!empty($badVisitors)) {
+                sort($badVisitors, SORT_STRING);
+                $placeholders = implode(',', array_fill(0, count($badVisitors), '?'));
+                $deleteAudience = $this->db->prepare("DELETE FROM site_visitor_audience WHERE visitor_id IN ($placeholders)");
+                $deleteAudience->execute($badVisitors);
             }
+            
+            $this->db->commit();
+        } catch (Throwable $e) {
+            $this->db->rollBack();
+            // 【去掉重试的精髓】：遇到并发锁或任何异常，毫不犹豫直接回滚并返回 false！
+            // 绝不阻塞进程，直接把任务还给 Redis 队列。
+            return false; 
         }
 
-        if (!$dbSuccess) {
-            return; // 事务彻底失败则终止重构流程
-        }
-
-        // 重新聚合按小时度量的数据
+        // 重新聚合受影响的按小时统计桶
         $processedBuckets = [];
         foreach ($badTraffic as $row) {
             $bucketKey = $row['site_id'] . '_' . $row['bucket_start'];
@@ -1753,8 +1734,11 @@ private function cleanupProxyIpData(string $ip): void
                 $this->rebuildRollupBucket((int)$row['site_id'], $bucketStartDt, $bucketEndDt);
                 $processedBuckets[$bucketKey] = true;
             } catch (Throwable $e) {
+                // 如果明细已清洗，即使重算报错也无所谓，下一次大盘 Rollup Worker 扫过时会自动修正
             }
         }
+        
+        return true; // 彻底执行完毕，返回 true 通知外层出队
     }
 
     private function rebuildRollupRange(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end): void
@@ -2138,6 +2122,7 @@ private function cleanupProxyIpData(string $ip): void
 
         $pageviewsBatch = [];
         $sessionsBatch = [];
+        $rawItems = []; // 【修复】新增：暂存这批次取出的原始数据，等待事务成功后再清理
 
         while ($processed < $maxBatch) {
             $raw = $this->redis->rPopLPush($this->ingestQueueKey, $this->ingestProcessingKey);
@@ -2151,7 +2136,6 @@ private function cleanupProxyIpData(string $ip): void
 
             try {
                 $receivedAt = (int) ($decoded['received_at'] ?? time());
-                // 启用 Batch Mode 获取清洗后的数据组
                 $data = $this->processPageview($decoded['tracking_id'], $decoded['payload'], $receivedAt, true);
                 
                 if ($data) {
@@ -2163,7 +2147,8 @@ private function cleanupProxyIpData(string $ip): void
                     }
                 }
                 
-                $this->redis->lRem($this->ingestProcessingKey, $raw, 1);
+                // 【修复】禁止在这里 lRem！只需记录下来。
+                $rawItems[] = $raw;
                 $processed++;
             } catch (Throwable $e) {
                 // Ignore, 留存队列以便恢复
@@ -2178,8 +2163,6 @@ private function cleanupProxyIpData(string $ip): void
                     $this->executeBulkInsert('pageviews', array_keys($pageviewsBatch[0]), $pageviewsBatch);
                 }
                 if (!empty($sessionsBatch)) {
-                    // 【核心破局点】：强制按照 session_id 的字典序进行排序。
-                    // 这确保了无论多少个 Ingest Worker 并发，它们向 MySQL 申请行锁的顺序都是一致的 (A->B->C)，彻底杜绝 (A等B，B等A) 的死锁环。
                     usort($sessionsBatch, function ($a, $b) {
                         return strcmp($a['session_id'], $b['session_id']);
                     });
@@ -2189,17 +2172,31 @@ private function cleanupProxyIpData(string $ip): void
                     );
                 }
                 $this->db->commit();
+                
+                // 【核心修复】：数据库 100% 落地成功后，才批量从 Redis processing 队列中抹除！
+                foreach ($rawItems as $raw) {
+                    $this->redis->lRem($this->ingestProcessingKey, $raw, 1);
+                }
+                
             } catch (PDOException $e) {
                 $this->db->rollBack();
-                // 1213: Deadlock, 1205: Lock wait timeout
                 if ($e->getCode() === '40001' || str_contains($e->getMessage(), '1213') || str_contains($e->getMessage(), '1205')) {
-                    error_log("Ingest Queue Auto-Recovered from Deadlock. Batch will be retried. Error: " . $e->getMessage());
+                    error_log("Ingest Queue Auto-Recovered from Deadlock. Batch kept in processing list. Error: " . $e->getMessage());
                 } else {
                     error_log("Bulk Insert PDO Error: " . $e->getMessage());
                 }
+                // 【核心修复】事务失败，直接 return 0，数据仍留在 processing 列表中
+                // 等待 $this->ingestStalledAfter 秒后，会被 recoverStalledIngestQueue 自动捞回队列重试，零丢失！
+                return 0;
             } catch (Throwable $e) {
                 $this->db->rollBack();
                 error_log("Bulk Insert Error: " . $e->getMessage());
+                return 0;
+            }
+        } else {
+            // 如果全部都是非法/被过滤流量（没有入库内容），也需要清理掉它们
+            foreach ($rawItems as $raw) {
+                $this->redis->lRem($this->ingestProcessingKey, $raw, 1);
             }
         }
 
