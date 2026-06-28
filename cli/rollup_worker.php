@@ -10,6 +10,10 @@ $config = require __DIR__ . '/../config/config.php';
 // 【修改点1】服务初始化包裹在 try-catch 中，连接失败立刻让守护进程接管重启
 try {
     $db = Database::connection($config['db']);
+    
+    // 【核心修复 1】将会话降级为读已提交，彻底消灭间隙锁导致的并发交叉死锁
+    $db->exec("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED");
+    
     $redis = RedisClient::connection($config['redis']);
     $tracker = new Tracker($db, $redis, $config);
     $ipResolver = new IpResolver($config['ipdb']['path'] ?? null);
@@ -166,6 +170,9 @@ do {
                 }
 
                 $current = truncateBucketStart($lastRolled);
+                // 【核心修复 2】新增：记录真实成功的高水位线
+                $successfullyRolled = $current; 
+
                 while ($current < $endHour) {
                     $bucketStart = $current;
                     $bucketEnd = $bucketStart->modify('+1 hour');
@@ -186,28 +193,48 @@ do {
                         } else {
                             logError($errorMessage);
                         }
+                        
+                        // 【核心修复 3】发生致命 SQL 错误，立刻中断该站点的时间推进！防数据丢失。
+                        break; 
+                    } elseif (isset($summary['status']) && $summary['status'] === 'skipped_due_to_lock') {
+                        // 【核心修复 4】静默处理锁竞争，同样中断推进，交由抢到锁的进程推进或者下一轮重试
+                        logLine(sprintf(
+                            "[rollup worker %d/%d] site=%d bucket=%s skipped (locked by another process)",
+                            $workerIndex,
+                            $workerCount,
+                            $siteId,
+                            $bucketStart->format('Y-m-d H:i:s')
+                        ));
+                        break;
                     } else {
+                        // 正常成功的输出，加入 ?? 0 避免 Undefined Warning
                         logLine(sprintf(
                             "[rollup worker %d/%d] site=%d bucket=%s pv=%d uv=%d ip=%d sessions=%d",
                             $workerIndex,
                             $workerCount,
                             $summary['site_id'],
                             $summary['bucket'],
-                            $summary['pv'],
-                            $summary['uv'],
-                            $summary['ips'],
-                            $summary['sessions']
+                            $summary['pv'] ?? 0,
+                            $summary['uv'] ?? 0,
+                            $summary['ips'] ?? 0,
+                            $summary['sessions'] ?? 0
                         ));
                     }
+                    
                     $processedBuckets++;
+                    // 只有成功走完一切，才将水位线前进到这个桶的末尾
+                    $successfullyRolled = $bucketEnd;
                     $current = $bucketEnd;
                 }
 
-                $upsert = $db->prepare(
-                    'INSERT INTO rollup_jobs (site_id, last_rolled_at) VALUES (:site_id, :last)
-                     ON DUPLICATE KEY UPDATE last_rolled_at = VALUES(last_rolled_at)'
-                );
-                $upsert->execute([':site_id' => $siteId, ':last' => $endHour->format('Y-m-d H:i:s')]);
+                // 【核心修复 5】只将真正成功跑完的水位线 ($successfullyRolled) 写回数据库
+                if ($successfullyRolled > truncateBucketStart($lastRolled)) {
+                    $upsert = $db->prepare(
+                        'INSERT INTO rollup_jobs (site_id, last_rolled_at) VALUES (:site_id, :last)
+                         ON DUPLICATE KEY UPDATE last_rolled_at = VALUES(last_rolled_at)'
+                    );
+                    $upsert->execute([':site_id' => $siteId, ':last' => $successfullyRolled->format('Y-m-d H:i:s')]);
+                }
             }
 
             if ($processedBuckets === 0) {
