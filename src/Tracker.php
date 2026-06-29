@@ -4605,7 +4605,7 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
     public function getPredictions(int $siteId): array
     {
         $now = new DateTimeImmutable('now');
-        $minuteBucket = (int) floor($now->getTimestamp() / 300); // 面板最终结果的 5 分钟防抖缓存
+        $minuteBucket = (int) floor($now->getTimestamp() / 300); // 5 分钟粒度缓存
         $cacheKey = "predictions:{$siteId}:{$minuteBucket}";
 
         $cached = $this->redis->get($cacheKey);
@@ -4613,115 +4613,85 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
             return json_decode($cached, true);
         }
 
-        // 1. 获取真实、精确的当天数据
+        // 1. 获取真实、包含 HLL 修正的精确当天/昨日数据，彻底修复基数虚高问题
         $todayTotals = $this->getTotals($siteId, 'today');
+        $yesterdayTotals = $this->getTotals($siteId, 'yesterday');
+
         $todayViews = max(0, (int)($todayTotals['views'] ?? 0));
         $todayIps = max(0, (int)($todayTotals['ip_count'] ?? 0));
         
-        $bHour = (int) $now->format('H');
-        $bMin = (int) $now->format('i');
-        $timeFraction = ($bHour * 3600 + $bMin * 60 + (int)$now->format('s')) / 86400;
+        $yesterdayFullViews = max(0, (int)($yesterdayTotals['views'] ?? 0));
+        $yesterdayFullIps = max(0, (int)($yesterdayTotals['ip_count'] ?? 0));
 
-        // 2. 核心修复：基于过去 8 天历史计算进度，按"天"缓存 24 小时阵列，拒绝 5 分钟残影导致分母冻结
-        $validDays = 0;
-        $totalProgressViews = 0;
-        
-        for ($i = 1; $i <= 8; $i++) {
-            $pastDate = $now->sub(new DateInterval('P' . $i . 'D'));
-            $ymd = $pastDate->format('Ymd');
-            
-            $historyCacheKey = "history_day_v3:{$siteId}:{$ymd}";
-            $cachedHistory = $this->redis->get($historyCacheKey);
-            
-            if ($cachedHistory) {
-                $dayData = json_decode($cachedHistory, true);
-            } else {
-                $dayStart = $pastDate->setTime(0, 0, 0);
-                $dayEnd = $dayStart->modify('+1 day');
-                $hourlyStats = $this->getRollupHourlyStats($siteId, $dayStart, $dayEnd, true);
-                
-                $fullViews = 0;
-                $hoursData = array_fill(0, 24, 0);
-                
-                foreach ($hourlyStats as $stat) {
-                    $h = (int) (new DateTimeImmutable($stat['hour']))->format('H');
-                    $v = (int) ($stat['views'] ?? 0);
-                    $hoursData[$h] = $v;
-                    $fullViews += $v;
-                }
-                
-                $dayData = ['fv' => $fullViews, 'hours' => $hoursData];
-                // 过去一整天的 24 小时阵列数据已固化，放心缓存 8 天，杜绝全表扫描
-                $this->redis->setex($historyCacheKey, 86400 * 8, json_encode($dayData));
-            }
-            
-            // 只有全天流量 > 50 的健康历史天数才参与推算，避免冷启动脏数据污染模型
-            if ($dayData['fv'] > 50) {
-                $partialViews = 0;
-                // 完整加和已过去的整点小时
-                for ($h = 0; $h < $bHour; $h++) {
-                    $partialViews += $dayData['hours'][$h];
-                }
-                // 精确插值当前正在进行中的小时
-                $fraction = $bMin / 60.0;
-                $partialViews += (int) round($dayData['hours'][$bHour] * $fraction);
-                
-                $totalProgressViews += ($partialViews / $dayData['fv']);
-                $validDays++;
-            }
-        }
+        // 2. 计算纯时间进度 (当前秒数 / 86400)
+        $timeFraction = ((int)$now->format('H') * 3600 + (int)$now->format('i') * 60 + (int)$now->format('s')) / 86400;
 
-        // 3. 取得平均进度
-        $progressFraction = $validDays > 0 ? ($totalProgressViews / $validDays) : $timeFraction;
-        
-        // 兜底防御：防止半夜极小比例引发乘数爆炸
-        if ($progressFraction <= 0.05) {
-            $progressFraction = max($progressFraction, $timeFraction);
+        // 获取昨天同时段的 PV，用于计算流量的 "形状进度"
+        $todayStart = $now->setTime(0, 0, 0);
+        $yesterdayStart = $todayStart->sub(new DateInterval('P1D'));
+        $yesterdaySameTime = $yesterdayStart->setTime((int) $now->format('H'), (int) $now->format('i'), (int) $now->format('s'));
+        $yesterdayPaceStats = $this->getRangeStats($siteId, $yesterdayStart, $yesterdaySameTime);
+        $yesterdayPartialViews = max(0, (int)($yesterdayPaceStats['views'] ?? 0));
+
+        // 3. 计算综合进度比例
+        $progressFraction = $yesterdayFullViews > 0 ? ($yesterdayPartialViews / $yesterdayFullViews) : $timeFraction;
+
+        // 平滑与兜底处理：如果昨天基数太小，或者算出的进度异常，则降级为时间进度
+        if ($progressFraction <= 0.05 || $yesterdayFullViews < 50) {
+            $progressFraction = $timeFraction;
         }
         $progressFraction = max(0.01, min(1.0, $progressFraction));
 
-        // 如果时间走到 23:45 以后，强制收敛到现实数据
+        // 【关键修复】如果已经接近午夜（最后约 14 分钟，>99%），直接视为 100% 进度，预测值等于当前值
         if ($timeFraction >= 0.99) {
             $progressFraction = 1.0;
         }
 
-        // 4. 计算预测值（核心修复：IP 直接复用 PV 平滑进度比例，根绝跨小时合并导致的分母极度膨胀）
+        $predictedViews = $todayViews;
+        $predictedIps = $todayIps;
+
+        // 4. 根据当前时间段决定预测算法
         if ($timeFraction < 0.1) {
-            // 凌晨 0 点 ~ 2点前，今日积累量太小，完全依赖历史绝对值基数
-            $averages = $this->getHistoricalAverages($siteId, 8);
-            $expectedViews = max(0, (int)($averages['views'] ?? 0));
-            $expectedIps = max(0, (int)($averages['ips'] ?? 0));
+            // 凌晨前段（比如0点~2点）当天基数太小，使用昨日最终或历史均值按剩余时间加权
+            $averages = $this->getHistoricalAverages($siteId, 30);
+            $expectedViews = $yesterdayFullViews > 0 ? $yesterdayFullViews : max(0, (int)($averages['views'] ?? 0));
+            $expectedIps = $yesterdayFullIps > 0 ? $yesterdayFullIps : max(0, (int)($averages['ips'] ?? 0));
             
             $predictedViews = (int) round($todayViews + $expectedViews * (1 - $timeFraction));
             $predictedIps = (int) round($todayIps + $expectedIps * (1 - $timeFraction));
         } else {
-            // 正常时段：当前累积真实流量 / 历史进度比例
+            // 正常时段，利用进度比例直接外推
             $predictedViews = (int) round($todayViews / $progressFraction);
             $predictedIps = (int) round($todayIps / $progressFraction);
         }
 
+        // 绝对兜底：全站预测值绝对不能低于当前实时产生的值
         $predictedViews = max($todayViews, $predictedViews);
         $predictedIps = max($todayIps, $predictedIps);
 
-        // 5. 移动端精准预测（复用顶层的修正后数据按真实比例拆分）
+        // 5. 移动端精准预测
         $deviceData = $this->getDeviceBreakdown($siteId, 'today');
         $currentMobileViews = max(0, (int)($deviceData['mobile']['views'] ?? 0));
         $currentMobileIps = max(0, (int)($deviceData['mobile']['ips'] ?? 0));
 
+        // 提取实时的移动端占比进行推算
         $mobileViewRatio = $todayViews > 0 ? ($currentMobileViews / $todayViews) : 0;
         $mobileIpRatio = $todayIps > 0 ? ($currentMobileIps / $todayIps) : 0;
 
         $predictedMobileViews = (int) round($predictedViews * $mobileViewRatio);
         $predictedMobileIps = (int) round($predictedIps * $mobileIpRatio);
 
+        // 绝对兜底：移动端预测值绝对不能低于移动端已产生的值
+        $predictedMobileViews = max($currentMobileViews, $predictedMobileViews);
+        $predictedMobileIps = max($currentMobileIps, $predictedMobileIps);
+
         $predictions = [
             'views' => $predictedViews,
             'ips' => $predictedIps,
-            'mobile_views' => max($currentMobileViews, $predictedMobileViews),
-            'mobile_ips' => max($currentMobileIps, $predictedMobileIps), 
+            'mobile_views' => $predictedMobileViews,
+            'mobile_ips' => $predictedMobileIps, 
         ];
 
-        // 高频请求拦截：将最终预测结果短效防抖缓存 5 分钟
         $this->redis->setex($cacheKey, 300, json_encode($predictions));
 
         return $predictions;
