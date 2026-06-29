@@ -472,7 +472,13 @@ $this->redis->expire($debounceKey, 3); // 锁定 3 秒
         $canonicalHost = $this->limitText($parsedUrl['canonical'] ?? '', 255);
         $allowedDomains = $this->getAllSiteDomains((int) $site['id']);
 
-        $referrer = $this->limitText($payload['referrer'] ?? '', 2048);
+        // 【根源修复 1】：保留完整的原始 Referrer，先提取关键词，防止被 2048 暴力切断
+        $rawReferrer = $payload['referrer'] ?? '';
+        $keyword = $this->limitText($this->extractKeyword($rawReferrer) ?? '', 255);
+        $keyword = str_replace('|', ' ', $keyword);
+
+        // 提取完毕后，再将 URL 截断到 2048 以适配数据库字段
+        $referrer = $this->limitText($rawReferrer, 2048);
         $referrerHost = $this->referrerHost($referrer);
         $observedHost = $canonicalHost ?: $this->canonicalHost($referrerHost);
 
@@ -551,8 +557,6 @@ $rawSessionId = $this->limitText($payload['session_id'] ?? '', 64);
         }
         // ==========================================
         $isMobile = $this->isMobile($userAgent, $payload);
-        $keyword = $this->limitText($this->extractKeyword($referrer) ?? '', 255);
-        $keyword = str_replace('|', ' ', $keyword);
         $headerMeta = [
             'language' => $this->limitText($payload['language'] ?? '', 32),
             'showp' => $this->limitText($payload['showp'] ?? '', 32),
@@ -6403,21 +6407,21 @@ public function getRegionStats(int $siteId, string $range, int $limit = 50): arr
             }
 
             if (!empty($query['wd'])) {
-                return urldecode($query['wd']);
+                return $query['wd']; 
             }
         }
 
         // ==================== 夸克搜索（quark.cn），显式读取 q 参数 ====================
         if (str_contains($refererHost, 'quark.cn')) {
             if (!empty($query['q'])) {
-                return urldecode($query['q']);
+                return $query['q'];
             }
         }
 
         // ==================== 谷歌/必应/360/头条/搜狗/神马/夸克 ====================
-        $paramQ = !empty($query['q']) ? urldecode($query['q']) : null;
-        $paramKeyword = !empty($query['keyword']) ? urldecode($query['keyword']) : null;
-        $paramWord = !empty($query['word']) ? urldecode($query['word']) : null;
+        $paramQ = !empty($query['q']) ? $query['q'] : null;
+        $paramKeyword = !empty($query['keyword']) ? $query['keyword'] : null;
+        $paramWord = !empty($query['word']) ? $query['word'] : null;
 
         if (str_contains($refererHost, 'google') || str_contains($refererHost, 'bing.com') || str_contains($refererHost, 'so.com') || str_contains($refererHost, 'sm.cn') || str_contains($refererHost, 'quark.cn')) {
             return $paramQ ?: $paramKeyword ?: $paramWord;
