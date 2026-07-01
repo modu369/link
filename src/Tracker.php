@@ -6924,8 +6924,8 @@ public function deleteSharePage(int $id): void
 
 public function getShareReport(string $token, string $range = 'today'): ?array
     {
-        // 缓存版本号升至 v6，强制刷新新格式
-        $cacheKey = "share_report:{$token}:{$range}_v6";
+        // 缓存版本号升至 v8，强制刷新
+        $cacheKey = "share_report:{$token}:{$range}_v8";
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($token, $range) {
             $share = $this->getShareByToken($token);
@@ -6935,14 +6935,12 @@ public function getShareReport(string $token, string $range = 'today'): ?array
 
             [$start, $end] = $this->rollupRangeBounds($range);
 
-            // 1. 获取原生的、未经合并的原始数组（包含“全局汇总”、“汇总”、各明细行）
             $originalRows = $this->getHostDeviceRollupRowsForSites($share['site_ids'], $start, $end);
             
             $globalSumRow = null;
             $mechanicSumRow = null;
             $normalRows = [];
 
-            // 2. 从数组里安全地剥离出那两行汇总数据
             if (!empty($originalRows)) {
                 foreach ($originalRows as $row) {
                     if ($row['domain'] === '全局汇总') {
@@ -6955,7 +6953,6 @@ public function getShareReport(string $token, string $range = 'today'): ?array
                 }
             }
 
-            // 数据容错防空保护
             if (!$globalSumRow && !$mechanicSumRow) {
                 $globalSumRow = ['domain' => '全局汇总', 'views' => 0, 'ips' => 0, 'mobile_views' => 0, 'mobile_ips' => 0];
                 $mechanicSumRow = $globalSumRow;
@@ -6965,57 +6962,78 @@ public function getShareReport(string $token, string $range = 'today'): ?array
                 $mechanicSumRow = $globalSumRow;
             }
 
-            // 3. 将它们完美合并为一个单行的超级“全局汇总”行（支持前端的累加双行显示 UI）
             $mergedGlobalRow = [
                 'domain' => '全局汇总',
                 'views' => $globalSumRow['views'],
                 'mobile_views' => $globalSumRow['mobile_views'],
-                'ips' => $globalSumRow['ips'],                       // 精准去重 IP
-                'mobile_ips' => $globalSumRow['mobile_ips'],         // 精准去重 移动端 IP
-                'sum_ips' => $mechanicSumRow['ips'],                 // 机械累加 IP
-                'sum_mobile_ips' => $mechanicSumRow['mobile_ips'],   // 机械累加 移动端 IP
-                'has_sum_comparison' => true                         // 前端单行双数据对比开关
+                'ips' => $globalSumRow['ips'],                       
+                'mobile_ips' => $globalSumRow['mobile_ips'],         
+                'sum_ips' => $mechanicSumRow['ips'],                 
+                'sum_mobile_ips' => $mechanicSumRow['mobile_ips'],   
+                'has_sum_comparison' => true // 全局汇总保留双数据展示                         
             ];
 
-            // 把合并后的唯一汇总行推入最终结果的最前面
             $processedRows = $normalRows;
             array_unshift($processedRows, $mergedGlobalRow);
 
-            // 4. 如果查询的是【今日】，直接调用已有的现成数据，追加“全局预测”
             if ($range === 'today') {
-                $predViews = 0; $predIps = 0; $predMobileViews = 0; $predMobileIps = 0;
-                $yestIps = 0; $yestMobileIps = 0;
+                $predViews = 0; $sumPredIps = 0; $predMobileViews = 0; $sumPredMobileIps = 0;
+                $sumTodayIps = 0; $sumTodayMobileIps = 0;
+
+                $todayAllIpKeys = [];
+                $todayAllMobileIpKeys = [];
+                $yestAllIpKeys = [];
+                $yestAllMobileIpKeys = [];
+                $todayDateStr = date('Ymd');
+                $yestDateStr = date('Ymd', strtotime('-1 day'));
 
                 foreach ($share['site_ids'] as $siteId) {
                     $sid = (int) $siteId;
                     
-                    // 【绝对使用已有数据】：直接读取系统中早已算好的今日预测数据
+                    $todayAllIpKeys[] = "site:{$sid}:hll_ip:{$todayDateStr}";
+                    $todayAllMobileIpKeys[] = "site:{$sid}:hll_ip_mobile:{$todayDateStr}";
+                    $yestAllIpKeys[] = "site:{$sid}:hll_ip:{$yestDateStr}";
+                    $yestAllMobileIpKeys[] = "site:{$sid}:hll_ip_mobile:{$yestDateStr}";
+
+                    // 获取并累加机械预测值
                     $pred = $this->getPredictions($sid);
                     $predViews += (int)($pred['views'] ?? 0);
-                    $predIps += (int)($pred['ips'] ?? 0);
+                    $sumPredIps += (int)($pred['ips'] ?? 0);
                     $predMobileViews += (int)($pred['mobile_views'] ?? 0);
-                    $predMobileIps += (int)($pred['mobile_ips'] ?? 0);
+                    $sumPredMobileIps += (int)($pred['mobile_ips'] ?? 0);
 
-                    // 【绝对使用已有数据】：直接读取系统早已存好的昨日同期基准数据
-                    $yTotals = $this->getTotals($sid, 'yesterday');
-                    $yestIps += (int)($yTotals['ip_count'] ?? 0);
+                    // 获取今日实时产生的各站机械 IP 用于计算去重比例
+                    $tTotals = $this->getTotals($sid, 'today');
+                    $sumTodayIps += (int)($tTotals['ip_count'] ?? 0);
                     
-                    $yDevices = $this->getDeviceBreakdown($sid, 'yesterday');
-                    $yestMobileIps += (int)($yDevices['mobile']['ips'] ?? 0);
+                    $tDevices = $this->getDeviceBreakdown($sid, 'today');
+                    $sumTodayMobileIps += (int)($tDevices['mobile']['ips'] ?? 0);
                 }
+
+                $yestDedupIps = !empty($yestAllIpKeys) ? (int) $this->redis->pfCount($yestAllIpKeys) : 0;
+                $yestDedupMobileIps = !empty($yestAllMobileIpKeys) ? (int) $this->redis->pfCount($yestAllMobileIpKeys) : 0;
+
+                $todayDedupIps = !empty($todayAllIpKeys) ? (int) $this->redis->pfCount($todayAllIpKeys) : 0;
+                $todayDedupMobileIps = !empty($todayAllMobileIpKeys) ? (int) $this->redis->pfCount($todayAllMobileIpKeys) : 0;
+
+                $dedupPredIps = $sumTodayIps > 0 ? (int) round($sumPredIps * ($todayDedupIps / $sumTodayIps)) : $sumPredIps;
+                $dedupPredMobileIps = $sumTodayMobileIps > 0 ? (int) round($sumPredMobileIps * ($todayDedupMobileIps / $sumTodayMobileIps)) : $sumPredMobileIps;
+
+                $dedupPredIps = max($todayDedupIps, $dedupPredIps);
+                $dedupPredMobileIps = max($todayDedupMobileIps, $dedupPredMobileIps);
 
                 $predictionRow = [
                     'domain' => '全局预测',
                     'views' => $predViews,
-                    'ips' => $predIps,
                     'mobile_views' => $predMobileViews,
-                    'mobile_ips' => $predMobileIps,
-                    'yesterday_ips' => $yestIps,
-                    'yesterday_mobile_ips' => $yestMobileIps,
-                    'is_prediction' => true 
+                    'ips' => $dedupPredIps,                             
+                    'mobile_ips' => $dedupPredMobileIps,                 
+                    'yesterday_ips' => $yestDedupIps,                   
+                    'yesterday_mobile_ips' => $yestDedupMobileIps,       
+                    'is_prediction' => true
+                    // 取消了 has_sum_comparison，不显示累加小字
                 ];
 
-                // 将“全局预测”塞到最最顶层（确保它永远展示在“全局汇总”的正上方）
                 array_unshift($processedRows, $predictionRow);
             }
 
