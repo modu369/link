@@ -6924,8 +6924,8 @@ public function deleteSharePage(int $id): void
 
 public function getShareReport(string $token, string $range = 'today'): ?array
     {
-        // 加上缓存包裹，防跨天串包和动态 TTL 机制都会自动生效
-        $cacheKey = "share_report:{$token}:{$range}";
+        // 缓存版本号升至 v6，强制刷新新格式
+        $cacheKey = "share_report:{$token}:{$range}_v6";
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($token, $range) {
             $share = $this->getShareByToken($token);
@@ -6935,41 +6935,109 @@ public function getShareReport(string $token, string $range = 'today'): ?array
 
             [$start, $end] = $this->rollupRangeBounds($range);
 
-            $rows = $this->getHostDeviceRollupRowsForSites($share['site_ids'], $start, $end);
-            if (empty($rows)) {
-                $rows = [[
-                    'domain' => '汇总',
-                    'views' => 0,
-                    'ips' => 0,
-                    'mobile_views' => 0,
-                    'mobile_ips' => 0,
-                ]];
+            // 1. 获取原生的、未经合并的原始数组（包含“全局汇总”、“汇总”、各明细行）
+            $originalRows = $this->getHostDeviceRollupRowsForSites($share['site_ids'], $start, $end);
+            
+            $globalSumRow = null;
+            $mechanicSumRow = null;
+            $normalRows = [];
+
+            // 2. 从数组里安全地剥离出那两行汇总数据
+            if (!empty($originalRows)) {
+                foreach ($originalRows as $row) {
+                    if ($row['domain'] === '全局汇总') {
+                        $globalSumRow = $row;
+                    } elseif ($row['domain'] === '汇总') {
+                        $mechanicSumRow = $row;
+                    } else {
+                        $normalRows[] = $row;
+                    }
+                }
+            }
+
+            // 数据容错防空保护
+            if (!$globalSumRow && !$mechanicSumRow) {
+                $globalSumRow = ['domain' => '全局汇总', 'views' => 0, 'ips' => 0, 'mobile_views' => 0, 'mobile_ips' => 0];
+                $mechanicSumRow = $globalSumRow;
+            } elseif (!$globalSumRow) {
+                $globalSumRow = $mechanicSumRow;
+            } elseif (!$mechanicSumRow) {
+                $mechanicSumRow = $globalSumRow;
+            }
+
+            // 3. 将它们完美合并为一个单行的超级“全局汇总”行（支持前端的累加双行显示 UI）
+            $mergedGlobalRow = [
+                'domain' => '全局汇总',
+                'views' => $globalSumRow['views'],
+                'mobile_views' => $globalSumRow['mobile_views'],
+                'ips' => $globalSumRow['ips'],                       // 精准去重 IP
+                'mobile_ips' => $globalSumRow['mobile_ips'],         // 精准去重 移动端 IP
+                'sum_ips' => $mechanicSumRow['ips'],                 // 机械累加 IP
+                'sum_mobile_ips' => $mechanicSumRow['mobile_ips'],   // 机械累加 移动端 IP
+                'has_sum_comparison' => true                         // 前端单行双数据对比开关
+            ];
+
+            // 把合并后的唯一汇总行推入最终结果的最前面
+            $processedRows = $normalRows;
+            array_unshift($processedRows, $mergedGlobalRow);
+
+            // 4. 如果查询的是【今日】，直接调用已有的现成数据，追加“全局预测”
+            if ($range === 'today') {
+                $predViews = 0; $predIps = 0; $predMobileViews = 0; $predMobileIps = 0;
+                $yestIps = 0; $yestMobileIps = 0;
+
+                foreach ($share['site_ids'] as $siteId) {
+                    $sid = (int) $siteId;
+                    
+                    // 【绝对使用已有数据】：直接读取系统中早已算好的今日预测数据
+                    $pred = $this->getPredictions($sid);
+                    $predViews += (int)($pred['views'] ?? 0);
+                    $predIps += (int)($pred['ips'] ?? 0);
+                    $predMobileViews += (int)($pred['mobile_views'] ?? 0);
+                    $predMobileIps += (int)($pred['mobile_ips'] ?? 0);
+
+                    // 【绝对使用已有数据】：直接读取系统早已存好的昨日同期基准数据
+                    $yTotals = $this->getTotals($sid, 'yesterday');
+                    $yestIps += (int)($yTotals['ip_count'] ?? 0);
+                    
+                    $yDevices = $this->getDeviceBreakdown($sid, 'yesterday');
+                    $yestMobileIps += (int)($yDevices['mobile']['ips'] ?? 0);
+                }
+
+                $predictionRow = [
+                    'domain' => '全局预测',
+                    'views' => $predViews,
+                    'ips' => $predIps,
+                    'mobile_views' => $predMobileViews,
+                    'mobile_ips' => $predMobileIps,
+                    'yesterday_ips' => $yestIps,
+                    'yesterday_mobile_ips' => $yestMobileIps,
+                    'is_prediction' => true 
+                ];
+
+                // 将“全局预测”塞到最最顶层（确保它永远展示在“全局汇总”的正上方）
+                array_unshift($processedRows, $predictionRow);
             }
 
             return [
                 'share' => $share,
-                'rows' => $rows,
+                'rows' => $processedRows,
             ];
         });
     }
-
 private function getHostDeviceRollupRowsForSites(array $siteIds, DateTimeImmutable $start, DateTimeImmutable $end): array
     {
         $hosts = $this->aggregateDimensionRollupsForSites($siteIds, 'host', $start, $end, 500);
         if (empty($hosts)) {
-            return [
-                ['domain' => '全局汇总', 'views' => 0, 'ips' => 0, 'mobile_views' => 0, 'mobile_ips' => 0],
-                ['domain' => '汇总', 'views' => 0, 'ips' => 0, 'mobile_views' => 0, 'mobile_ips' => 0]
-            ];
+            return [];
         }
 
         $hostDevices = $this->aggregateDimensionRollupsForSites($siteIds, 'host_device', $start, $end, 1000);
         $result = $this->formatHostDeviceBreakdown($hosts, $hostDevices);
 
-        // 【后续补充】：使用 HLL 跨多站点、跨天合并去重
+        // 使用 HLL 跨多站点、跨天合并精准去重
         $allIpKeys = [];
         $allMobileIpKeys = [];
-        // 因为 end 可能是次日 0 点，这里兼容 DatePeriod 取值范围
         $period = new DatePeriod($start, new DateInterval('P1D'), $end);
         
         foreach ($siteIds as $sid) {
@@ -6981,7 +7049,7 @@ private function getHostDeviceRollupRowsForSites(array $siteIds, DateTimeImmutab
         }
 
         $globalTotalIps = !empty($allIpKeys) ? (int) $this->redis->pfCount($allIpKeys) : $result[0]['ips'];
-$globalMobileIps = !empty($allMobileIpKeys) ? (int) $this->redis->pfCount($allMobileIpKeys) : $result[0]['mobile_ips'];
+        $globalMobileIps = !empty($allMobileIpKeys) ? (int) $this->redis->pfCount($allMobileIpKeys) : $result[0]['mobile_ips'];
 
         $globalRow = [
             'domain' => '全局汇总',
@@ -6992,6 +7060,7 @@ $globalMobileIps = !empty($allMobileIpKeys) ? (int) $this->redis->pfCount($allMo
         ];
 
         array_unshift($result, $globalRow);
+        
         return $result;
     }
     public function deleteSite(int $siteId): void
