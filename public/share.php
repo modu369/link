@@ -24,11 +24,8 @@ $normalRows = [];
 
 if ($data && !empty($data['rows'])) {
     foreach ($data['rows'] as $row) {
-        if ($row['domain'] === '全局汇总') {
-            $summaryRows[] = $row;
-        } elseif ($row['domain'] === '汇总') {
-            // 将名称修改为“汇总（累加）”
-            $row['domain'] = '汇总（累加）';
+        // 只保留全局预测和合并后的全局汇总行作为置顶汇总
+        if ($row['domain'] === '全局预测' || $row['domain'] === '全局汇总') {
             $summaryRows[] = $row;
         } else {
             $normalRows[] = $row;
@@ -155,14 +152,58 @@ if ($data && !empty($data['rows'])) {
                             <tr class="bg-brand-50 border-b-2 border-brand-100">
                                 <td class="py-5 px-8">
                                     <div class="font-black text-brand-700 flex items-center gap-3">
+                                        <?php if ($sRow['domain'] === '全局预测'): ?>
+                                        <svg class="w-5 h-5 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path></svg>
+                                        <?php else: ?>
                                         <svg class="w-5 h-5 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                                        <?php endif; ?>
                                         <?= htmlspecialchars($sRow['domain'], ENT_QUOTES, 'UTF-8') ?>
                                     </div>
                                 </td>
+                                
                                 <td class="py-5 px-8 text-right text-brand-700 font-black tracking-tight text-lg"><?= number_format((int) $sRow['views']) ?></td>
-                                <td class="py-5 px-8 text-right text-brand-700 font-black tracking-tight text-lg"><?= number_format((int) $sRow['ips']) ?></td>
+                                
+                                <td class="py-5 px-8 text-right text-brand-700 font-black tracking-tight text-lg">
+                                    <div class="flex flex-col items-end justify-center">
+                                        <div class="flex items-center justify-end gap-1">
+                                            <?= number_format((int) $sRow['ips']) ?>
+                                            <?php if (!empty($sRow['is_prediction'])): ?>
+                                                <?php if ($sRow['ips'] > $sRow['yesterday_ips']): ?>
+                                                    <svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 10l7-7m0 0l7 7m-7-7v18"></path></svg>
+                                                <?php elseif ($sRow['ips'] < $sRow['yesterday_ips']): ?>
+                                                    <svg class="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path></svg>
+                                                <?php endif; ?>
+                                            <?php endif; ?>
+                                        </div>
+                                        <?php if (!empty($sRow['has_sum_comparison'])): ?>
+                                        <span class="text-[11px] text-slate-400 font-bold tracking-normal mt-0.5 opacity-80 block">
+                                            累加: <?= number_format((int) $sRow['sum_ips']) ?>
+                                        </span>
+                                        <?php endif; ?>
+                                    </div>
+                                </td>
+                                
                                 <td class="py-5 px-8 text-right text-brand-600 font-bold"><?= number_format((int) $sRow['mobile_views']) ?></td>
-                                <td class="py-5 px-8 text-right text-brand-600 font-bold"><?= number_format((int) $sRow['mobile_ips']) ?></td>
+                                
+                                <td class="py-5 px-8 text-right text-brand-600 font-bold">
+                                    <div class="flex flex-col items-end justify-center">
+                                        <div class="flex items-center justify-end gap-1">
+                                            <?= number_format((int) $sRow['mobile_ips']) ?>
+                                            <?php if (!empty($sRow['is_prediction'])): ?>
+                                                <?php if ($sRow['mobile_ips'] > $sRow['yesterday_mobile_ips']): ?>
+                                                    <svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 10l7-7m0 0l7 7m-7-7v18"></path></svg>
+                                                <?php elseif ($sRow['mobile_ips'] < $sRow['yesterday_mobile_ips']): ?>
+                                                    <svg class="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path></svg>
+                                                <?php endif; ?>
+                                            <?php endif; ?>
+                                        </div>
+                                        <?php if (!empty($sRow['has_sum_comparison'])): ?>
+                                        <span class="text-[11px] text-slate-400 font-bold tracking-normal mt-0.5 opacity-80 block">
+                                            累加: <?= number_format((int) $sRow['sum_mobile_ips']) ?>
+                                        </span>
+                                        <?php endif; ?>
+                                    </div>
+                                </td>
                             </tr>
                             <?php endforeach; ?>
 
