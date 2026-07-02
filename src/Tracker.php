@@ -685,13 +685,16 @@ $proxyRisk = $this->isProxySuspicious(
         ];
         // 【极客级优化：HLL 架构写入，包含防空判定及独立域名 HLL】
         $todayStr = date('Ymd', strtotime($occurredAtStr));
+        $hourStr = date('YmdH', strtotime($occurredAtStr)); // 新增：小时级标识
         $sid = (int) $site['id'];
         
         $dailyIpKey = "site:{$sid}:hll_ip:{$todayStr}";
+        $hourlyIpKey = "site:{$sid}:hll_ip:{$hourStr}"; // 新增：小时级全局 IP
         $dailyUvKey = "site:{$sid}:hll_uv:{$todayStr}";
+        
         $device = $isMobile ? 'mobile' : 'desktop';
         $dailyDeviceIpKey = "site:{$sid}:hll_ip_{$device}:{$todayStr}";
-        $dailyAudienceIpKey = "site:{$sid}:hll_ip_{$audienceLabel}:{$todayStr}";
+        $hourlyDeviceIpKey = "site:{$sid}:hll_ip_{$device}:{$hourStr}"; // 新增：小时级设备 IP
         $dimHostVal = $canonicalHost ?: '未知域名';
         $dimHostDeviceVal = $dimHostVal . '|' . $device;
         // 使用 MD5 防止域名中的特殊符号破坏 Redis 结构
@@ -701,7 +704,9 @@ $proxyRisk = $this->isProxySuspicious(
         // 严格防空判断，避免污染 HLL
         if ($ipHash) {
             $this->redis->pfAdd($dailyIpKey, [$ipHash]);
+            $this->redis->pfAdd($hourlyIpKey, [$ipHash]);
             $this->redis->pfAdd($dailyDeviceIpKey, [$ipHash]);
+            $this->redis->pfAdd($hourlyDeviceIpKey, [$ipHash]);
             $this->redis->pfAdd($dailyHostKey, [$ipHash]);
             $this->redis->pfAdd($dailyHostDeviceKey, [$ipHash]);
             $this->redis->pfAdd($dailyAudienceIpKey, [$ipHash]);
@@ -710,6 +715,8 @@ $proxyRisk = $this->isProxySuspicious(
             $this->redis->expire($dailyHostKey, 86400 * 8);
             $this->redis->expire($dailyHostDeviceKey, 86400 * 8);
             $this->redis->expire($dailyAudienceIpKey, 86400 * 8);
+            $this->redis->expire($hourlyIpKey, 86400 * 3);
+            $this->redis->expire($hourlyDeviceIpKey, 86400 * 3);
         }
         if ($visitorId) {
             $this->redis->pfAdd($dailyUvKey, [$visitorId]);
@@ -3208,7 +3215,7 @@ private function cleanupProxyIpData(string $ip): bool
 
         $span = $span ?? ['start' => $start, 'end' => $end];
 
-        return $this->recalcEntryRollupIps($siteId, $span['start'], $span['end'], $rows);
+        return $this->recalcRollupIps([$siteId], 'entry_path', $span['start'], $span['end'], $rows);
     }
 
 private function aggregateDimensionRollupsForSites(array $siteIds, string $dimension, DateTimeImmutable $start, DateTimeImmutable $end, int $limit = 200): array
@@ -3293,15 +3300,6 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
         }, $rows);
     }
 
-    private function recalcEntryRollupIps(int $siteId, DateTimeImmutable $start, DateTimeImmutable $end, array $rows): array
-    {
-        return array_map(function ($row) {
-            $row['ips'] = (int) ($row['ips'] ?? ($row['ip_count'] ?? 0));
-            $row['uniques'] = (int) ($row['uniques'] ?? ($row['uv'] ?? 0));
-
-            return $row;
-        }, $rows);
-    }
 
 private function markVisitorAudienceState(int $siteId, string $visitorId): array
     {
@@ -4478,7 +4476,19 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
             return $results;
         });
     }
-
+private function applyBotFilters(?string $engine, ?string $domain, array &$params): string
+    {
+        $sql = '';
+        if ($engine !== null && $engine !== '' && $engine !== 'all') {
+            $sql .= " AND engine = :engine";
+            $params[':engine'] = $engine;
+        }
+        if ($domain !== null && $domain !== '' && $domain !== 'all') {
+            $sql .= " AND domain = :domain";
+            $params[':domain'] = $domain;
+        }
+        return $sql;
+    }
     private function getBotTraffic(int $siteId, string $range, ?string $engine = null, ?string $domain = null, int $page = 1, int $perPage = 50): array
     {
         $page = max(1, $page);
@@ -4487,30 +4497,16 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $engine, $domain, $page, $perPage) {
             [$rangeSql, $params] = $this->rangeClause($range);
-            $engineFilter = '';
-            $domainFilter = '';
+            $filterSql = $this->applyBotFilters($engine, $domain, $params); // 复用
 
-            if ($engine !== null && $engine !== '' && $engine !== 'all') {
-                $engineFilter = " AND engine = :engine";
-                $params[':engine'] = $engine;
-            }
-            if ($domain !== null && $domain !== '' && $domain !== 'all') {
-                $domainFilter = " AND domain = :domain";
-                $params[':domain'] = $domain;
-            }
-
-            $limit = $perPage;
-            $offset = ($page - 1) * $perPage;
-            $params[':limit'] = $limit;
-            $params[':offset'] = $offset;
+            $params[':limit'] = $perPage;
+            $params[':offset'] = ($page - 1) * $perPage;
 
             $statement = $this->db->prepare(
-                "SELECT path, referrer, user_agent, ip_address,
-                    domain, occurred_at, engine
+                "SELECT path, referrer, user_agent, ip_address, domain, occurred_at, engine
                 FROM pageview_bot_logs
-                WHERE site_id = :site_id {$rangeSql}{$engineFilter}{$domainFilter}
-                ORDER BY occurred_at DESC
-                LIMIT :limit OFFSET :offset"
+                WHERE site_id = :site_id {$rangeSql}{$filterSql}
+                ORDER BY occurred_at DESC LIMIT :limit OFFSET :offset"
             );
             $statement->execute(array_merge([':site_id' => $siteId], $params));
 
@@ -4524,27 +4520,14 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $engine, $domain) {
             [$rangeSql, $params] = $this->rangeClause($range);
-            $engineFilter = '';
-            $domainFilter = '';
-
-            if ($engine !== null && $engine !== '' && $engine !== 'all') {
-                $engineFilter = " AND engine = :engine";
-                $params[':engine'] = $engine;
-            }
-            if ($domain !== null && $domain !== '' && $domain !== 'all') {
-                $domainFilter = " AND domain = :domain";
-                $params[':domain'] = $domain;
-            }
+            $filterSql = $this->applyBotFilters($engine, $domain, $params); // 复用
 
             $statement = $this->db->prepare(
-                "SELECT COUNT(*) FROM pageview_bot_logs
-                WHERE site_id = :site_id {$rangeSql}{$engineFilter}{$domainFilter}"
+                "SELECT COUNT(*) FROM pageview_bot_logs WHERE site_id = :site_id {$rangeSql}{$filterSql}"
             );
             $statement->execute(array_merge([':site_id' => $siteId], $params));
 
-            return [
-                'total' => (int) $statement->fetchColumn(),
-            ];
+            return ['total' => (int) $statement->fetchColumn()];
         });
     }
 
@@ -4554,19 +4537,13 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
 
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range, $domain) {
             [$rangeSql, $params] = $this->rangeClause($range);
-            $domainFilter = '';
-            if ($domain !== null && $domain !== '' && $domain !== 'all') {
-                $domainFilter = ' AND domain = :domain';
-                $params[':domain'] = $domain;
-            }
-            $statement = $this->db->prepare(
-                "SELECT engine, COUNT(*) as total
-                FROM pageview_bot_logs
-                WHERE site_id = :site_id {$rangeSql}{$domainFilter}
-                GROUP BY engine
-                ORDER BY total DESC"
-            );
+            $filterSql = $this->applyBotFilters(null, $domain, $params); // 复用
 
+            $statement = $this->db->prepare(
+                "SELECT engine, COUNT(*) as total FROM pageview_bot_logs 
+                WHERE site_id = :site_id {$rangeSql}{$filterSql} 
+                GROUP BY engine ORDER BY total DESC"
+            );
             $statement->execute(array_merge([':site_id' => $siteId], $params));
 
             return $statement->fetchAll();
@@ -4613,107 +4590,113 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
             return json_decode($cached, true);
         }
 
-        // 1. 获取真实、包含 HLL 修正的精确当天/昨日数据，彻底修复基数虚高问题
+        // 1. 获取今日/昨日精确去重总盘 (仅调用一次)
         $todayTotals = $this->getTotals($siteId, 'today');
         $yesterdayTotals = $this->getTotals($siteId, 'yesterday');
 
         $todayViews = max(0, (int)($todayTotals['views'] ?? 0));
         $todayIps = max(0, (int)($todayTotals['ip_count'] ?? 0));
-        
         $yesterdayFullViews = max(0, (int)($yesterdayTotals['views'] ?? 0));
         $yesterdayFullIps = max(0, (int)($yesterdayTotals['ip_count'] ?? 0));
 
-        // 2. 计算纯时间进度 (当前秒数 / 86400)
         $hour = (int)$now->format('H');
         $minute = (int)$now->format('i');
         $second = (int)$now->format('s');
         $timeFraction = ($hour * 3600 + $minute * 60 + $second) / 86400;
 
-        // 获取昨天同时段的 PV，用于计算流量的 "形状进度"
-        $todayStart = $now->setTime(0, 0, 0);
-        $yesterdayStart = $todayStart->sub(new DateInterval('P1D'));
-        
-        // =========================================================
-        // = 核心修复：分离“整点前数据”与“当前小时插值”，防止整个桶被提前计入
-        // =========================================================
-        
-        // A. 昨天直到前一个整点的精确历史总和 (不包含当前小时的 Rollup 桶)
+        $yesterdayStart = $now->setTime(0, 0, 0)->sub(new DateInterval('P1D'));
+        $yesterdayYmd = $yesterdayStart->format('Ymd');
+
+        // ====================================================================
+        // = 绝杀优化：通过 PFCOUNT 联合查询，获取昨日精确到当前小时的边缘去重 IP =
+        // ====================================================================
+        $yestIpKeysUpToHour = [];
+        $yestMobileIpKeysUpToHour = [];
+        for ($i = 0; $i < $hour; $i++) {
+            $h = str_pad((string)$i, 2, '0', STR_PAD_LEFT);
+            $yestIpKeysUpToHour[] = "site:{$siteId}:hll_ip:{$yesterdayYmd}{$h}";
+            $yestMobileIpKeysUpToHour[] = "site:{$siteId}:hll_ip_mobile:{$yesterdayYmd}{$h}";
+        }
+
+        $yestIpKeysNextHour = $yestIpKeysUpToHour;
+        $yestMobileIpKeysNextHour = $yestMobileIpKeysUpToHour;
+        $currentH = str_pad((string)$hour, 2, '0', STR_PAD_LEFT);
+        $yestIpKeysNextHour[] = "site:{$siteId}:hll_ip:{$yesterdayYmd}{$currentH}";
+        $yestMobileIpKeysNextHour[] = "site:{$siteId}:hll_ip_mobile:{$yesterdayYmd}{$currentH}";
+
+        $yesterdayIpsUpToHour = !empty($yestIpKeysUpToHour) ? (int) $this->redis->pfCount($yestIpKeysUpToHour) : 0;
+        $yesterdayIpsUpToNextHour = (int) $this->redis->pfCount($yestIpKeysNextHour);
+        $yesterdayIpsInHour = max(0, $yesterdayIpsUpToNextHour - $yesterdayIpsUpToHour);
+
+        $yesterdayMobileIpsUpToHour = !empty($yestMobileIpKeysUpToHour) ? (int) $this->redis->pfCount($yestMobileIpKeysUpToHour) : 0;
+        $yesterdayMobileIpsUpToNextHour = (int) $this->redis->pfCount($yestMobileIpKeysNextHour);
+        $yesterdayMobileIpsInHour = max(0, $yesterdayMobileIpsUpToNextHour - $yesterdayMobileIpsUpToHour);
+
+        $hourFraction = ($minute * 60 + $second) / 3600;
+        $yesterdayPartialIps = $yesterdayIpsUpToHour + ($yesterdayIpsInHour * $hourFraction);
+        $yesterdayPartialMobileIps = $yesterdayMobileIpsUpToHour + ($yesterdayMobileIpsInHour * $hourFraction);
+
+        // ==== PV 沿用 SQL，因为 PV 属于线性累加，天然不存在去重衰减问题 ====
         $yesterdayHourStart = $yesterdayStart->setTime($hour, 0, 0);
         $yesterdayPaceStats = $this->getRangeStats($siteId, $yesterdayStart, $yesterdayHourStart);
         $yesterdayViewsUpToHour = max(0, (int)($yesterdayPaceStats['views'] ?? 0));
         
-        // B. 昨天当前这个整点桶（1小时全量）的历史数据
-        $yesterdayNextHour = $yesterdayHourStart->modify('+1 hour');
-        $yesterdayHourStats = $this->getRangeStats($siteId, $yesterdayHourStart, $yesterdayNextHour);
+        $yesterdayNextHourDt = $yesterdayHourStart->modify('+1 hour');
+        $yesterdayHourStats = $this->getRangeStats($siteId, $yesterdayHourStart, $yesterdayNextHourDt);
         $yesterdayViewsInHour = max(0, (int)($yesterdayHourStats['views'] ?? 0));
-        
-        // C. 根据当前经过的秒数，对昨天当前小时的数据进行精确的线性插值
-        $currentHourPassedSeconds = $minute * 60 + $second;
-        $hourFraction = $currentHourPassedSeconds / 3600;
         $yesterdayPartialViews = $yesterdayViewsUpToHour + ($yesterdayViewsInHour * $hourFraction);
-        
-        // =========================================================
 
-        // 3. 计算综合进度比例
-        $progressFraction = $yesterdayFullViews > 0 ? ($yesterdayPartialViews / $yesterdayFullViews) : $timeFraction;
+        // 3. 计算完美的双轨进度比例
+        $progressFractionViews = $yesterdayFullViews > 0 ? ($yesterdayPartialViews / $yesterdayFullViews) : $timeFraction;
+        $progressFractionIps = ($yesterdayPartialIps > 0 && $yesterdayFullIps > 0) ? ($yesterdayPartialIps / $yesterdayFullIps) : $timeFraction;
 
-        // 平滑与兜底处理：如果昨天基数太小，或者算出的进度异常，则降级为时间进度
-        if ($progressFraction <= 0.05 || $yesterdayFullViews < 50) {
-            $progressFraction = $timeFraction;
-        }
-        $progressFraction = max(0.01, min(1.0, $progressFraction));
+        $deviceData = $this->getDeviceBreakdown($siteId, 'yesterday');
+        $yesterdayFullMobileIps = max(0, (int)($deviceData['mobile']['ips'] ?? 0));
+        $progressFractionMobileIps = ($yesterdayPartialMobileIps > 0 && $yesterdayFullMobileIps > 0) ? ($yesterdayPartialMobileIps / $yesterdayFullMobileIps) : $timeFraction;
 
-        // 如果已经接近午夜（最后约 14 分钟，>99%），直接视为 100% 进度，预测值等于当前值
+        $progressFractionViews = max(0.01, min(1.0, $progressFractionViews));
+        $progressFractionIps = max(0.01, min(1.0, $progressFractionIps));
+        $progressFractionMobileIps = max(0.01, min(1.0, $progressFractionMobileIps));
+
         if ($timeFraction >= 0.99) {
-            $progressFraction = 1.0;
+            $progressFractionViews = 1.0;
+            $progressFractionIps = 1.0;
+            $progressFractionMobileIps = 1.0;
         }
 
         $predictedViews = $todayViews;
         $predictedIps = $todayIps;
+        $todayDeviceData = $this->getDeviceBreakdown($siteId, 'today');
+        $currentMobileViews = max(0, (int)($todayDeviceData['mobile']['views'] ?? 0));
+        $currentMobileIps = max(0, (int)($todayDeviceData['mobile']['ips'] ?? 0));
 
-        // 4. 根据当前时间段决定预测算法
         if ($timeFraction < 0.1) {
-            // 凌晨前段（比如0点~2点）当天基数太小，使用昨日最终或历史均值按剩余时间加权
             $averages = $this->getHistoricalAverages($siteId, 30);
             $expectedViews = $yesterdayFullViews > 0 ? $yesterdayFullViews : max(0, (int)($averages['views'] ?? 0));
             $expectedIps = $yesterdayFullIps > 0 ? $yesterdayFullIps : max(0, (int)($averages['ips'] ?? 0));
             
             $predictedViews = (int) round($todayViews + $expectedViews * (1 - $timeFraction));
             $predictedIps = (int) round($todayIps + $expectedIps * (1 - $timeFraction));
+            
+            $mobileViewRatio = $todayViews > 0 ? ($currentMobileViews / $todayViews) : 0;
+            $predictedMobileViews = (int) round($predictedViews * $mobileViewRatio);
+            $predictedMobileIps = (int) round($predictedIps * $mobileViewRatio); 
         } else {
-            // 正常时段，利用进度比例直接外推
-            $predictedViews = (int) round($todayViews / $progressFraction);
-            $predictedIps = (int) round($todayIps / $progressFraction);
+            $predictedViews = (int) round($todayViews / $progressFractionViews);
+            $predictedIps = (int) round($todayIps / $progressFractionIps);
+            $predictedMobileIps = (int) round($currentMobileIps / $progressFractionMobileIps);
+            
+            $mobileViewRatio = $todayViews > 0 ? ($currentMobileViews / $todayViews) : 0;
+            $predictedMobileViews = (int) round($predictedViews * $mobileViewRatio);
         }
 
-        // 绝对兜底：全站预测值绝对不能低于当前实时产生的值
-        $predictedViews = max($todayViews, $predictedViews);
-        $predictedIps = max($todayIps, $predictedIps);
-
-        // 5. 移动端精准预测
-        $deviceData = $this->getDeviceBreakdown($siteId, 'today');
-        $currentMobileViews = max(0, (int)($deviceData['mobile']['views'] ?? 0));
-        $currentMobileIps = max(0, (int)($deviceData['mobile']['ips'] ?? 0));
-
-        // 提取实时的移动端占比进行推算
-        $mobileViewRatio = $todayViews > 0 ? ($currentMobileViews / $todayViews) : 0;
-        $mobileIpRatio = $todayIps > 0 ? ($currentMobileIps / $todayIps) : 0;
-
-        $predictedMobileViews = (int) round($predictedViews * $mobileViewRatio);
-        $predictedMobileIps = (int) round($predictedIps * $mobileIpRatio);
-
-        // 绝对兜底：移动端预测值绝对不能低于移动端已产生的值
-        $predictedMobileViews = max($currentMobileViews, $predictedMobileViews);
-        $predictedMobileIps = max($currentMobileIps, $predictedMobileIps);
-
         $predictions = [
-            'views' => $predictedViews,
-            'ips' => $predictedIps,
-            'mobile_views' => $predictedMobileViews,
-            'mobile_ips' => $predictedMobileIps, 
+            'views' => max($todayViews, $predictedViews),
+            'ips' => max($todayIps, $predictedIps),
+            'mobile_views' => max($currentMobileViews, $predictedMobileViews),
+            'mobile_ips' => max($currentMobileIps, $predictedMobileIps), 
         ];
 
-        // 保持 5 分钟不变，利用 $minuteBucket 自然过期
         $this->redis->setex($cacheKey, 300, json_encode($predictions));
 
         return $predictions;
@@ -4771,15 +4754,6 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
             'ips' => (int) ($totals['ip_count'] ?? 0),
             'uniques' => (int) ($totals['uniques'] ?? 0),
         ];
-    }
-
-    private function projectDayMetric(int $today, int $yesterdayFull, int $yesterdayPartial, int $average): int
-    {
-        $baseline = $yesterdayFull > 0 ? $yesterdayFull : ($average > 0 ? $average : $today);
-        $pace = $yesterdayPartial > 0 ? max(0.1, $today / $yesterdayPartial) : 1.0;
-        $estimate = (int) round($baseline * $pace);
-
-        return max($today, $estimate);
     }
 
     private function buildFallbackUid(?string $ip, string $userAgent, array $headerMeta): string
