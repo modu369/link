@@ -4605,7 +4605,7 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
     public function getPredictions(int $siteId): array
     {
         $now = new DateTimeImmutable('now');
-        $minuteBucket = (int) floor($now->getTimestamp() / 300); // 5 分钟粒度缓存
+        $minuteBucket = (int) floor($now->getTimestamp() / 300); // 维持 5 分钟粒度缓存
         $cacheKey = "predictions:{$siteId}:{$minuteBucket}";
 
         $cached = $this->redis->get($cacheKey);
@@ -4624,14 +4624,35 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
         $yesterdayFullIps = max(0, (int)($yesterdayTotals['ip_count'] ?? 0));
 
         // 2. 计算纯时间进度 (当前秒数 / 86400)
-        $timeFraction = ((int)$now->format('H') * 3600 + (int)$now->format('i') * 60 + (int)$now->format('s')) / 86400;
+        $hour = (int)$now->format('H');
+        $minute = (int)$now->format('i');
+        $second = (int)$now->format('s');
+        $timeFraction = ($hour * 3600 + $minute * 60 + $second) / 86400;
 
         // 获取昨天同时段的 PV，用于计算流量的 "形状进度"
         $todayStart = $now->setTime(0, 0, 0);
         $yesterdayStart = $todayStart->sub(new DateInterval('P1D'));
-        $yesterdaySameTime = $yesterdayStart->setTime((int) $now->format('H'), (int) $now->format('i'), (int) $now->format('s'));
-        $yesterdayPaceStats = $this->getRangeStats($siteId, $yesterdayStart, $yesterdaySameTime);
-        $yesterdayPartialViews = max(0, (int)($yesterdayPaceStats['views'] ?? 0));
+        
+        // =========================================================
+        // = 核心修复：分离“整点前数据”与“当前小时插值”，防止整个桶被提前计入
+        // =========================================================
+        
+        // A. 昨天直到前一个整点的精确历史总和 (不包含当前小时的 Rollup 桶)
+        $yesterdayHourStart = $yesterdayStart->setTime($hour, 0, 0);
+        $yesterdayPaceStats = $this->getRangeStats($siteId, $yesterdayStart, $yesterdayHourStart);
+        $yesterdayViewsUpToHour = max(0, (int)($yesterdayPaceStats['views'] ?? 0));
+        
+        // B. 昨天当前这个整点桶（1小时全量）的历史数据
+        $yesterdayNextHour = $yesterdayHourStart->modify('+1 hour');
+        $yesterdayHourStats = $this->getRangeStats($siteId, $yesterdayHourStart, $yesterdayNextHour);
+        $yesterdayViewsInHour = max(0, (int)($yesterdayHourStats['views'] ?? 0));
+        
+        // C. 根据当前经过的秒数，对昨天当前小时的数据进行精确的线性插值
+        $currentHourPassedSeconds = $minute * 60 + $second;
+        $hourFraction = $currentHourPassedSeconds / 3600;
+        $yesterdayPartialViews = $yesterdayViewsUpToHour + ($yesterdayViewsInHour * $hourFraction);
+        
+        // =========================================================
 
         // 3. 计算综合进度比例
         $progressFraction = $yesterdayFullViews > 0 ? ($yesterdayPartialViews / $yesterdayFullViews) : $timeFraction;
@@ -4642,7 +4663,7 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
         }
         $progressFraction = max(0.01, min(1.0, $progressFraction));
 
-        // 【关键修复】如果已经接近午夜（最后约 14 分钟，>99%），直接视为 100% 进度，预测值等于当前值
+        // 如果已经接近午夜（最后约 14 分钟，>99%），直接视为 100% 进度，预测值等于当前值
         if ($timeFraction >= 0.99) {
             $progressFraction = 1.0;
         }
@@ -4692,6 +4713,7 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
             'mobile_ips' => $predictedMobileIps, 
         ];
 
+        // 保持 5 分钟不变，利用 $minuteBucket 自然过期
         $this->redis->setex($cacheKey, 300, json_encode($predictions));
 
         return $predictions;
