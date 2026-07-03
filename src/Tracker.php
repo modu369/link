@@ -692,8 +692,10 @@ $proxyRisk = $this->isProxySuspicious(
         $hourlyIpKey = "site:{$sid}:hll_ip:{$hourStr}"; // 新增：小时级全局 IP
         $dailyUvKey = "site:{$sid}:hll_uv:{$todayStr}";
         
+        
         $device = $isMobile ? 'mobile' : 'desktop';
         $dailyDeviceIpKey = "site:{$sid}:hll_ip_{$device}:{$todayStr}";
+        $dailyAudienceIpKey = "site:{$sid}:hll_ip_{$audienceLabel}:{$todayStr}";
         $hourlyDeviceIpKey = "site:{$sid}:hll_ip_{$device}:{$hourStr}"; // 新增：小时级设备 IP
         $dimHostVal = $canonicalHost ?: '未知域名';
         $dimHostDeviceVal = $dimHostVal . '|' . $device;
