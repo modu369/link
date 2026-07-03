@@ -4592,7 +4592,7 @@ private function applyBotFilters(?string $engine, ?string $domain, array &$param
             return json_decode($cached, true);
         }
 
-        // 1. 获取今日/昨日精确去重总盘 (仅调用一次)
+        // 1. 获取今日/昨日精确去重总盘
         $todayTotals = $this->getTotals($siteId, 'today');
         $yesterdayTotals = $this->getTotals($siteId, 'yesterday');
 
@@ -4610,7 +4610,7 @@ private function applyBotFilters(?string $engine, ?string $domain, array &$param
         $yesterdayYmd = $yesterdayStart->format('Ymd');
 
         // ====================================================================
-        // = 绝杀优化：通过 PFCOUNT 联合查询，获取昨日精确到当前小时的边缘去重 IP =
+        // = HLL 跨桶合并：获取昨日精确到当前小时的边缘去重 IP =
         // ====================================================================
         $yestIpKeysUpToHour = [];
         $yestMobileIpKeysUpToHour = [];
@@ -4638,7 +4638,7 @@ private function applyBotFilters(?string $engine, ?string $domain, array &$param
         $yesterdayPartialIps = $yesterdayIpsUpToHour + ($yesterdayIpsInHour * $hourFraction);
         $yesterdayPartialMobileIps = $yesterdayMobileIpsUpToHour + ($yesterdayMobileIpsInHour * $hourFraction);
 
-        // ==== PV 沿用 SQL，因为 PV 属于线性累加，天然不存在去重衰减问题 ====
+        // ==== PV 沿用 SQL，获取精确时间进度 ====
         $yesterdayHourStart = $yesterdayStart->setTime($hour, 0, 0);
         $yesterdayPaceStats = $this->getRangeStats($siteId, $yesterdayStart, $yesterdayHourStart);
         $yesterdayViewsUpToHour = max(0, (int)($yesterdayPaceStats['views'] ?? 0));
@@ -4648,13 +4648,30 @@ private function applyBotFilters(?string $engine, ?string $domain, array &$param
         $yesterdayViewsInHour = max(0, (int)($yesterdayHourStats['views'] ?? 0));
         $yesterdayPartialViews = $yesterdayViewsUpToHour + ($yesterdayViewsInHour * $hourFraction);
 
-        // 3. 计算完美的双轨进度比例
-        $progressFractionViews = $yesterdayFullViews > 0 ? ($yesterdayPartialViews / $yesterdayFullViews) : $timeFraction;
-        $progressFractionIps = ($yesterdayPartialIps > 0 && $yesterdayFullIps > 0) ? ($yesterdayPartialIps / $yesterdayFullIps) : $timeFraction;
-
         $deviceData = $this->getDeviceBreakdown($siteId, 'yesterday');
         $yesterdayFullMobileIps = max(0, (int)($deviceData['mobile']['ips'] ?? 0));
-        $progressFractionMobileIps = ($yesterdayPartialMobileIps > 0 && $yesterdayFullMobileIps > 0) ? ($yesterdayPartialMobileIps / $yesterdayFullMobileIps) : $timeFraction;
+
+        // ====================================================================
+        // = 防爆核心：如果读不到 HLL 数据，优雅降级回时钟进度，杜绝暴涨 =
+        // ====================================================================
+        $progressFractionViews = $yesterdayFullViews > 0 ? ($yesterdayPartialViews / $yesterdayFullViews) : $timeFraction;
+        
+        if ($yesterdayPartialIps <= 0 || $yesterdayFullIps <= 0) {
+            $progressFractionIps = $timeFraction;
+        } else {
+            $progressFractionIps = $yesterdayPartialIps / $yesterdayFullIps;
+        }
+
+        if ($yesterdayPartialMobileIps <= 0 || $yesterdayFullMobileIps <= 0) {
+            $progressFractionMobileIps = $timeFraction;
+        } else {
+            $progressFractionMobileIps = $yesterdayPartialMobileIps / $yesterdayFullMobileIps;
+        }
+
+        // 强行兜底：即便提取到的数据极小，也不能低于 5%（即 0.05），防止被除数放大数百倍
+        if ($progressFractionViews < 0.05) $progressFractionViews = max(0.05, $timeFraction);
+        if ($progressFractionIps < 0.05) $progressFractionIps = max(0.05, $timeFraction);
+        if ($progressFractionMobileIps < 0.05) $progressFractionMobileIps = max(0.05, $timeFraction);
 
         $progressFractionViews = max(0.01, min(1.0, $progressFractionViews));
         $progressFractionIps = max(0.01, min(1.0, $progressFractionIps));
