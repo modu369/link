@@ -1802,8 +1802,8 @@ private function cleanupProxyIpData(string $ip): bool
         $dayStartKey = $dayStart->format('Y-m-d H:i:s');
         $dayEndKey = $dayEnd->format('Y-m-d H:i:s');
 
-        $this->db->beginTransaction();
         try {
+            $this->db->beginTransaction();
             $this->db->prepare('DELETE FROM pageview_rollups WHERE site_id = ? AND bucket_start = ?')
                 ->execute([$siteId, $bucketKey]);
             $this->db->prepare('DELETE FROM pageview_dimension_rollups WHERE site_id = ? AND bucket_start = ?')
@@ -2079,7 +2079,14 @@ private function cleanupProxyIpData(string $ip): bool
                 'sessions' => (int) ($sessions['sessions'] ?? 0),
             ];
         } catch (Throwable $e) {
-            $this->db->rollBack();
+            // 【修复】：加一层判定和捕获，防止在死掉的连接上执行 rollBack 再次抛出异常
+            try {
+                if ($this->db->inTransaction()) {
+                    $this->db->rollBack();
+                }
+            } catch (Throwable $rollbackException) {
+                // 忽略 rollBack 失败（通常是因为连接本身已经断开了）
+            }
             // 发生异常，释放锁
             $this->redis->del($lockKey);
             return [
