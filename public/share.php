@@ -9,6 +9,10 @@ $redis = RedisClient::connection($config['redis']);
 $tracker = new Tracker($db, $redis, $config);
 
 $token = $_GET['token'] ?? '';
+if (empty($token)) {
+    header("HTTP/1.1 404 Not Found");
+    exit('404 Not Found');
+}
 $allowedRanges = ['today', 'yesterday', 'day_before', '7d'];
 $range = $_GET['range'] ?? 'today';
 if (!in_array($range, $allowedRanges, true) && !str_starts_with($range, 'custom:')) {
