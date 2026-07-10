@@ -5756,29 +5756,34 @@ public function getMobileBreakdown(int $siteId, string $range): array
                 if (!empty($hosts)) {
                     $result = $this->formatHostDeviceBreakdown($hosts, $hostDevices);
                     
-                    // 【后续调整 4】：利用 HLL 秒级获取全局精准去重的 总IP 和 移动端IP
+                    $mechanicSumRow = $result[0];
+                    
                     $ipKeys = $this->getHllKeysForRange($siteId, 'hll_ip', $range);
                     $mobileIpKeys = $this->getHllKeysForRange($siteId, 'hll_ip_mobile', $range);
                     
-$globalTotalIps = !empty($ipKeys) ? (int) $this->redis->pfCount($ipKeys) : $result[0]['ips'];
-$globalMobileIps = !empty($mobileIpKeys) ? (int) $this->redis->pfCount($mobileIpKeys) : $result[0]['mobile_ips'];
+                    $globalTotalIps = !empty($ipKeys) ? (int) $this->redis->pfCount($ipKeys) : $mechanicSumRow['ips'];
+                    $globalMobileIps = !empty($mobileIpKeys) ? (int) $this->redis->pfCount($mobileIpKeys) : $mechanicSumRow['mobile_ips'];
                     
-                    // 构建全局汇总行
+                    // 构建全局汇总行，并强制塞入 sum_ips 以适配前端渲染
                     $globalRow = [
                         'domain' => '全局汇总',
-                        'views' => $result[0]['views'],               
-                        'mobile_views' => $result[0]['mobile_views'], 
+                        'views' => $mechanicSumRow['views'],               
+                        'mobile_views' => $mechanicSumRow['mobile_views'], 
                         'ips' => $globalTotalIps,
                         'mobile_ips' => $globalMobileIps,
+                        'sum_ips' => $mechanicSumRow['ips'],               // 注入累加 IP
+                        'sum_mobile_ips' => $mechanicSumRow['mobile_ips'], // 注入累加移动 IP
+                        'has_sum_comparison' => true                       // 开启对比标识
                     ];
                     
+                    array_shift($result); 
                     array_unshift($result, $globalRow);
+                    
                     return $result;
                 }
             }
             return [
-                ['domain' => '全局汇总', 'views' => 0, 'ips' => 0, 'mobile_views' => 0, 'mobile_ips' => 0],
-                ['domain' => '汇总', 'views' => 0, 'ips' => 0, 'mobile_views' => 0, 'mobile_ips' => 0]
+                ['domain' => '全局汇总', 'views' => 0, 'ips' => 0, 'mobile_views' => 0, 'mobile_ips' => 0, 'has_sum_comparison' => false]
             ];
         });
     }
