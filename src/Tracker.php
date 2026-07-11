@@ -2037,7 +2037,7 @@ private function cleanupProxyIpData(string $ip): bool
                 "INSERT INTO pageview_entry_rollups (site_id, bucket_start, path, pv, uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
                  SELECT ?, ?, path, pv, uv, ips, session_count, duration_sum, page_sum, bounce_count
                  FROM (
-                    SELECT LEFT(entry.path, 512) as path,
+                    SELECT LEFT(COALESCE(entry.path, '/'), 512) as path,
                         SUM(s.total_pv) as pv, 
                         SUM(s.is_unique) as uv, 
                         COUNT(DISTINCT entry.ip_hash) as ips,
@@ -2058,7 +2058,7 @@ private function cleanupProxyIpData(string $ip): bool
                         GROUP BY session_id
                     ) s
                     JOIN pageviews entry ON entry.id = s.first_id
-                    GROUP BY entry.path
+                    GROUP BY path
                     ORDER BY ips DESC
                     LIMIT 500
                  ) t"
