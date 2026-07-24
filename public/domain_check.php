@@ -1,68 +1,9 @@
 <?php
-// ==== 1. 封装核心检测函数：纯 PHP 原始 UDP 探针 (极致精准版) ====
-
-// 纯 PHP 构造 DNS 查询包，杜绝任何本地系统 DNS 降级导致的误报
-if (!function_exists('resolve_dns_udp')) {
-    function resolve_dns_udp($domain, $dns_ip, $timeout = 1) {
-        $rand_id = random_bytes(2);
-        // DNS 报头：标志位标明这是一个标准查询
-        $header = $rand_id . "\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00";
-        $qname = '';
-        foreach (explode('.', $domain) as $part) {
-            $qname .= chr(strlen($part)) . $part;
-        }
-        $qname .= "\x00";
-        $question = $qname . "\x00\x01\x00\x01"; // A记录(1), IN类(1)
-        
-        $socket = @stream_socket_client("udp://$dns_ip:53", $errno, $errstr, $timeout);
-        if (!$socket) return [];
-        stream_set_timeout($socket, $timeout);
-        fwrite($socket, $header . $question);
-        $response = fread($socket, 512);
-        fclose($socket);
-        
-        if (empty($response) || strlen($response) < 12) return [];
-        
-        // 解析回答数
-        $ans_count = (ord($response[6]) << 8) + ord($response[7]);
-        if ($ans_count === 0) return [];
-        
-        $offset = 12 + strlen($qname) + 4; // 跳过报头和问题段
-        $ips = [];
-        
-        for ($i = 0; $i < $ans_count; $i++) {
-            if ($offset >= strlen($response)) break;
-            // 跳过 Name 字段 (处理压缩指针或明文)
-            while ($offset < strlen($response)) {
-                $len = ord($response[$offset]);
-                if (($len & 0xC0) === 0xC0) {
-                    $offset += 2; break;
-                } elseif ($len === 0) {
-                    $offset += 1; break;
-                } else {
-                    $offset += $len + 1;
-                }
-            }
-            if ($offset + 10 > strlen($response)) break;
-            
-            $type = (ord($response[$offset]) << 8) + ord($response[$offset+1]);
-            $class = (ord($response[$offset+2]) << 8) + ord($response[$offset+3]);
-            $rdlength = (ord($response[$offset+8]) << 8) + ord($response[$offset+9]);
-            $offset += 10;
-            
-            // 如果是 A 记录，提取 IPv4
-            if ($type === 1 && $class === 1 && $rdlength === 4) {
-                $ips[] = ord($response[$offset]) . '.' . ord($response[$offset+1]) . '.' . ord($response[$offset+2]) . '.' . ord($response[$offset+3]);
-            }
-            $offset += $rdlength;
-        }
-        return $ips;
-    }
-}
+// ==== 1. 封装核心检测函数：纯 PHP 异步并发 UDP 探针 (极致并发版) ====
 
 if (!function_exists('check_mainland_accessibility')) {
     function check_mainland_accessibility($domain) {
-        // 4个绝对纯正的大陆省级节点（不可任播到海外）
+        // 4个绝对纯正的大陆省级节点
         $dns_servers = ['202.96.128.86', '202.106.0.20', '218.30.118.6', '221.12.1.227']; 
         $cf_ranges = [
             '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '104.16.0.0/13',
@@ -71,59 +12,121 @@ if (!function_exists('check_mainland_accessibility')) {
             '190.93.240.0/20', '197.234.240.0/22', '198.41.128.0/17'
         ];
 
-        $clean_ips = [];
-        
+        // 1. 构造原生 DNS UDP 数据包
+        $rand_id = random_bytes(2);
+        $header = $rand_id . "\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00";
+        $qname = '';
+        foreach (explode('.', $domain) as $part) {
+            $qname .= chr(strlen($part)) . $part;
+        }
+        $qname .= "\x00";
+        $question = $qname . "\x00\x01\x00\x01"; // A记录(1), IN类(1)
+        $payload = $header . $question;
+
+        // 2. 创建异步非阻塞 Sockets，瞬间向所有大陆节点齐发探针
+        $sockets = [];
         foreach ($dns_servers as $dns) {
-            $resolvedIps = [];
-            
-            // 单个大陆节点最多重试 2 次 (处理正常丢包，避免太严格误报阻断)
-            for ($retry = 0; $retry < 2; $retry++) {
-                $resolvedIps = resolve_dns_udp($domain, $dns, 1);
-                if (!empty($resolvedIps)) break; 
-                usleep(150000); // 间隔 150 毫秒
-            }
-
-            // 如果该节点彻底丢弃了数据包，测试下一个节点
-            if (empty($resolvedIps)) continue;
-
-            $testIp = reset($resolvedIps); 
-
-            if ($testIp === '127.0.0.1' || $testIp === '0.0.0.0') {
-                return ['status' => 'polluted', 'ip' => $testIp, 'msg' => '遭 GFW 污染 (强指回环/空地址)'];
-            }
-
-            $is_cf = false;
-            $ip_long = ip2long($testIp);
-            if ($ip_long !== false) {
-                foreach ($cf_ranges as $cidr) {
-                    list($subnet, $mask) = explode('/', $cidr);
-                    $subnet_long = ip2long($subnet);
-                    // 兼容 32 位与 64 位 PHP 的安全位运算
-                    $netmask = ~((1 << (32 - (int)$mask)) - 1) & 0xFFFFFFFF;
-                    if (($ip_long & $netmask) === ($subnet_long & $netmask)) {
-                        $is_cf = true;
-                        break;
-                    }
-                }
-            }
-
-            if ($is_cf) {
-                $clean_ips[] = $testIp;
-            } else {
-                // 核心逻辑：只要有一个大陆节点查到了【非 CF】的 IP，说明 100% 被 GFW 污染了 (杜绝太宽松)
-                return ['status' => 'polluted', 'ip' => $testIp, 'msg' => '遭 GFW 污染 (强指非CF拦截节点)'];
+            $sock = @stream_socket_client("udp://$dns:53", $errno, $errstr, 1, STREAM_CLIENT_ASYNC_CONNECT);
+            if ($sock) {
+                stream_set_blocking($sock, false); // 设为非阻塞
+                fwrite($sock, $payload);
+                $sockets[(int)$sock] = ['sock' => $sock, 'dns' => $dns];
             }
         }
 
-        // 只要能从任何节点获取到纯净 CF IP，就是正常的
+        // 3. IO 多路复用监听 (总超时强制锁定在 1.2 秒)
+        $timeout = 1.2; 
+        $endTime = microtime(true) + $timeout;
+        $clean_ips = [];
+
+        while (!empty($sockets) && microtime(true) < $endTime) {
+            $read = array_column($sockets, 'sock');
+            $write = null;
+            $except = null;
+            
+            // 计算剩余可等待的微秒数
+            $timeLeft = max(0, $endTime - microtime(true));
+            $tv_sec = (int) floor($timeLeft);
+            $tv_usec = (int) (($timeLeft - $tv_sec) * 1000000);
+
+            // 监听哪个节点最先返回数据
+            if (stream_select($read, $write, $except, $tv_sec, $tv_usec) > 0) {
+                foreach ($read as $sock) {
+                    $response = fread($sock, 512);
+                    $sockId = (int)$sock;
+                    unset($sockets[$sockId]); // 收到了就把它从等待池剔除
+
+                    if (empty($response) || strlen($response) < 12) continue;
+                    
+                    // 解析 DNS 响应数量
+                    $ans_count = (ord($response[6]) << 8) + ord($response[7]);
+                    if ($ans_count === 0) continue;
+
+                    $offset = 12 + strlen($qname) + 4;
+                    $ips = [];
+                    for ($i = 0; $i < $ans_count; $i++) {
+                        if ($offset >= strlen($response)) break;
+                        while ($offset < strlen($response)) {
+                            $len = ord($response[$offset]);
+                            if (($len & 0xC0) === 0xC0) { $offset += 2; break; }
+                            elseif ($len === 0) { $offset += 1; break; }
+                            else { $offset += $len + 1; }
+                        }
+                        if ($offset + 10 > strlen($response)) break;
+                        
+                        $type = (ord($response[$offset]) << 8) + ord($response[$offset+1]);
+                        $class = (ord($response[$offset+2]) << 8) + ord($response[$offset+3]);
+                        $rdlength = (ord($response[$offset+8]) << 8) + ord($response[$offset+9]);
+                        $offset += 10;
+                        
+                        if ($type === 1 && $class === 1 && $rdlength === 4) {
+                            $ips[] = ord($response[$offset]) . '.' . ord($response[$offset+1]) . '.' . ord($response[$offset+2]) . '.' . ord($response[$offset+3]);
+                        }
+                        $offset += $rdlength;
+                    }
+
+                    if (!empty($ips)) {
+                        $testIp = $ips[0];
+                        if ($testIp === '127.0.0.1' || $testIp === '0.0.0.0') {
+                            return ['status' => 'polluted', 'ip' => $testIp, 'msg' => '遭 GFW 污染 (强指回环/空地址)'];
+                        }
+
+                        $is_cf = false;
+                        $ip_long = ip2long($testIp);
+                        if ($ip_long !== false) {
+                            foreach ($cf_ranges as $cidr) {
+                                list($subnet, $mask) = explode('/', $cidr);
+                                // 安全的位运算匹配网段
+                                $netmask = ~((1 << (32 - (int)$mask)) - 1) & 0xFFFFFFFF;
+                                if (($ip_long & $netmask) === (ip2long($subnet) & $netmask)) {
+                                    $is_cf = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if ($is_cf) {
+                            $clean_ips[] = $testIp;
+                        } else {
+                            // GFW 抢答污染包永远跑得最快，只要发现非 CF，立刻秒判并结束函数！
+                            return ['status' => 'polluted', 'ip' => $testIp, 'msg' => '遭 GFW 污染 (强指非CF拦截节点)'];
+                        }
+                    }
+                }
+            }
+        }
+
+        // 走到这里代表超时结束。如果有任何一个节点查到了干净 IP，就算成功
         if (!empty($clean_ips)) {
             return ['status' => 'clean', 'ip' => $clean_ips[0], 'msg' => '访问正常 (大陆解析至CF)'];
         }
 
-        // 如果走完了 4 个节点 (总计 8 次请求)，全部没有响应，说明是被彻底的无差别阻断了
+        // 4 个节点并发了 1.2 秒全都彻底没回音，实锤被墙阻断
         return ['status' => 'error', 'ip' => '--', 'msg' => '遭 GFW 阻断 (国内完全无响应)'];
     }
 }
+
+// =========================================================
 // ==== 2. 核心拦截：如果是 CLI 定时任务加载，立刻终止文件后续执行 ====
 if (php_sapi_name() === 'cli') {
     return;
