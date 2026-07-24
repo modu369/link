@@ -1,41 +1,130 @@
 <?php
-// ==== 1. 封装公共检测函数，供 CLI 定时任务和 AJAX 共用 ====
-if (!function_exists('check_domain_health')) {
-    function check_domain_health($domain) {
-        $targetUrl = str_starts_with($domain, 'http') ? $domain : "http://www." . $domain;
-        $apiUrl = "https://v2.xxapi.cn/api/status?url=" . urlencode($targetUrl);
-        
-        $successCount = 0;
-        $lastParsed = null;
-        $maxRetries = 3; 
-        
-        for ($i = 0; $i < $maxRetries; $i++) {
-            $ch = curl_init();
-            curl_setopt($ch, CURLOPT_URL, $apiUrl);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 4); 
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-            $response = curl_exec($ch);
-            curl_close($ch);
+// ==== 1. 封装核心检测函数：纯 PHP 原始 UDP 探针 (极致精准版) ====
 
-            if ($response !== false) {
-                $parsed = json_decode($response, true);
-                if ($parsed && isset($parsed['code'])) {
-                    $lastParsed = $parsed;
-                    if ($parsed['code'] == 200 && ($parsed['data'] == '200' || $parsed['data'] == '403')) {
-                        $successCount++;
+// 纯 PHP 构造 DNS 查询包，杜绝任何本地系统 DNS 降级导致的误报
+if (!function_exists('resolve_dns_udp')) {
+    function resolve_dns_udp($domain, $dns_ip, $timeout = 1) {
+        $rand_id = random_bytes(2);
+        // DNS 报头：标志位标明这是一个标准查询
+        $header = $rand_id . "\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00";
+        $qname = '';
+        foreach (explode('.', $domain) as $part) {
+            $qname .= chr(strlen($part)) . $part;
+        }
+        $qname .= "\x00";
+        $question = $qname . "\x00\x01\x00\x01"; // A记录(1), IN类(1)
+        
+        $socket = @stream_socket_client("udp://$dns_ip:53", $errno, $errstr, $timeout);
+        if (!$socket) return [];
+        stream_set_timeout($socket, $timeout);
+        fwrite($socket, $header . $question);
+        $response = fread($socket, 512);
+        fclose($socket);
+        
+        if (empty($response) || strlen($response) < 12) return [];
+        
+        // 解析回答数
+        $ans_count = (ord($response[6]) << 8) + ord($response[7]);
+        if ($ans_count === 0) return [];
+        
+        $offset = 12 + strlen($qname) + 4; // 跳过报头和问题段
+        $ips = [];
+        
+        for ($i = 0; $i < $ans_count; $i++) {
+            if ($offset >= strlen($response)) break;
+            // 跳过 Name 字段 (处理压缩指针或明文)
+            while ($offset < strlen($response)) {
+                $len = ord($response[$offset]);
+                if (($len & 0xC0) === 0xC0) {
+                    $offset += 2; break;
+                } elseif ($len === 0) {
+                    $offset += 1; break;
+                } else {
+                    $offset += $len + 1;
+                }
+            }
+            if ($offset + 10 > strlen($response)) break;
+            
+            $type = (ord($response[$offset]) << 8) + ord($response[$offset+1]);
+            $class = (ord($response[$offset+2]) << 8) + ord($response[$offset+3]);
+            $rdlength = (ord($response[$offset+8]) << 8) + ord($response[$offset+9]);
+            $offset += 10;
+            
+            // 如果是 A 记录，提取 IPv4
+            if ($type === 1 && $class === 1 && $rdlength === 4) {
+                $ips[] = ord($response[$offset]) . '.' . ord($response[$offset+1]) . '.' . ord($response[$offset+2]) . '.' . ord($response[$offset+3]);
+            }
+            $offset += $rdlength;
+        }
+        return $ips;
+    }
+}
+
+if (!function_exists('check_mainland_accessibility')) {
+    function check_mainland_accessibility($domain) {
+        // 4个绝对纯正的大陆省级节点（不可任播到海外）
+        $dns_servers = ['202.96.128.86', '202.106.0.20', '218.30.118.6', '221.12.1.227']; 
+        $cf_ranges = [
+            '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '104.16.0.0/13',
+            '104.24.0.0/14', '108.162.192.0/18', '131.0.72.0/22', '141.101.64.0/18',
+            '162.158.0.0/15', '172.64.0.0/13', '173.245.48.0/20', '188.114.96.0/20',
+            '190.93.240.0/20', '197.234.240.0/22', '198.41.128.0/17'
+        ];
+
+        $clean_ips = [];
+        
+        foreach ($dns_servers as $dns) {
+            $resolvedIps = [];
+            
+            // 单个大陆节点最多重试 2 次 (处理正常丢包，避免太严格误报阻断)
+            for ($retry = 0; $retry < 2; $retry++) {
+                $resolvedIps = resolve_dns_udp($domain, $dns, 1);
+                if (!empty($resolvedIps)) break; 
+                usleep(150000); // 间隔 150 毫秒
+            }
+
+            // 如果该节点彻底丢弃了数据包，测试下一个节点
+            if (empty($resolvedIps)) continue;
+
+            $testIp = reset($resolvedIps); 
+
+            if ($testIp === '127.0.0.1' || $testIp === '0.0.0.0') {
+                return ['status' => 'polluted', 'ip' => $testIp, 'msg' => '遭 GFW 污染 (强指回环/空地址)'];
+            }
+
+            $is_cf = false;
+            $ip_long = ip2long($testIp);
+            if ($ip_long !== false) {
+                foreach ($cf_ranges as $cidr) {
+                    list($subnet, $mask) = explode('/', $cidr);
+                    $subnet_long = ip2long($subnet);
+                    // 兼容 32 位与 64 位 PHP 的安全位运算
+                    $netmask = ~((1 << (32 - (int)$mask)) - 1) & 0xFFFFFFFF;
+                    if (($ip_long & $netmask) === ($subnet_long & $netmask)) {
+                        $is_cf = true;
+                        break;
                     }
                 }
             }
-            usleep(300000);
+
+            if ($is_cf) {
+                $clean_ips[] = $testIp;
+            } else {
+                // 核心逻辑：只要有一个大陆节点查到了【非 CF】的 IP，说明 100% 被 GFW 污染了 (杜绝太宽松)
+                return ['status' => 'polluted', 'ip' => $testIp, 'msg' => '遭 GFW 污染 (强指非CF拦截节点)'];
+            }
         }
-        return ['successCount' => $successCount, 'lastParsed' => $lastParsed, 'maxRetries' => $maxRetries];
+
+        // 只要能从任何节点获取到纯净 CF IP，就是正常的
+        if (!empty($clean_ips)) {
+            return ['status' => 'clean', 'ip' => $clean_ips[0], 'msg' => '访问正常 (大陆解析至CF)'];
+        }
+
+        // 如果走完了 4 个节点 (总计 8 次请求)，全部没有响应，说明是被彻底的无差别阻断了
+        return ['status' => 'error', 'ip' => '--', 'msg' => '遭 GFW 阻断 (国内完全无响应)'];
     }
 }
-// =========================================================
-
 // ==== 2. 核心拦截：如果是 CLI 定时任务加载，立刻终止文件后续执行 ====
-// 必须放在 init.php 之前，防止触发 Session 和 403 拦截！
 if (php_sapi_name() === 'cli') {
     return;
 }
@@ -44,12 +133,10 @@ if (php_sapi_name() === 'cli') {
 // ==== 3. 下面是 Web 环境专属逻辑 ====
 require_once __DIR__ . '/init.php';
 
-// 防止水平越权
 if ($siteId > 0 && !$selectedSite) {
     die('您无权访问该站点的数据。');
 }
 
-// 获取当前站点所有绑定的域名
 $allDomains = [];
 if ($selectedSite) {
     $allDomains[] = $selectedSite['domain'];
@@ -67,85 +154,43 @@ $resultKey = "domain_check_results:{$siteId}";
 $isAdmin = $GLOBALS['is_admin'] ?? false;
 $ttl = $redis->ttl($limitKey);
 
-// 管理员特权：随时可测
 $canCheck = $isAdmin ? true : ($ttl <= 0);
 
-// 获取上次缓存的检测结果
 $cachedResults = [];
 $rawResults = $redis->get($resultKey);
 if ($rawResults) {
     $cachedResults = json_decode($rawResults, true) ?: [];
 }
 
-// ================= 处理 AJAX 接口：每次只处理【单个】域名 =================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'check_single') {
     header('Content-Type: application/json');
     $domain = $_POST['domain'] ?? '';
-    
-    if (empty($domain)) {
-        echo json_encode(['error' => '域名不能为空']);
-        exit;
-    }
+    if (empty($domain)) { echo json_encode(['error' => '域名不能为空']); exit; }
+    if (!in_array($domain, $allDomains)) { echo json_encode(['error' => '非法请求']); exit; }
+    if (!$canCheck) { echo json_encode(['error' => '检测冷却中']); exit; }
 
-    // [安全修复 1]：防止越权检测任意域名（防御滥用你的服务器作为免费代理）
-    if (!in_array($domain, $allDomains)) {
-        echo json_encode(['error' => '非法请求：该域名不属于当前站点']);
-        exit;
-    }
-
-    // [安全修复 2]：防止绕过前端冷却时间恶意并发请求（防御接口层面的 CC/资源耗尽攻击）
-    if (!$canCheck) {
-        echo json_encode(['error' => '检测冷却中，请稍后再试']);
-        exit;
-    }
-
-    $checkRes = check_domain_health($domain);
-    $lastParsed = $checkRes['lastParsed'];
-
-    $finalResult = [];
-    if ($lastParsed) {
-        $lastParsed['success_rate'] = $checkRes['successCount'] . '/' . $checkRes['maxRetries'];
-        $finalResult = $lastParsed;
-    } else {
-        $finalResult = ['code' => -1, 'msg' => '请求超时或无响应', 'data' => '--', 'success_rate' => '0/3'];
-    }
-
-    echo json_encode(['success' => true, 'domain' => $domain, 'result' => $finalResult]);
+    $res = check_mainland_accessibility($domain);
+    echo json_encode(['success' => true, 'domain' => $domain, 'result' => $res]);
     exit;
 }
 
-// ================= 处理 AJAX 接口：检测全部完成后写入缓存 =================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save_cache') {
     header('Content-Type: application/json');
-    
-    // [安全修复 3.1]：限制传入数据的大小，防止恶意塞入超大 Payload 导致 Redis 内存耗尽
     $rawData = $_POST['data'] ?? '[]';
-    if (strlen($rawData) > 102400) { // 限制最大 100KB
-        echo json_encode(['success' => false, 'error' => 'Payload too large']);
-        exit;
-    }
+    if (strlen($rawData) > 102400) { echo json_encode(['success' => false]); exit; }
 
     $allResults = json_decode($rawData, true);
-    
     if (is_array($allResults) && !empty($allResults)) {
-        // [安全修复 3.2]：清洗缓存数据，只保存当前站点实际配置的域名数据（防御缓存投毒）
         $cleanResults = [];
         foreach ($allDomains as $d) {
-            if (isset($allResults[$d])) {
-                $cleanResults[$d] = $allResults[$d];
-            }
+            if (isset($allResults[$d])) $cleanResults[$d] = $allResults[$d];
         }
-
-        if (!$isAdmin) {
-            $redis->setex($limitKey, 10 * 60, time()); // 10分钟冷却
-        }
-        // 只将清洗后的安全数据写入 Redis
+        if (!$isAdmin) $redis->setex($limitKey, 20 * 60, time()); 
         $redis->setex($resultKey, 86400, json_encode($cleanResults, JSON_UNESCAPED_UNICODE));
     }
     echo json_encode(['success' => true]);
     exit;
 }
-// ======================================================
 
 require __DIR__ . '/layout.php';
 render_head('网站检测 - 统计后台');
@@ -158,9 +203,9 @@ render_topbar($branding);
     <main class="content">
         <section class="card">
             <div class="section-title" style="margin-bottom: 24px;">
-                <h2 style="margin:0; font-size: 18px; color: #17233d;">网站连通性检测</h2>
+                <h2 style="margin:0; font-size: 18px; color: #17233d;">GFW 防火墙状态检测</h2>
                 <span class="muted" style="display:block; margin-top: 6px;">
-                    采用电信线检测，快速获取所有域名状态。
+                    本工具内置大陆专线探针，可秒级检测域名是否遭到 DNS 抢答污染或阻断。
                     <?= $isAdmin ? '<span style="color:#2d8cf0;">[管理员特权] 无冷却时间限制。</span>' : '(冷却时间：10分钟)' ?>
                 </span>
             </div>
@@ -191,47 +236,39 @@ render_topbar($branding);
                     <thead>
                         <tr style="border-bottom: 1px solid #e8eaec;">
                             <th style="padding: 12px; color: #515a6e; font-weight: 600;">待检测域名</th>
-                            <th style="padding: 12px; color: #515a6e; font-weight: 600;">健康度 (3次连测)</th>
-                            <th style="padding: 12px; color: #515a6e; font-weight: 600;">状态判决</th>
-                            <th style="padding: 12px; color: #515a6e; font-weight: 600;">最新反馈</th>
+                            <th style="padding: 12px; color: #515a6e; font-weight: 600;">大陆区解析 IP</th>
+                            <th style="padding: 12px; color: #515a6e; font-weight: 600;">GFW 状态</th>
+                            <th style="padding: 12px; color: #515a6e; font-weight: 600;">详细诊断</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php foreach ($allDomains as $idx => $domain): ?>
                             <?php 
                                 $res = $cachedResults[$domain] ?? null;
-                                $rateHtml = '<span style="color: #808695;">未检测</span>';
+                                $ipHtml = '<span style="color: #808695;">未检测</span>';
                                 $statusHtml = '--';
                                 $msgHtml = '--';
 
                                 if ($res) {
-                                    $rate = $res['success_rate'] ?? '0/3';
-                                    list($succ, $total) = explode('/', $rate);
+                                    $ipHtml = '<span style="font-family: monospace; color:#515a6e;">' . htmlspecialchars($res['ip'] ?? '--') . '</span>';
                                     
-                                    if ($succ == 3) {
-                                        $rateHtml = '<span style="color:#19be6b; font-weight:600;">3/3 (极速)</span>';
-                                        $statusHtml = '<span style="color:#19be6b; font-weight:600;">访问正常</span>';
-                                    } elseif ($succ == 2) {
-                                        $rateHtml = '<span style="color:#ff9900; font-weight:600;">2/3 (轻微干扰)</span>';
-                                        $statusHtml = '<span style="color:#ff9900; font-weight:600;">偶发丢包</span>';
-                                    } elseif ($succ == 1) {
-                                        $rateHtml = '<span style="color:#ed4014; font-weight:600;">1/3 (严重干扰)</span>';
-                                        $statusHtml = '<span style="color:#ed4014; font-weight:600;">间歇性阻断</span>';
+                                    if (($res['status'] ?? '') === 'clean') {
+                                        $statusHtml = '<span style="color:#19be6b; font-weight:600;">✅ 访问正常 (纯净)</span>';
+                                        $msgHtml = '<span style="color:#808695">' . htmlspecialchars($res['msg'] ?? '--') . '</span>';
+                                    } elseif (($res['status'] ?? '') === 'polluted') {
+                                        $statusHtml = '<span style="color:#ed4014; font-weight:600;">🚨 已被墙 (DNS污染)</span>';
+                                        $msgHtml = '<span style="color:#ed4014">' . htmlspecialchars($res['msg'] ?? '--') . '</span>';
                                     } else {
-                                        $rateHtml = '<span style="color:#ed4014; font-weight:600;">0/3 (彻底断开)</span>';
-                                        $statusHtml = '<span style="color:#ed4014; font-weight:600; text-decoration: underline;">已被墙/宕机</span>';
+                                        $statusHtml = '<span style="color:#ff9900; font-weight:600;">⚠️ 解析异常 (阻断)</span>';
+                                        $msgHtml = '<span style="color:#ff9900">' . htmlspecialchars($res['msg'] ?? '--') . '</span>';
                                     }
-                                    
-                                    $codeStr = $res['data'] ?: 'N/A';
-                                    $msgColor = ($res['code'] === 200 && ($codeStr == '200' || $codeStr == '403')) ? '#19be6b' : '#ed4014';
-                                    $msgHtml = '<span style="color:#808695">HTTP: <span style="color:'.$msgColor.'">' . htmlspecialchars($codeStr, ENT_QUOTES, 'UTF-8') . '</span> | ' . htmlspecialchars($res['msg'] ?? '--', ENT_QUOTES, 'UTF-8') . '</span>';
                                 }
                             ?>
                             <tr style="border-bottom: 1px solid #f0f0f0;">
                                 <td style="padding: 12px; font-family: monospace; color: #17233d;"><?= htmlspecialchars($domain, ENT_QUOTES, 'UTF-8') ?></td>
-                                <td style="padding: 12px;" id="rate-<?= $idx ?>"><?= $rateHtml ?></td>
+                                <td style="padding: 12px;" id="ip-<?= $idx ?>"><?= $ipHtml ?></td>
                                 <td style="padding: 12px;" id="status-<?= $idx ?>"><?= $statusHtml ?></td>
-                                <td style="padding: 12px; color: #808695;" id="msg-<?= $idx ?>"><?= $msgHtml ?></td>
+                                <td style="padding: 12px;" id="msg-<?= $idx ?>"><?= $msgHtml ?></td>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -262,7 +299,7 @@ async function startDetection() {
     finalResultsCache = {};
 
     domains.forEach((dom, idx) => {
-        document.getElementById('rate-' + idx).innerHTML = '<span style="color:#2d8cf0;">📡 队列中...</span>';
+        document.getElementById('ip-' + idx).innerHTML = '<span style="color:#2d8cf0;">📡 探测中...</span>';
         document.getElementById('status-' + idx).innerText = '--';
         document.getElementById('msg-' + idx).innerText = '--';
     });
@@ -275,8 +312,6 @@ async function startDetection() {
             const idx = currentIndex++;
             const domain = domains[idx];
 
-            document.getElementById('rate-' + idx).innerHTML = '<span style="color:#2d8cf0;">📡 测速中...</span>';
-
             const formData = new FormData();
             formData.append('action', 'check_single');
             formData.append('domain', domain);
@@ -288,10 +323,10 @@ async function startDetection() {
                     renderSingleResult(idx, data.result);
                     finalResultsCache[domain] = data.result;
                 } else {
-                    renderSingleResult(idx, { code: -1, data: '--', msg: '接口异常', success_rate: '0/3' });
+                    renderSingleResult(idx, { status: 'error', ip: '--', msg: '接口异常' });
                 }
             } catch (err) {
-                renderSingleResult(idx, { code: -1, data: '--', msg: '网络断开', success_rate: '0/3' });
+                renderSingleResult(idx, { status: 'error', ip: '--', msg: '网络断开' });
             }
             
             completedCount++;
@@ -335,35 +370,30 @@ async function startDetection() {
     const tipSpan = document.createElement('span');
     tipSpan.id = 'cache-tip';
     tipSpan.style = 'font-size: 13px; color: #19be6b; margin-left: 12px;';
-    tipSpan.innerHTML = '✅ 所有域名已安全检测完毕';
+    tipSpan.innerHTML = '✅ 所有域名已探测完毕';
     btn.parentNode.appendChild(tipSpan);
 }
 
 function renderSingleResult(idx, res) {
-    const rate = res.success_rate || '0/3';
-    const succ = parseInt(rate.split('/')[0]);
+    let statusHtml = '';
+    let msgHtml = '';
     
-    let rateHtml, statusHtml;
-    if (succ === 3) {
-        rateHtml = '<span style="color:#19be6b; font-weight:600;">3/3 (极速)</span>';
-        statusHtml = '<span style="color:#19be6b; font-weight:600;">访问正常</span>';
-    } else if (succ === 2) {
-        rateHtml = '<span style="color:#ff9900; font-weight:600;">2/3 (轻微干扰)</span>';
-        statusHtml = '<span style="color:#ff9900; font-weight:600;">偶发丢包</span>';
-    } else if (succ === 1) {
-        rateHtml = '<span style="color:#ed4014; font-weight:600;">1/3 (严重干扰)</span>';
-        statusHtml = '<span style="color:#ed4014; font-weight:600;">间歇性阻断</span>';
+    const ipHtml = `<span style="font-family: monospace; color:#515a6e;">${res.ip || '--'}</span>`;
+
+    if (res.status === 'clean') {
+        statusHtml = '<span style="color:#19be6b; font-weight:600;">✅ 访问正常 (纯净)</span>';
+        msgHtml = `<span style="color:#808695">${res.msg}</span>`;
+    } else if (res.status === 'polluted') {
+        statusHtml = '<span style="color:#ed4014; font-weight:600;">🚨 已被墙 (DNS污染)</span>';
+        msgHtml = `<span style="color:#ed4014">${res.msg}</span>`;
     } else {
-        rateHtml = '<span style="color:#ed4014; font-weight:600;">0/3 (彻底断开)</span>';
-        statusHtml = '<span style="color:#ed4014; font-weight:600; text-decoration: underline;">已被墙/宕机</span>';
+        statusHtml = '<span style="color:#ff9900; font-weight:600;">⚠️ 解析异常 (阻断)</span>';
+        msgHtml = `<span style="color:#ff9900">${res.msg}</span>`;
     }
 
-    document.getElementById('rate-' + idx).innerHTML = rateHtml;
+    document.getElementById('ip-' + idx).innerHTML = ipHtml;
     document.getElementById('status-' + idx).innerHTML = statusHtml;
-    
-    const codeStr = res.data || 'N/A';
-    const msgColor = (res.code === 200 && (codeStr == '200' || codeStr == '403')) ? '#19be6b' : '#ed4014';
-    document.getElementById('msg-' + idx).innerHTML = `<span style="color:#808695">HTTP: <span style="color:${msgColor}">${codeStr}</span> | ${res.msg || '--'}</span>`;
+    document.getElementById('msg-' + idx).innerHTML = msgHtml;
 }
 </script>
 
