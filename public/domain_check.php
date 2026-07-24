@@ -126,6 +126,22 @@ if (!function_exists('check_mainland_accessibility')) {
     }
 }
 
+// 兼容你的旧版 CLI 定时任务调用
+if (!function_exists('check_domain_health')) {
+    function check_domain_health($domain) {
+        $res = check_mainland_accessibility($domain);
+        return [
+            'successCount' => ($res['status'] === 'clean') ? 3 : 0,
+            'maxRetries' => 3,
+            'lastParsed' => [
+                'code' => ($res['status'] === 'clean') ? 200 : -1,
+                'data' => $res['ip'],
+                'msg' => $res['msg'],
+                'status' => $res['status']
+            ]
+        ];
+    }
+}
 // =========================================================
 // ==== 2. 核心拦截：如果是 CLI 定时任务加载，立刻终止文件后续执行 ====
 if (php_sapi_name() === 'cli') {
@@ -170,7 +186,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'check
     $domain = $_POST['domain'] ?? '';
     if (empty($domain)) { echo json_encode(['error' => '域名不能为空']); exit; }
     if (!in_array($domain, $allDomains)) { echo json_encode(['error' => '非法请求']); exit; }
-    if (!$canCheck) { echo json_encode(['error' => '检测冷却中']); exit; }
+    
+    // 取消了单测的强制冷却限制，方便站长随时复测某个疑似被墙的域名
+    // if (!$canCheck) { echo json_encode(['error' => '检测冷却中']); exit; }
 
     $res = check_mainland_accessibility($domain);
     echo json_encode(['success' => true, 'domain' => $domain, 'result' => $res]);
@@ -209,7 +227,7 @@ render_topbar($branding);
                 <h2 style="margin:0; font-size: 18px; color: #17233d;">GFW 防火墙状态检测</h2>
                 <span class="muted" style="display:block; margin-top: 6px;">
                     本工具内置大陆专线探针，可秒级检测域名是否遭到 DNS 抢答污染或阻断。
-                    <?= $isAdmin ? '<span style="color:#2d8cf0;">[管理员特权] 无冷却时间限制。</span>' : '(冷却时间：10分钟)' ?>
+                    <?= $isAdmin ? '<span style="color:#2d8cf0;">[管理员特权] 无冷却时间限制。</span>' : '(批量冷却时间：10分钟)' ?>
                 </span>
             </div>
 
@@ -223,7 +241,7 @@ render_topbar($branding);
                             style="padding: 8px 16px; border-radius: 4px; font-weight: 500; cursor: <?= $canCheck ? 'pointer' : 'not-allowed' ?>; background: <?= $canCheck ? '#2d8cf0' : '#f8f8f9' ?>; color: <?= $canCheck ? '#fff' : '#c5c8ce' ?>; border: 1px solid <?= $canCheck ? '#2d8cf0' : '#dcdee2' ?>; transition: all 0.2s;"
                             <?= !$canCheck ? 'disabled' : '' ?> 
                             onclick="startDetection()">
-                        <?= $canCheck ? '开始检测' : '冷却中 (' . ceil($ttl/60) . '分钟后可用)' ?>
+                        <?= $canCheck ? '检测全部' : '冷却中 (' . ceil($ttl/60) . '分钟后可用)' ?>
                     </button>
                     <span id="progress-text" style="font-size: 13px; color: #808695; display: none;">进度: 0/<?= count($allDomains) ?></span>
                     
@@ -242,6 +260,7 @@ render_topbar($branding);
                             <th style="padding: 12px; color: #515a6e; font-weight: 600;">大陆区解析 IP</th>
                             <th style="padding: 12px; color: #515a6e; font-weight: 600;">GFW 状态</th>
                             <th style="padding: 12px; color: #515a6e; font-weight: 600;">详细诊断</th>
+                            <th style="padding: 12px; color: #515a6e; font-weight: 600; width: 80px; text-align: center;">操作</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -272,6 +291,13 @@ render_topbar($branding);
                                 <td style="padding: 12px;" id="ip-<?= $idx ?>"><?= $ipHtml ?></td>
                                 <td style="padding: 12px;" id="status-<?= $idx ?>"><?= $statusHtml ?></td>
                                 <td style="padding: 12px;" id="msg-<?= $idx ?>"><?= $msgHtml ?></td>
+                                <td style="padding: 12px; text-align: center;">
+                                    <button class="single-check-btn" id="btn-<?= $idx ?>" 
+                                            onclick="checkSingleDomain(<?= $idx ?>, '<?= htmlspecialchars($domain, ENT_QUOTES, 'UTF-8') ?>')" 
+                                            style="background: #fff; border: 1px solid #dcdee2; color: #515a6e; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; transition: all 0.2s;">
+                                        检测
+                                    </button>
+                                </td>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -281,25 +307,41 @@ render_topbar($branding);
     </main>
 </div>
 
+<style>
+.single-check-btn:hover:not(:disabled) {
+    border-color: #2d8cf0;
+    color: #2d8cf0;
+}
+.single-check-btn:disabled {
+    background: #f8f8f9 !important;
+    color: #c5c8ce !important;
+    cursor: not-allowed !important;
+}
+</style>
+
 <script>
 const domains = <?= json_encode($allDomains) ?>;
 const isAdmin = <?= $isAdmin ? 'true' : 'false' ?>;
 let completedCount = 0;
-let finalResultsCache = {};
+
+// 将当前页面已有的缓存数据加载到 JS 对象中，以便单测时增量合并
+let currentCache = <?= json_encode((object)$cachedResults, JSON_UNESCAPED_UNICODE) ?>;
 
 async function startDetection() {
     const btn = document.getElementById('start-btn');
     const progressText = document.getElementById('progress-text');
     
+    // 禁用批量和单测按钮
     btn.disabled = true;
-    btn.innerText = '安全检测中...';
+    btn.innerText = '批量检测中...';
     btn.style.background = '#57a3f3';
     btn.style.cursor = 'wait';
+    document.querySelectorAll('.single-check-btn').forEach(b => b.disabled = true);
     
     progressText.style.display = 'inline';
     progressText.innerText = `进度: 0/${domains.length}`;
     completedCount = 0;
-    finalResultsCache = {};
+    let finalResultsCache = {};
 
     domains.forEach((dom, idx) => {
         document.getElementById('ip-' + idx).innerHTML = '<span style="color:#2d8cf0;">📡 探测中...</span>';
@@ -326,7 +368,7 @@ async function startDetection() {
                     renderSingleResult(idx, data.result);
                     finalResultsCache[domain] = data.result;
                 } else {
-                    renderSingleResult(idx, { status: 'error', ip: '--', msg: '接口异常' });
+                    renderSingleResult(idx, { status: 'error', ip: '--', msg: data.error || '接口异常' });
                 }
             } catch (err) {
                 renderSingleResult(idx, { status: 'error', ip: '--', msg: '网络断开' });
@@ -344,28 +386,31 @@ async function startDetection() {
 
     await Promise.all(workers);
 
+    // 将批量检测结果与全局缓存合并，并保存到后端
     if (Object.keys(finalResultsCache).length > 0) {
+        currentCache = { ...currentCache, ...finalResultsCache };
         const saveForm = new FormData();
         saveForm.append('action', 'save_cache');
-        saveForm.append('data', JSON.stringify(finalResultsCache));
+        saveForm.append('data', JSON.stringify(currentCache));
         await fetch('', { method: 'POST', body: saveForm });
     }
 
     if (isAdmin) {
-        btn.innerText = '开始检测';
+        btn.innerText = '批量检测全部';
         btn.style.background = '#2d8cf0';
         btn.style.color = '#fff';
         btn.style.borderColor = '#2d8cf0';
         btn.style.cursor = 'pointer';
         btn.disabled = false;
     } else {
-        btn.innerText = '检测完成 (10分钟冷却)';
+        btn.innerText = '批量检测完成 (10分钟冷却)';
         btn.style.background = '#f8f8f9';
         btn.style.color = '#c5c8ce';
         btn.style.borderColor = '#dcdee2';
         btn.style.cursor = 'not-allowed';
     }
     
+    document.querySelectorAll('.single-check-btn').forEach(b => b.disabled = false);
     progressText.style.display = 'none';
     const oldTip = document.getElementById('cache-tip');
     if (oldTip) oldTip.remove();
@@ -373,8 +418,47 @@ async function startDetection() {
     const tipSpan = document.createElement('span');
     tipSpan.id = 'cache-tip';
     tipSpan.style = 'font-size: 13px; color: #19be6b; margin-left: 12px;';
-    tipSpan.innerHTML = '✅ 所有域名已探测完毕';
+    tipSpan.innerHTML = '✅ 批量探测完毕';
     btn.parentNode.appendChild(tipSpan);
+}
+
+// === 新增：单域名独立检测函数 ===
+async function checkSingleDomain(idx, domain) {
+    const btn = document.getElementById('btn-' + idx);
+    btn.disabled = true;
+    btn.innerText = '测试中..';
+
+    document.getElementById('ip-' + idx).innerHTML = '<span style="color:#2d8cf0;">📡 探测中...</span>';
+    document.getElementById('status-' + idx).innerText = '--';
+    document.getElementById('msg-' + idx).innerText = '--';
+
+    const formData = new FormData();
+    formData.append('action', 'check_single');
+    formData.append('domain', domain);
+
+    try {
+        const res = await fetch('', { method: 'POST', body: formData });
+        const data = await res.json();
+        
+        if (data.success && data.result) {
+            renderSingleResult(idx, data.result);
+            
+            // 将单测结果增量更新到当前缓存中，并保存到后端 Redis
+            currentCache[domain] = data.result;
+            const saveForm = new FormData();
+            saveForm.append('action', 'save_cache');
+            saveForm.append('data', JSON.stringify(currentCache));
+            fetch('', { method: 'POST', body: saveForm }); // 异步静默保存
+
+        } else {
+            renderSingleResult(idx, { status: 'error', ip: '--', msg: data.error || '接口异常' });
+        }
+    } catch (err) {
+        renderSingleResult(idx, { status: 'error', ip: '--', msg: '网络断开' });
+    }
+
+    btn.disabled = false;
+    btn.innerText = '检测';
 }
 
 function renderSingleResult(idx, res) {
