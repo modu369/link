@@ -434,7 +434,9 @@ public function getSite(int $id): ?array
 
 public function recordPageview(string $trackingId, array $payload): void
 {
-    // 【修复 4】：防抖锁，拦截极短时间内（3秒）同IP/同指纹对同页面的预加载和静默刷新
+if (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] !== '') {
+            $payload['user_agent'] = ($payload['user_agent'] ?? '') . ' x-requested-with/' . strtolower($_SERVER['HTTP_X_REQUESTED_WITH']);
+        }
 $ip = $payload['ip'] ?? '';
 $fp = $payload['fingerprint'] ?? '';
 $path = $payload['path'] ?? '/';
@@ -3333,13 +3335,12 @@ private function markVisitorAudienceState(int $siteId, string $visitorId): array
     {
         $ua = strtolower($userAgent);
         return match (true) {
-            // 社交/办公平台内置浏览器 (最高优先级)
+            str_contains($ua, 'com.xunlei.browser') || str_contains($ua, 'com.xunlei.downloadprovider')  => '迅雷',
+            str_contains($ua, 'mark.via') => 'Via',
             str_contains($ua, 'micromessenger') => '微信',
             str_contains($ua, 'dingtalk') => '钉钉',
-            str_contains($ua, 'qq/') => 'QQ', // QQ客户端内置，区别于QQ浏览器
-
-            // 国内主流手机/PC浏览器
-            (bool) preg_match('/mqqbrowser|qqbrowser/', $ua) => 'QQ浏览器',
+            str_contains($ua, 'qq/') => 'QQ',
+            (bool) preg_match('/mqqbrowser|qqbrowser/', $ua) => 'QQ',
             str_contains($ua, 'ucbrowser') || str_contains($ua, 'ubrowser') => 'UC',
             str_contains($ua, 'quark') => '夸克',
             str_contains($ua, 'baiduboxapp') || str_contains($ua, 'baidubrowser') || str_contains($ua, 'baidu') => '百度',
@@ -3349,8 +3350,6 @@ private function markVisitorAudienceState(int $siteId, string $visitorId): array
             str_contains($ua, '360se') || str_contains($ua, '360ee') || str_contains($ua, 'qihoobrowser') => '360',
             str_contains($ua, 'wukong-browser') => '悟空 PC',
             str_contains($ua, 'goldbrowser') || str_contains($ua, 'bytedancewebview') => '悟空',
-            
-            // 手机厂商自带浏览器
             str_contains($ua, 'xiaomi') || str_contains($ua, 'miuibrowser') => '小米',
             str_contains($ua, 'huaweibrowser') || str_contains($ua, 'huawei') || str_contains($ua, 'hbpc') => '华为',
             str_contains($ua, 'vivobrowser') => 'Vivo',
@@ -3358,28 +3357,25 @@ private function markVisitorAudienceState(int $siteId, string $visitorId): array
             str_contains($ua, 'oppobrowser') => 'Oppo',
             str_contains($ua, 'slbrowser') || str_contains($ua, 'lenovo') => '联想',
             str_contains($ua, 'samsungbrowser') => '三星',
-            
-            // 国际主流浏览器 (最低优先级，防止误判上面的国内浏览器)
             (bool) preg_match('/edg(\/|a|ios)|edge/', $ua) => 'Edge',
             (bool) preg_match('/chrome|crios/', $ua) => 'Chrome',
             (bool) preg_match('/firefox|fxios/', $ua) => 'Firefox',
             (bool) preg_match('/msie|trident/', $ua) => 'IE',
-            // 如果包含了 Safari，且不包含其它内核修饰符，才是真正的原生 Safari
             (bool) preg_match('/safari/', $ua) && !(bool) preg_match('/chrome|crios|edg|edge/', $ua) => 'Safari',
-            
-            default => '其他浏览器',
+            default => '其他'
         };
     }
 
     private function browserCase(string $alias = ''): string
     {
         $prefix = $alias ? $alias . '.' : '';
-
         return "CASE
+            WHEN LOWER({$prefix}user_agent) REGEXP 'com.xunlei.browser|com.xunlei.downloadprovider' THEN '迅雷'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'mark.via' THEN 'Via'
             WHEN LOWER({$prefix}user_agent) REGEXP 'micromessenger' THEN '微信'
             WHEN LOWER({$prefix}user_agent) REGEXP 'dingtalk' THEN '钉钉'
             WHEN LOWER({$prefix}user_agent) REGEXP 'qq/' THEN 'QQ'
-            WHEN LOWER({$prefix}user_agent) REGEXP 'mqqbrowser|qqbrowser' THEN 'QQ浏览器'
+            WHEN LOWER({$prefix}user_agent) REGEXP 'mqqbrowser|qqbrowser' THEN 'QQ'
             WHEN LOWER({$prefix}user_agent) REGEXP 'ucbrowser|ubrowser' THEN 'UC'
             WHEN LOWER({$prefix}user_agent) REGEXP 'quark' THEN '夸克'
             WHEN LOWER({$prefix}user_agent) REGEXP 'baiduboxapp|baidubrowser|baidu' THEN '百度'
@@ -3401,7 +3397,7 @@ private function markVisitorAudienceState(int $siteId, string $visitorId): array
             WHEN LOWER({$prefix}user_agent) REGEXP 'firefox|fxios' THEN 'Firefox'
             WHEN LOWER({$prefix}user_agent) REGEXP 'msie|trident' THEN 'IE'
             WHEN LOWER({$prefix}user_agent) REGEXP 'safari' AND LOWER({$prefix}user_agent) NOT REGEXP 'chrome|crios|edg|edge' THEN 'Safari'
-            ELSE '其他浏览器'
+            ELSE '其他'
         END";
     }
 
