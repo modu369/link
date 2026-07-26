@@ -434,9 +434,6 @@ public function getSite(int $id): ?array
 
 public function recordPageview(string $trackingId, array $payload): void
 {
-if (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] !== '') {
-            $payload['user_agent'] = ($payload['user_agent'] ?? '') . ' x-requested-with/' . strtolower($_SERVER['HTTP_X_REQUESTED_WITH']);
-        }
 $ip = $payload['ip'] ?? '';
 $fp = $payload['fingerprint'] ?? '';
 $path = $payload['path'] ?? '/';
