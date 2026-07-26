@@ -72,8 +72,12 @@ $extractIp = static function (?string $value): ?string {
 
 $clientIp = $extractIp($_SERVER['HTTP_X_REAL_IP'] ?? null)
     ?? $extractIp($_SERVER['REMOTE_ADDR'] ?? null);
-
-$userAgent = $sanitizeText($_SERVER['HTTP_USER_AGENT'] ?? '', 512);
+    
+$rawUa = $_SERVER['HTTP_USER_AGENT'] ?? '';
+if (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] !== '') {
+    $rawUa .= ' xrw/' . strtolower(trim($_SERVER['HTTP_X_REQUESTED_WITH']));
+}
+$userAgent = $sanitizeText($rawUa, 1024);
 $userAgentLower = strtolower($userAgent);
 
 // 统一的蜘蛛规则库
