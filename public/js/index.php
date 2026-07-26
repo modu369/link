@@ -99,22 +99,10 @@ if ($isSpider) {
     header('Pragma: no-cache');
     header('Expires: 0');
 } else {
-    // 普通人类访客：正常缓存 6 小时
-    $maxAge = 21600; 
-    $lastModified = filemtime(__FILE__);
-    $etag = md5('v8_tracker_' . $lastModified);
-
+    $maxAge = 21600;
     header('Cache-Control: public, max-age=' . $maxAge);
-    header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $lastModified) . ' GMT');
-    header('Etag: "' . $etag . '"');
-
-    $httpIfNoneMatch = isset($_SERVER['HTTP_IF_NONE_MATCH']) ? trim($_SERVER['HTTP_IF_NONE_MATCH'], '"') : '';
-    $httpIfModifiedSince = isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) ? strtotime($_SERVER['HTTP_IF_MODIFIED_SINCE']) : 0;
-
-    if ($httpIfNoneMatch === $etag || $httpIfModifiedSince >= $lastModified) {
-        http_response_code(304);
-        exit;
-    }
+    header_remove('ETag');
+    header_remove('Last-Modified');
 }
 ?>
 (function () {
