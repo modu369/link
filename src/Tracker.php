@@ -41,8 +41,8 @@ class Tracker
     private int $ingestAutoDrainEvery = 20;
     private int $ingestAutoDrainBatch = 50;
     private int $ingestStalledAfter = 300;
-    private array $ingestFilterDefaults = ['ip_filters' => '', 'keyword_filters' => '', 'asn_filters' => '', 'ua_filters' => ''];
-    private array $ingestFilters = ['ip_filters' => '', 'keyword_filters' => '', 'asn_filters' => '', 'ua_filters' => ''];
+    private array $ingestFilterDefaults = ['ip_filters' => '', 'keyword_filters' => '', 'path_filters' => '', 'asn_filters' => '', 'ua_filters' => ''];
+    private array $ingestFilters = ['ip_filters' => '', 'keyword_filters' => '', 'path_filters' => '', 'asn_filters' => '', 'ua_filters' => ''];
     private int $proxyCleanupInterval = 600;
     private int $proxyCleanupBatch = 10;
     private int $proxyRecoverySeconds = 3600;
@@ -872,6 +872,7 @@ private function truncateIpv6(?string $ip): ?string
     {
         $ipFilters = $this->ingestFilters['ip_filters'] ?? '';
         $keywordFilters = $this->ingestFilters['keyword_filters'] ?? '';
+        $pathFilters = $this->ingestFilters['path_filters'] ?? '';
         $asnFilters = $this->ingestFilters['asn_filters'] ?? '';
         $uaFilters = $this->ingestFilters['ua_filters'] ?? '';
 
@@ -883,7 +884,11 @@ private function truncateIpv6(?string $ip): ?string
             return true;
         }
 
-        if ($keywordFilters !== '' && $this->keywordMatchesFilters($keyword, $path, $referrer, $keywordFilters)) {
+        if ($keywordFilters !== '' && $this->keywordMatchesFilters($keyword, '', $referrer, $keywordFilters)) {
+            return true;
+        }
+
+        if ($pathFilters !== '' && $this->keywordMatchesFilters('', $path, '', $pathFilters)) {
             return true;
         }
 
@@ -4383,24 +4388,36 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
     private function getKeywords(int $siteId, string $range): array
     {
         $cacheKey = "keywords:{$siteId}:{$range}";
-
         return $this->cacheAggregate($cacheKey, 20, function () use ($siteId, $range) {
             [$start, $end] = $this->rollupRangeBounds($range);
             $span = $this->rollupSpanForRange($siteId, $start, $end);
+            
             if (!$span) {
                 return [];
             }
-
+            
             $rollup = $this->aggregateDimensionRollups($siteId, 'keyword_engine', $span['start'], $span['end'], 6000);
+            $keywordFilters = $this->ingestFilters['keyword_filters'] ?? '';
 
             if (!empty($rollup)) {
                 $keywords = [];
-
                 foreach ($rollup as $row) {
                     [$keyword, $engine, $entry] = array_pad(explode('|', $row['dimension_value'] ?? '', 3), 3, '');
+                    $keyword = trim((string)$keyword);
                     if ($keyword === '') {
                         continue;
                     }
+                    
+                    // 1. 系统级过滤：丢弃纯小写英文和纯小写英文加数字的垃圾词
+                    if (preg_match('/^[a-z0-9]+$/', $keyword) && preg_match('/[a-z]/', $keyword)) {
+                        continue;
+                    }
+                    
+                    // 2. 用户级过滤：丢弃后台设置的屏蔽词
+                    if ($keywordFilters !== '' && $this->keywordMatchesFilters($keyword, '', '', $keywordFilters)) {
+                        continue;
+                    }
+
                     $entryLabel = $entry !== '' ? $entry : '/';
                     if (!isset($keywords[$keyword])) {
                         $keywords[$keyword] = [
@@ -4410,15 +4427,12 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
                             'entry' => $entryLabel,
                         ];
                     }
-
                     $keywords[$keyword]['views'] += (int) ($row['views'] ?? 0);
-                    $keywords[$keyword]['engines'][] = $engine ?: '其他';
-
+                    $keywords[$keyword]['engines'][] = $engine ?: '未知';
                     if (($row['views'] ?? 0) >= ($keywords[$keyword]['views'] ?? 0)) {
                         $keywords[$keyword]['entry'] = $entryLabel;
                     }
                 }
-
                 return array_values(array_map(function ($item) {
                     $item['engines'] = implode(' / ', array_unique($item['engines']));
                     return $item;
@@ -5095,9 +5109,10 @@ private function isSearchEngineSpider(string $ua): bool
 
         // 优先级 2：传统 UA 正则匹配 (只保留绝对属于移动端的词汇，剔除 harmonyos 以防误判鸿蒙 PC)
         $ua = strtolower($userAgent);
+        $realUa = explode(' xrw/', $ua)[0];
         $needles = ['mobile', 'android', 'iphone', 'ipad', 'ipod', 'micromessenger', 'windows phone'];
         foreach ($needles as $needle) {
-            if (str_contains($ua, $needle)) {
+            if (str_contains($realUa, $needle)) {
                 return true;
             }
         }
@@ -5730,6 +5745,7 @@ $this->db->exec(
         $this->ingestFilters = [
             'ip_filters' => trim((string) ($filters['ip_filters'] ?? '')),
             'keyword_filters' => trim((string) ($filters['keyword_filters'] ?? '')),
+            'path_filters' => trim((string) ($filters['path_filters'] ?? '')),
             'asn_filters' => trim((string) ($filters['asn_filters'] ?? '')),
             'ua_filters' => trim((string) ($filters['ua_filters'] ?? '')),
         ];
@@ -6648,11 +6664,13 @@ private function getSetting(string $key): ?array
     {
         $stored = $this->getSetting('ingest_filters') ?? [];
         $merged = array_merge($fallback, $stored);
+        
         $merged['ip_filters'] = trim((string) ($merged['ip_filters'] ?? ''));
         $merged['keyword_filters'] = trim((string) ($merged['keyword_filters'] ?? ''));
+        $merged['path_filters'] = trim((string) ($merged['path_filters'] ?? ''));
         $merged['asn_filters'] = trim((string) ($merged['asn_filters'] ?? ''));
         $merged['ua_filters'] = trim((string) ($merged['ua_filters'] ?? ''));
-
+        
         return $merged;
     }
 
@@ -6729,31 +6747,31 @@ private function getSetting(string $key): ?array
         return $payload;
     }
 
-    public function updateIngestFilters(string $ipFilters, string $keywordFilters): array
+    public function updateIngestFilters(string $ipFilters, string $keywordFilters, string $pathFilters = ''): array
     {
         $payload = [
             'ip_filters' => trim($ipFilters),
             'keyword_filters' => trim($keywordFilters),
+            'path_filters' => trim($pathFilters),
             'asn_filters' => trim((string) ($this->ingestFilters['asn_filters'] ?? '')),
             'ua_filters' => trim((string) ($this->ingestFilters['ua_filters'] ?? '')),
         ];
         $this->setSetting('ingest_filters', $payload);
         $this->hydrateIngestFilters();
-
         return $payload;
     }
 
-    public function updateIngestFiltersWithAsn(string $ipFilters, string $keywordFilters, string $asnFilters, string $uaFilters = ''): array
+    public function updateIngestFiltersWithAsn(string $ipFilters, string $keywordFilters, string $pathFilters, string $asnFilters, string $uaFilters = ''): array
     {
         $payload = [
             'ip_filters' => trim($ipFilters),
             'keyword_filters' => trim($keywordFilters),
+            'path_filters' => trim($pathFilters),
             'asn_filters' => trim($asnFilters),
             'ua_filters' => trim($uaFilters),
         ];
         $this->setSetting('ingest_filters', $payload);
         $this->hydrateIngestFilters();
-
         return $payload;
     }
 
