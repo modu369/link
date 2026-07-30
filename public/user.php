@@ -38,10 +38,11 @@ $loginEntrySetting = $getSetting('login_entry') ?? [];
 $ingestFilters = $getSetting('ingest_filters') ?? [];
 $spiderIps = $getSetting('spider_ips') ?? [];
 $engines = ['baidu' => '百度', 'google' => '谷歌', '360' => '360', 'sogou' => '搜狗', 'yahoo' => '雅虎', 'bing' => '必应', 'toutiao' => '头条', 'sm' => '神马'];
-// 初始值合并
+
+// 初始值合并 (新增 path_filters)
 $account = array_merge($config['app']['admin'] ?? [], $account);
 $retention = array_merge($config['retention'] ?? [], $retention);
-$ingestFilters = array_merge(['ip_filters' => '', 'keyword_filters' => '', 'asn_filters' => '', 'ua_filters' => ''], $ingestFilters);
+$ingestFilters = array_merge(['ip_filters' => '', 'keyword_filters' => '', 'path_filters' => '', 'asn_filters' => '', 'ua_filters' => ''], $ingestFilters);
 
 $message = null;
 $error = null;
@@ -79,7 +80,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $message = '品牌设置已更新';
     }
 
-    // 其他原有逻辑（数据保留、入库过滤、隐藏入口）保持不变...
     if ($action === 'update_retention') {
         $retention = [
             'days' => max(0, (int)$_POST['days']),
@@ -96,10 +96,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $message = '隐蔽入口已更新';
     }
 
+    // 更新过滤规则 (新增 path_filters 处理)
     if ($action === 'update_ingest_filters') {
         $ingestFilters = [
             'ip_filters' => trim($_POST['ip_filters'] ?? ''),
             'keyword_filters' => trim($_POST['keyword_filters'] ?? ''),
+            'path_filters' => trim($_POST['path_filters'] ?? ''),
             'asn_filters' => trim($_POST['asn_filters'] ?? ''),
             'ua_filters' => trim($_POST['ua_filters'] ?? ''),
         ];
@@ -235,8 +237,13 @@ render_topbar($branding);
             </div>
             
             <div class="form-control" style="margin:0;">
-                <label>关键词/路径过滤 (包含匹配)</label>
+                <label>关键词过滤 (包含匹配)</label>
                 <textarea name="keyword_filters" rows="4"><?= htmlspecialchars($ingestFilters['keyword_filters'] ?? '') ?></textarea>
+            </div>
+            
+            <div class="form-control" style="margin:0;">
+                <label>路径过滤 (包含匹配)</label>
+                <textarea name="path_filters" rows="4"><?= htmlspecialchars($ingestFilters['path_filters'] ?? '') ?></textarea>
             </div>
             
             <div style="grid-column: 1 / -1; text-align: right;">
