@@ -4301,7 +4301,7 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
             $params[':engine'] = $filters['engine'];
         }
         if (!empty($filters['city'])) {
-            $conditions[] = "COALESCE(NULLIF(city_name,''), NULLIF(region_name,''), '未知') LIKE :city";
+            $conditions[] = "COALESCE(NULLIF(city_name,''), NULLIF(region_name,''), NULLIF(country_name,''), '未知') LIKE :city";
             $params[':city'] = '%' . $filters['city'] . '%';
         }
 
@@ -4346,7 +4346,7 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
             $conditions[] = $filters['visitor'] === 'new' ? 'is_unique = 1' : 'is_unique = 0';
         }
         if (!empty($filters['city'])) {
-            $conditions[] = "COALESCE(NULLIF(city_name,''), NULLIF(region_name,''), '未知') LIKE :city";
+            $conditions[] = "COALESCE(NULLIF(city_name,''), NULLIF(region_name,''), NULLIF(country_name,''), '未知') LIKE :city";
             $params[':city'] = '%' . $filters['city'] . '%';
         }
         if (!empty($filters['engine'])) {
@@ -4367,7 +4367,7 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
                     duration_seconds,
                     page_count,
                     entry_path,
-                    COALESCE(NULLIF(city_name,''), NULLIF(region_name,''), '未知') as region,
+                    COALESCE(NULLIF(city_name,''), NULLIF(region_name,''), NULLIF(country_name,''), '未知') as region,
                     engine
                 FROM sessions
                 WHERE " . implode(' AND ', $conditions) . "
