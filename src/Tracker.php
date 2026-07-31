@@ -499,7 +499,7 @@ $this->redis->expire($debounceKey, 3); // 锁定 3 秒
         $uvToday = false;
         $isUnique = false;
 
-$rawSessionId = $this->limitText($payload['session_id'] ?? '', 64);
+        $rawSessionId = $this->limitText($payload['session_id'] ?? '', 64);
         $rawFingerprint = $this->limitText($payload['fingerprint'] ?? '', 128);
         $title = $this->limitText($payload['title'] ?? '', 255);
         
@@ -585,11 +585,10 @@ $rawSessionId = $this->limitText($payload['session_id'] ?? '', 64);
             $ispName = $this->limitText($geo['isp_domain'] ?? '', 128);
             $countryCode = $this->limitText($geo['country_code'] ?? '', 16);
             $asnMeta = $ip ? $this->resolveAsnMeta($ip) : [];
-
-$proxyRisk = $this->isProxySuspicious(
-                $sessionId, $fingerprint, $uidProvided, $fallbackUid, $userAgent,
-                $duration, $pageCount, $ip, $ipHash, $asnMeta, $cityName,
-                $regionName, $countryName, $headerMeta, (bool) $isMobile, $canonicalHost ?: $host
+            $proxyRisk = $this->isProxySuspicious(
+            $sessionId, $fingerprint, $uidProvided, $fallbackUid, $userAgent,
+            $duration, $pageCount, $ip, $ipHash, $asnMeta, $cityName,
+            $regionName, $countryName, $headerMeta, (bool) $isMobile, $canonicalHost ?: $host
             );
             
             if ($proxyRisk['blocked']) {
@@ -698,9 +697,15 @@ $proxyRisk = $this->isProxySuspicious(
         $hourlyDeviceIpKey = "site:{$sid}:hll_ip_{$device}:{$hourStr}"; // 新增：小时级设备 IP
         $dimHostVal = $canonicalHost ?: '未知域名';
         $dimHostDeviceVal = $dimHostVal . '|' . $device;
+        $dimRegionVal = $this->limitText($this->regionLabel($countryName ?? '', $regionName ?? ''), 255, '未知');
+        $dimCountryVal = $this->limitText($countryName ?? '', 128, '未知');
+        $dimIspVal = $this->limitText($ispName ?? '', 128, '未知运营商');
         // 使用 MD5 防止域名中的特殊符号破坏 Redis 结构
         $dailyHostKey = "site:{$sid}:hll_dim:host:" . md5($dimHostVal) . ":{$todayStr}";
         $dailyHostDeviceKey = "site:{$sid}:hll_dim:host_device:" . md5($dimHostDeviceVal) . ":{$todayStr}";
+        $dailyRegionKey = "site:{$sid}:hll_dim:region:" . md5($dimRegionVal) . ":{$todayStr}";
+        $dailyCountryKey = "site:{$sid}:hll_dim:country:" . md5($dimCountryVal) . ":{$todayStr}";
+        $dailyIspKey = "site:{$sid}:hll_dim:isp:" . md5($dimIspVal) . ":{$todayStr}";
         
         // 严格防空判断，避免污染 HLL
         if ($ipHash) {
@@ -711,11 +716,21 @@ $proxyRisk = $this->isProxySuspicious(
             $this->redis->pfAdd($dailyHostKey, [$ipHash]);
             $this->redis->pfAdd($dailyHostDeviceKey, [$ipHash]);
             $this->redis->pfAdd($dailyAudienceIpKey, [$ipHash]);
+            
+            $this->redis->pfAdd($dailyRegionKey, [$ipHash]);
+            $this->redis->pfAdd($dailyCountryKey, [$ipHash]);
+            $this->redis->pfAdd($dailyIspKey, [$ipHash]);
+
             $this->redis->expire($dailyIpKey, 86400 * 8);
             $this->redis->expire($dailyDeviceIpKey, 86400 * 8);
             $this->redis->expire($dailyHostKey, 86400 * 8);
             $this->redis->expire($dailyHostDeviceKey, 86400 * 8);
             $this->redis->expire($dailyAudienceIpKey, 86400 * 8);
+            
+            $this->redis->expire($dailyRegionKey, 86400 * 8);
+            $this->redis->expire($dailyCountryKey, 86400 * 8);
+            $this->redis->expire($dailyIspKey, 86400 * 8);
+
             $this->redis->expire($hourlyIpKey, 86400 * 3);
             $this->redis->expire($hourlyDeviceIpKey, 86400 * 3);
         }
@@ -1050,7 +1065,8 @@ private function isChinaNetwork(string $country, array $asnMeta, string $ispDoma
         $chinaIsps = [
             'china mobile', 'china unicom', 'china telecom', 'cmcc', 'unicom', 'chinanet', 'cnc', 'ct', 'cernet', 'cstnet',
             '移动', '联通', '电信', '广电', '铁通', '网通', '教育网', '科技网', '长城宽带', '鹏博士',
-            '东方有线', '华数', '天威', '歌华', '方正宽带', '珠江宽带', '聚友', '艾普', '盈科', '视讯宽带', '宽带'
+            '东方有线', '华数', '天威', '歌华', '方正宽带', '珠江宽频', '珠江宽带', '聚友', '艾普', '盈科', '视讯宽带', '宽带', 
+            '有线', '中嘉'
         ];
 
         foreach ($chinaIsps as $isp) {
@@ -1898,6 +1914,57 @@ private function cleanupProxyIpData(string $ip): bool
                         ORDER BY ips DESC
                         LIMIT 500
                     ) t",
+                'referrer_device' => "SELECT dimension_value, pv, uv, new_uv, ips, sessions, duration_sum, page_sum, bounce_count
+                    FROM (
+                        SELECT LEFT(CONCAT(" . $this->referrerHostExpr('p') . ", '|', IF(p.is_mobile = 1, 'mobile', 'desktop')), 255) as dimension_value,
+                            SUM(s.total_pv) as pv,
+                            COUNT(DISTINCT p.ip_hash) as uv,
+                            COUNT(DISTINCT CASE WHEN a.first_seen >= ? AND a.first_seen < ? THEN p.ip_hash END) as new_uv,
+                            COUNT(DISTINCT p.ip_hash) as ips,
+                            COUNT(*) as sessions,
+                            SUM(s.max_duration) as duration_sum,
+                            SUM(s.max_pages) as page_sum,
+                            SUM(CASE WHEN s.max_pages <= 1 THEN 1 ELSE 0 END) as bounce_count
+                        FROM (
+                            SELECT session_id, MIN(id) as first_id, COUNT(*) as total_pv,
+                                MAX(duration_seconds) as max_duration, MAX(page_count) as max_pages
+                            FROM pageviews
+                            WHERE site_id = ? AND session_id IS NOT NULL AND is_proxy_risk = 0
+                              AND occurred_at >= ? AND occurred_at < ?
+                            GROUP BY session_id
+                        ) s
+                        JOIN pageviews p ON p.id = s.first_id
+                        LEFT JOIN site_visitor_audience a ON p.visitor_id = a.visitor_id AND p.site_id = a.site_id
+                        GROUP BY dimension_value
+                        ORDER BY ips DESC
+                        LIMIT 500
+                    ) t",
+                'referrer_audience' => "SELECT dimension_value, pv, uv, new_uv, ips, sessions, duration_sum, page_sum, bounce_count
+                    FROM (
+                        SELECT LEFT(CONCAT(" . $this->referrerHostExpr('p') . ", '|', IF(s.is_unique = 1, 'new', 'returning')), 255) as dimension_value,
+                            SUM(s.total_pv) as pv,
+                            COUNT(DISTINCT p.ip_hash) as uv,
+                            COUNT(DISTINCT CASE WHEN a.first_seen >= ? AND a.first_seen < ? THEN p.ip_hash END) as new_uv,
+                            COUNT(DISTINCT p.ip_hash) as ips,
+                            COUNT(*) as sessions,
+                            SUM(s.max_duration) as duration_sum,
+                            SUM(s.max_pages) as page_sum,
+                            SUM(CASE WHEN s.max_pages <= 1 THEN 1 ELSE 0 END) as bounce_count
+                        FROM (
+                            SELECT session_id, MIN(id) as first_id, COUNT(*) as total_pv,
+                                MAX(is_unique) as is_unique,
+                                MAX(duration_seconds) as max_duration, MAX(page_count) as max_pages
+                            FROM pageviews
+                            WHERE site_id = ? AND session_id IS NOT NULL AND is_proxy_risk = 0
+                              AND occurred_at >= ? AND occurred_at < ?
+                            GROUP BY session_id
+                        ) s
+                        JOIN pageviews p ON p.id = s.first_id
+                        LEFT JOIN site_visitor_audience a ON p.visitor_id = a.visitor_id AND p.site_id = a.site_id
+                        GROUP BY dimension_value
+                        ORDER BY ips DESC
+                        LIMIT 500
+                    ) t",
                 'search_engine' => "SELECT LEFT(" . $this->searchEngineCase('p') . ", 255) as dimension_value,
                     COUNT(*) as pv, SUM(is_unique) as uv, COUNT(DISTINCT ip_hash) as ips
                     FROM pageviews p WHERE site_id = ? AND is_proxy_risk = 0 AND occurred_at >= ? AND occurred_at < ?
@@ -1931,7 +1998,7 @@ private function cleanupProxyIpData(string $ip): bool
             ];
 
             foreach ($dimensionInserts as $dimension => $sql) {
-                $useSessionMetrics = $dimension === 'referrer_host';
+                $useSessionMetrics = in_array($dimension, ['referrer_host', 'referrer_device', 'referrer_audience']);
                 $insert = $this->db->prepare(
                     'INSERT INTO pageview_dimension_rollups (site_id, bucket_start, dimension_type, dimension_value, pv, uv, new_uv, ip_count, session_count, duration_sum, page_sum, bounce_count)
                      SELECT ?, ?, ?, dimension_value, pv, uv, ' .
@@ -1939,11 +2006,13 @@ private function cleanupProxyIpData(string $ip): bool
                     ($useSessionMetrics ? 'sessions, duration_sum, page_sum, bounce_count' : '0, 0, 0, 0') .
                     ' FROM (' . $sql . ') t'
                 );
-                if ($dimension === 'audience' || $dimension === 'referrer_host') {
+                
+                if ($dimension === 'audience' || $useSessionMetrics) {
                     $params = [$dayStartKey, $dayEndKey, $siteId, $start, $end];
                 } else {
                     $params = [$siteId, $start, $end];
                 }
+                
                 $insert->execute(array_merge([$siteId, $bucketKey, $dimension], $params));
             }
 
@@ -2918,6 +2987,8 @@ private function cleanupProxyIpData(string $ip): bool
 
         if ($referrerHost !== '') {
             $entries[] = ['referrer_host', $referrerHost];
+            $entries[] = ['referrer_device', $this->limitText($referrerHost . '|' . ($isMobile ? 'mobile' : 'desktop'), 255)];
+            $entries[] = ['referrer_audience', $this->limitText($referrerHost . '|' . $audienceLabel, 255)];
         }
 
         if ($canonicalHost !== '') {
@@ -3143,7 +3214,7 @@ private function cleanupProxyIpData(string $ip): bool
         $rows = $statement->fetchAll();
 
         // 【极客级优化】：在列表展示层用 HLL 精确覆盖 SQL 的虚高累加 (单站)
-        if ($dimension === 'host' || $dimension === 'host_device') {
+        if (in_array($dimension, ['host', 'host_device', 'region', 'country', 'isp'], true)) {
             $now = new DateTimeImmutable('now');
             if ($start->diff($now)->days <= 8) {
                 $dates = [];
@@ -3271,7 +3342,7 @@ private function aggregateDimensionRollupsForSites(array $siteIds, string $dimen
         $rows = $statement->fetchAll();
 
         // 【极客级优化】：多站聚合底层 HLL 跨站精确拦截 (分享页)
-        if ($dimension === 'host' || $dimension === 'host_device') {
+        if (in_array($dimension, ['host', 'host_device', 'region', 'country', 'isp'], true)) {
             $now = new DateTimeImmutable('now');
             if ($start->diff($now)->days <= 8) {
                 $dates = [];
@@ -4007,23 +4078,24 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
 
     private function getEntrySummary(int $siteId, string $range): array
     {
-        [$rollupStart, $rollupEnd] = $this->rollupRangeBounds($range);
-        $summary = $this->rollupsCoverRange($siteId, $rollupStart, $rollupEnd)
-            ? $this->rollupSummaryStats($this->aggregateRollups($siteId, $rollupStart, $rollupEnd))
-            : [];
-
-        // 【修复】：读取真实的全局新访客数据
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $summaryTotals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
+        $summary = $this->rollupSummaryStats($summaryTotals);
+        
         $audience = $this->getNewVsReturning($siteId, $range);
-        $realNewVisitors = (int) ($audience['new'] ?? 0);
-
+        
+        // 【核心修复】：引入 HLL 全局去重 IP，覆盖简单的 SUM 相加
+        $ipKeys = $this->getHllKeysForRange($siteId, 'hll_ip', $range);
+        $globalTotalIp = !empty($ipKeys) ? (int) $this->redis->pfCount($ipKeys) : (int)($summary['ips'] ?? 0);
+        
         $rows = $this->getEntryRollupRows($siteId, $range, 200);
-
+        
         return [
             'summary' => [
-                'ips' => (int) ($summary['ips'] ?? 0),
+                'ips' => $globalTotalIp,
                 'views' => (int) ($summary['views'] ?? 0),
                 'uv' => (int) ($summary['uv'] ?? ($summary['uniques'] ?? 0)),
-                'new' => $realNewVisitors, // 使用真实数据
+                'new' => (int) ($audience['new'] ?? 0),
                 'sessions' => (int) ($summary['sessions'] ?? 0),
                 'avg_pages' => round((float) ($summary['avg_pages'] ?? 0), 2),
                 'avg_duration' => (float) ($summary['avg_duration'] ?? 0),
@@ -4063,22 +4135,24 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
 
     private function getPageSummary(int $siteId, string $range): array
     {
-        [$rollupStart, $rollupEnd] = $this->rollupRangeBounds($range);
-        $summaryTotals = $this->aggregateTotalsWithRollups($siteId, $rollupStart, $rollupEnd);
+        [$start, $end] = $this->rollupRangeBounds($range);
+        $summaryTotals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
         $summary = $this->rollupSummaryStats($summaryTotals);
-
-        // 【修复】：读取真实的全局新访客数据
+        
         $audience = $this->getNewVsReturning($siteId, $range);
-        $realNewVisitors = (int) ($audience['new'] ?? 0);
-
+        
+        // 【核心修复】：引入 HLL 全局去重 IP，覆盖简单的 SUM 相加
+        $ipKeys = $this->getHllKeysForRange($siteId, 'hll_ip', $range);
+        $globalTotalIp = !empty($ipKeys) ? (int) $this->redis->pfCount($ipKeys) : (int)($summary['ips'] ?? 0);
+        
         $rollupRows = $this->getPageRollupRows($siteId, $range, 200);
-
+        
         return [
             'summary' => [
-                'ips' => (int) ($summary['ips'] ?? 0),
+                'ips' => $globalTotalIp,
                 'views' => (int) ($summary['views'] ?? 0),
                 'uv' => (int) ($summary['uv'] ?? ($summary['uniques'] ?? 0)),
-                'new' => $realNewVisitors, // 使用真实数据
+                'new' => (int) ($audience['new'] ?? 0),
                 'sessions' => (int) ($summary['sessions'] ?? 0),
                 'avg_pages' => round((float) ($summary['avg_pages'] ?? 0), 2),
                 'avg_duration' => (float) ($summary['avg_duration'] ?? 0),
@@ -4120,83 +4194,83 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
         $domains = $this->getAllSiteDomains($siteId);
         [$start, $end] = $this->rollupRangeBounds($range);
         $span = $this->rollupSpanForRange($siteId, $start, $end);
+
+        $filtered = [];
+        $totals = [
+            'ips' => 0, 'views' => 0, 'uv' => 0, 'new' => 0, 'sessions' => 0, 
+            'avg_pages' => 0, 'avg_duration' => 0, 'bounce_rate' => 0
+        ];
+
         if (!$span) {
-            return [
-                'summary' => [
-                    'ips' => 0,
-                    'views' => 0,
-                    'uv' => 0,
-                    'new' => 0,
-                    'sessions' => 0,
-                    'avg_pages' => 0,
-                    'avg_duration' => 0,
-                    'bounce_rate' => 0,
-                ],
-                'rows' => [],
-            ];
+            return ['summary' => $totals, 'rows' => []];
         }
 
-        $rows = $this->aggregateDimensionRollups($siteId, 'referrer_host', $span['start'], $span['end'], 200);
-        $filtered = [];
+        $deviceFilter = $filters['device'] ?? 'all';
+        $visitorFilter = $filters['visitor'] ?? 'all';
         
+        $dimensionType = 'referrer_host';
+        $suffix = '';
+        
+        if ($deviceFilter === 'mobile') {
+            $dimensionType = 'referrer_device';
+            $suffix = '|mobile';
+        } elseif ($deviceFilter === 'desktop') {
+            $dimensionType = 'referrer_device';
+            $suffix = '|desktop';
+        } elseif ($visitorFilter === 'new') {
+            $dimensionType = 'referrer_audience';
+            $suffix = '|new';
+        } elseif ($visitorFilter === 'return' || $visitorFilter === 'returning') {
+            $dimensionType = 'referrer_audience';
+            $suffix = '|returning';
+        }
+
+        $rows = $this->aggregateDimensionRollups($siteId, $dimensionType, $span['start'], $span['end'], 500);
+
+        $weightedPages = 0; 
+        $weightedDuration = 0; 
+        $weightedBounce = 0;
+
         foreach ($rows as $row) {
-            $referrer = trim($row['dimension_value'] ?? '');
+            $rawVal = $row['dimension_value'] ?? '';
             
-            // 【新增】：如果没有来路，标记为直接访问并放行显示
-            if ($referrer === '') {
-                $referrer = '直接访问';
+            if ($suffix !== '') {
+                if (!str_ends_with($rawVal, $suffix)) {
+                    continue;
+                }
+                $host = substr($rawVal, 0, -strlen($suffix));
+            } else {
+                $host = $rawVal;
             }
             
-            // 剔除自有域名（但必须保留直接访问）
-            if ($referrer !== '直接访问' && $domains && $this->isOwnReferrer($referrer, $domains)) {
+            $host = trim($host);
+            if ($host === '') $host = ' ';
+
+            if ($host !== ' ' && $domains && $this->isOwnReferrer($host, $domains)) {
                 continue;
             }
 
-            // 提前计算好所有的指标，避免 Undefined variable 报错
             $sessions = (int) ($row['sessions'] ?? 0);
-            $avgPages = $sessions > 0 ? (float) ($row['page_sum'] ?? 0) / $sessions : 0;
-            $avgDuration = $sessions > 0 ? (float) ($row['duration_sum'] ?? 0) / $sessions : 0;
-            $bounceRate = $sessions > 0 ? (float) ($row['bounce_count'] ?? 0) / $sessions : 0;
-
             $filtered[] = [
-                'referrer' => $referrer,
+                'referrer' => $host,
                 'sessions' => $sessions,
                 'ips' => (int) ($row['ips'] ?? 0),
                 'uniques' => (int) ($row['uniques'] ?? 0),
-                'new' => (int) ($row['new_uv'] ?? 0), // 读取真实新访客数据
+                'new' => (int) ($row['new_uv'] ?? 0),
                 'views' => (int) ($row['views'] ?? 0),
-                'avg_pages' => $avgPages,
-                'avg_duration' => $avgDuration,
-                'bounce_rate' => $bounceRate,
+                'avg_pages' => $sessions > 0 ? (float) ($row['page_sum'] ?? 0) / $sessions : 0,
+                'avg_duration' => $sessions > 0 ? (float) ($row['duration_sum'] ?? 0) / $sessions : 0,
+                'bounce_rate' => $sessions > 0 ? (float) ($row['bounce_count'] ?? 0) / $sessions : 0,
             ];
-        }
 
-        $totals = [
-            'ips' => 0,
-            'views' => 0,
-            'uv' => 0,
-            'new' => 0,
-            'sessions' => 0,
-            'avg_pages' => 0,
-            'avg_duration' => 0,
-            'bounce_rate' => 0,
-        ];
-
-        $weightedPages = 0;
-        $weightedDuration = 0;
-        $weightedBounce = 0;
-
-        foreach ($filtered as $row) {
-            $sessions = (int) ($row['sessions'] ?? 0);
             $totals['ips'] += (int) ($row['ips'] ?? 0);
             $totals['views'] += (int) ($row['views'] ?? 0);
             $totals['uv'] += (int) ($row['uniques'] ?? 0);
-            // 【提速核心】：不再去查库，直接从 worker 预热好的聚合列表里把新访客加起来
-            $totals['new'] += (int) ($row['new'] ?? 0); 
+            $totals['new'] += (int) ($row['new_uv'] ?? 0);
             $totals['sessions'] += $sessions;
-            $weightedPages += (float) ($row['avg_pages'] ?? 0) * $sessions;
-            $weightedDuration += (float) ($row['avg_duration'] ?? 0) * $sessions;
-            $weightedBounce += (float) ($row['bounce_rate'] ?? 0) * $sessions;
+            $weightedPages += (float) ($row['page_sum'] ?? 0);
+            $weightedDuration += (float) ($row['duration_sum'] ?? 0);
+            $weightedBounce += (float) ($row['bounce_count'] ?? 0);
         }
 
         if ($totals['sessions'] > 0) {
@@ -4204,8 +4278,43 @@ private function getHllKeysForRange(int $siteId, string $prefix, string $range):
             $totals['avg_duration'] = round($weightedDuration / $totals['sessions'], 2);
             $totals['bounce_rate'] = $weightedBounce / $totals['sessions'];
         }
+
+        $audience = $this->getNewVsReturning($siteId, $range);
+        $devices = $this->getDeviceBreakdown($siteId, $range);
         
-        // 彻底删掉了调用 getNewVsReturning 的逻辑，实现 0 次查询 pageviews 明细表
+        if ($suffix === '') {
+            // “全部”时的全局数据对齐
+            $summaryTotals = $this->aggregateTotalsWithRollups($siteId, $start, $end);
+            $summary = $this->rollupSummaryStats($summaryTotals);
+            
+            $ipKeys = $this->getHllKeysForRange($siteId, 'hll_ip', $range);
+            $globalTotalIp = !empty($ipKeys) ? (int) $this->redis->pfCount($ipKeys) : (int)($summary['ips'] ?? 0);
+            
+            $totals['ips'] = $globalTotalIp;
+            $totals['views'] = (int) ($summary['views'] ?? 0);
+            $totals['uv'] = (int) ($summary['uv'] ?? ($summary['uniques'] ?? 0));
+            $totals['new'] = (int) ($audience['new'] ?? 0);
+            $totals['sessions'] = (int) ($summary['sessions'] ?? 0);
+            $totals['avg_pages'] = round((float) ($summary['avg_pages'] ?? 0), 2);
+            $totals['avg_duration'] = (float) ($summary['avg_duration'] ?? 0);
+            $totals['bounce_rate'] = (float) ($summary['bounce_rate'] ?? 0);
+        } elseif ($deviceFilter === 'mobile') {
+            // “移动端”筛选时的对齐
+            $totals['ips'] = (int) ($devices['mobile']['ips'] ?? 0);
+            $totals['views'] = (int) ($devices['mobile']['views'] ?? 0);
+        } elseif ($deviceFilter === 'desktop') {
+            // “电脑端”筛选时的对齐
+            $totals['ips'] = (int) ($devices['desktop']['ips'] ?? 0);
+            $totals['views'] = (int) ($devices['desktop']['views'] ?? 0);
+        } elseif ($visitorFilter === 'new') {
+            // “新访客”筛选时的对齐
+            $totals['ips'] = (int) ($audience['new_ips'] ?? 0);
+            $totals['views'] = (int) ($audience['new'] ?? 0);
+        } elseif ($visitorFilter === 'return' || $visitorFilter === 'returning') {
+            // “老访客”筛选时的对齐
+            $totals['ips'] = (int) ($audience['returning_ips'] ?? 0);
+            $totals['views'] = (int) ($audience['returning'] ?? 0);
+        }
 
         return [
             'summary' => $totals,
@@ -4946,19 +5055,32 @@ private function isDataCenterAsn(array $asnMeta, string $userAgent = '', string 
             return false; 
         }
 
-$needles = [
+       $needles = [
             // 国际大厂
             'amazon', 'aws', 'amazon web services', 'google', 'gcp', 'microsoft', 'azure',
             'oracle', 'oracle cloud', 'alibaba', 'aliyun', 'tencent', 'huawei cloud', 'baidu',
-            // 常见 VPS/IDC 厂商
+            
+            // 常见知名 VPS/IDC 厂商
             'digitalocean', 'linode', 'vultr', 'hetzner', 'ovh', 'leaseweb', 'gcore', 
-            'cloudflare', 'akamai', 'fastly', 'ucloud', 'qingcloud',
-            // 剔除了 network, server, host。保留真正代表机房的专属名词
+            'cloudflare', 'akamai', 'fastly', 'ucloud', 'qingcloud', 'rackspace', 'scaleway',
+            
+            // 通用机房特征名词 (剔除了 network, server, host 防止误杀)
             'datacenter', 'data center', 'colo', 'hosting', 'cloud computing', 'vps', 
-            // 次级灰黑产常见机房
+            '机房', '节点', '主机',
+            
+            // 次级灰黑产、机场、常见小众 VPS (根据近 7 天实战数据深度补充)
             'xtom', 'zenlayer', 'akile', 'rfchost', 'ipxo', 'larus', 'cogent', 'winspeed', 'lshiy',
-            // 国内云特征
-            '阿里云', '腾讯云', '华为云', '百度云', '天翼云', '移动云', '联通云', '金山云', '青云', '优刻得', '数据中心'
+            'akari', 'bagevm', 'it7', 'backwaves', 'oniaas', 'pump', 'dmit', 'petaexpress', 'globaltelehost', 
+            'cloudie', 'energy group', 'hytron', 'reliablesite', 'online_sas', 'online_s_a_s', 'buyvm', 'zappie', 
+            'sharktech', 'liberally', 'peg tech', 'dartnode', 'host1plus', 'volumedrive', 'hostdare', 'alice_networks', 
+            'oceanblue', 'cdn77', 'gomami', 'thegigabit', 'moack', 'vpls', 'imcloud', 'bytevirt', 'nuclearfallout', 
+            'ixwebhosting', 'arkcloud', 'digital_vm', 'wholesale', 'yuwan', 'gplhost', '3nt', 'rackip', 'extravm', 
+            'enzu', 'gmo', 'noc4hosts', 'apernet', 'ddosing', 'solidtools', 'limestone', 'advin', 'peer1', 'klayer', 
+            'regxa', 'liverton', 'misaka', 'theplanet', 'zscaler', 'speedypage', 'dctech',
+            
+            // 国内云特征及数据中心特征
+            '阿里云', '腾讯云', '华为云', '百度云', '天翼云', '移动云', '联通云', '金山云', '青云', '优刻得', '数据中心',
+            '网易云', '华瑞云', '安畅', '云创讯通'
         ];
 
         foreach ($needles as $needle) {
@@ -6227,16 +6349,37 @@ public function getRegionStats(int $siteId, string $range, int $limit = 50): arr
                 $statement->bindValue(':limit', $perPage, PDO::PARAM_INT);
                 $statement->bindValue(':offset', $offset, PDO::PARAM_INT);
                 $statement->execute();
-
                 $rows = $statement->fetchAll();
 
                 if (!empty($rows)) {
+                    $now = new DateTimeImmutable('now');
+                    if ($span['start']->diff($now)->days <= 8) {
+                        $dates = [];
+                        $current = $span['start'];
+                        while ($current < $span['end']) {
+                            $dates[] = $current->format('Ymd');
+                            $current = $current->modify('+1 day')->setTime(0, 0, 0);
+                        }
+                        foreach ($rows as &$row) {
+                            $dimHash = md5($row['dimension_value']);
+                            $keys = [];
+                            foreach ($dates as $ymd) {
+                                $keys[] = "site:{$siteId}:hll_dim:isp:{$dimHash}:{$ymd}";
+                            }
+                            if (!empty($keys)) {
+                                $hllIp = (int) $this->redis->pfCount($keys);
+                                if ($hllIp > 0) {
+                                    $row['ips'] = $hllIp;
+                                }
+                            }
+                        }
+                    }
+
                     $isps = array_map(fn ($row) => [
                         'isp' => $row['dimension_value'],
                         'views' => (int) ($row['views'] ?? 0),
                         'ips' => (int) ($row['ips'] ?? 0),
                     ], $rows);
-
                     return ['isps' => $isps, 'total' => $total];
                 }
             }
