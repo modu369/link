@@ -1,5 +1,6 @@
 <?php
 require __DIR__ . '/init.php';
+
 // === 新增：拦截 AJAX 批量静默操作请求 ===
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['CONTENT_TYPE']) && strpos($_SERVER['CONTENT_TYPE'], 'application/json') !== false) {
     $input = json_decode(file_get_contents('php://input'), true);
@@ -40,23 +41,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['CONTENT_TYPE']) && 
     }
 }
 // =====================================
+
 require __DIR__ . '/layout.php';
+
 // === 新增：强制水平越权拦截 ===
 if ($siteId > 0 && !$selectedSite) {
     // 恶意修改 site_id 参数，或者站点已被删除
     die('您无权访问该站点的数据。');
 }
 // ==================================
+
 $data = $selectedSite ? $tracker->getOverview($siteId, $range) : null;
 $avgMinutes = $data ? round(($data['totals']['averages']['duration'] ?? 0) / 60, 1) : 0;
 $trend = $data ? ($data['trend'] ?? null) : null;
 $showTrend = $trend && in_array($range, ['today', 'yesterday', 'day_before'], true);
+
 $topReferrers = $data ? array_slice($data['top_referrers'], 0, 20) : [];
 $topPages = $data ? array_slice($data['top_pages'], 0, 20) : [];
 $entryPages = $data ? array_slice($data['entry_pages'], 0, 20) : [];
 $regions = $data ? array_slice($data['regions'], 0, 20) : [];
+
 $yesterdayTotals = $data ? ($data['yesterday_totals'] ?? null) : null;
 $yesterdayDevices = ($data && $range === 'today') ? $tracker->getDeviceBreakdown($siteId, 'yesterday') : null;
+
 render_head('总览 - 统计后台');
 render_topbar($branding);
 ?>
@@ -97,24 +104,28 @@ render_topbar($branding);
             $stmt->execute([$siteId]);
             $abnormalDomains = $stmt->fetchAll(PDO::FETCH_ASSOC);
             if (!empty($abnormalDomains)) {
-                $domainNames = array_map(function($d) { return htmlspecialchars($d['domain'], ENT_QUOTES, 'UTF-8') . ' （0/3）'; }, $abnormalDomains);
+                $domainNames = array_map(function($d) { return htmlspecialchars($d['domain'], ENT_QUOTES, 'UTF-8'); }, $abnormalDomains);
                 $abnormalText = implode('，', $domainNames);
                 $abnormalIdsJson = json_encode(array_column($abnormalDomains, 'id'));
             }
         }
         ?>
+
         <?php if (!empty($abnormalDomains)): ?>
-        <div id="domain-alert-box" style="background: linear-gradient(135deg, #fff1f0 0%, #fff2f0 100%); border: 1px solid #ffccc7; border-radius: 12px; padding: 16px 20px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 8px 24px rgba(245, 34, 45, 0.08); transition: opacity 0.3s ease;">
+        <div id="domain-alert-box" style="background: linear-gradient(135deg, #fff1f0 0%, #fff2f0 100%); border: 1px solid #ffccc7; border-radius: 12px; padding: 16px 20px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 8px 24px rgba(245, 34, 45, 0.08); transition: opacity 0.3s ease; flex-wrap: wrap; gap: 15px;">
             <div style="display: flex; align-items: center; gap: 14px;">
                 <div style="background: #ff4d4f; color: #fff; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; flex-shrink: 0; box-shadow: 0 4px 12px rgba(255, 77, 79, 0.35);">
                     <svg style="width: 20px; height: 20px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
                 </div>
                 <div style="color: #cf1322;">
                     <strong style="font-size: 15px; display: block; margin-bottom: 2px;">域名连通性异常</strong>
-                    <span style="font-size: 13px; opacity: 0.9;"><?= $abnormalText ?> 可能被阻断，需要检测并更换域名！</span>
+                    <span style="font-size: 13px; opacity: 0.9;">你的域名 <?= $abnormalText ?> 可能已被 GFW 阻断或解析异常，建议立即前往检测并更换！</span>
                 </div>
             </div>
-            <button onclick="muteAllDomains(<?= htmlspecialchars($abnormalIdsJson, ENT_QUOTES, 'UTF-8') ?>)" style="background: #ff4d4f; border: 1px solid #ff4d4f; color: #fff; padding: 8px 18px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 13px; transition: all 0.2s; white-space: nowrap; box-shadow: 0 2px 0 rgba(0,0,0,0.05);">知道了</button>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <a href="/domain_check.php?site=<?= (int) $siteId ?>&range=<?= htmlspecialchars($range, ENT_QUOTES, 'UTF-8') ?>" style="background: #fff; border: 1px solid #ff4d4f; color: #ff4d4f; padding: 7px 16px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 13px; text-decoration: none; transition: all 0.2s;">查看</a>
+                <button onclick="muteAllDomains(<?= htmlspecialchars($abnormalIdsJson, ENT_QUOTES, 'UTF-8') ?>)" style="background: #ff4d4f; border: 1px solid #ff4d4f; color: #fff; padding: 8px 18px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 13px; transition: all 0.2s; white-space: nowrap; box-shadow: 0 2px 0 rgba(0,0,0,0.05);">知道了</button>
+            </div>
         </div>
         <script>
         function muteAllDomains(domainIds) {
@@ -134,6 +145,7 @@ render_topbar($branding);
         }
         </script>
         <?php endif; ?>
+
         <?php if (!$selectedSite || !$data): ?>
             <div class="card empty">请选择或创建站点后查看数据。</div>
         <?php else: ?>
@@ -188,7 +200,23 @@ render_topbar($branding);
                     </div>
                     <div class="metric-tile">
                         <div class="metric-icon" style="background: linear-gradient(135deg, #dcfce7 0%, #f0fdf4 100%); color: #16a34a; box-shadow: 0 10px 22px rgba(22, 163, 74, 0.16);"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg></div>
-                        <div class="metric-info"><div class="label">预计今日 IP</div><div class="val"><?= $data['predictions']['ips'] ?></div></div>
+                        <div class="metric-info">
+                            <div class="label">预计今日 IP</div>
+                            <div class="val" style="display: flex; align-items: center; gap: 4px;">
+                                <?= $data['predictions']['ips'] ?>
+                                <?php 
+                                if ($range === 'today' && $yesterdayTotals) {
+                                    $predIps = (int)($data['predictions']['ips'] ?? 0);
+                                    $yestIps = (int)($yesterdayTotals['ip_count'] ?? 0);
+                                    if ($predIps > $yestIps) {
+                                        echo '<svg style="width:14px;height:14px;color:#ef4444;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 10l7-7m0 0l7 7m-7-7v18"></path></svg>';
+                                    } elseif ($predIps < $yestIps) {
+                                        echo '<svg style="width:14px;height:14px;color:#10b981;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path></svg>';
+                                    }
+                                }
+                                ?>
+                            </div>
+                        </div>
                     </div>
                     <div class="metric-tile">
                         <div class="metric-icon" style="background: linear-gradient(135deg, #dcfce7 0%, #f0fdf4 100%); color: #16a34a; box-shadow: 0 10px 22px rgba(22, 163, 74, 0.16);"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg></div>
@@ -196,7 +224,23 @@ render_topbar($branding);
                     </div>
                     <div class="metric-tile">
                         <div class="metric-icon" style="background: linear-gradient(135deg, #dcfce7 0%, #f0fdf4 100%); color: #16a34a; box-shadow: 0 10px 22px rgba(22, 163, 74, 0.16);"><svg style="width:24px;height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><circle cx="12" cy="18" r="1"></circle><path d="M12 13a4 4 0 0 0-4-4"></path><path d="M12 9a8 8 0 0 0-8-8"></path></svg></div>
-                        <div class="metric-info"><div class="label">预计今日移动 IP</div><div class="val"><?= $data['predictions']['mobile_ips'] ?? 0 ?></div></div>
+                        <div class="metric-info">
+                            <div class="label">预计今日移动 IP</div>
+                            <div class="val" style="display: flex; align-items: center; gap: 4px;">
+                                <?= $data['predictions']['mobile_ips'] ?? 0 ?>
+                                <?php 
+                                if ($range === 'today' && $yesterdayDevices) {
+                                    $predMobIps = (int)($data['predictions']['mobile_ips'] ?? 0);
+                                    $yestMobIps = (int)($yesterdayDevices['mobile']['ips'] ?? 0);
+                                    if ($predMobIps > $yestMobIps) {
+                                        echo '<svg style="width:14px;height:14px;color:#ef4444;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 10l7-7m0 0l7 7m-7-7v18"></path></svg>';
+                                    } elseif ($predMobIps < $yestMobIps) {
+                                        echo '<svg style="width:14px;height:14px;color:#10b981;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path></svg>';
+                                    }
+                                }
+                                ?>
+                            </div>
+                        </div>
                     </div>
 
                     <?php if ($range === 'today' && $yesterdayTotals): ?>
