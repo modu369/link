@@ -3491,6 +3491,7 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
             str_contains($ref, 'duckduckgo.com') || str_contains($ua, 'duckduckbot') => 'DuckDuckGo',
             str_contains($ua, 'petalbot') => '华为',
             str_contains($ref, 'quark.cn') => '夸克',
+            str_contains($ref, 'wkbrowser.com') => '悟空',
             default => '其他',
         };
     }
@@ -5999,6 +6000,7 @@ private function identifySearchEngine(?string $ua, ?string $referrer = null): st
             'sogou.com' => '搜狗',
             'sm.cn' => '神马',
             'quark.cn' => '夸克',
+            'wkbrowser.com' => '悟空',
             'yahoo.com' => '雅虎',
             'duckduckgo.com' => 'DuckDuckGo',
             'douyin.com' => '抖音',
@@ -6029,6 +6031,7 @@ private function searchEngineCase(string $alias = ''): string
             WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%duckduckgo.com%' OR LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%duckduckbot%' THEN 'DuckDuckGo'
             WHEN LOWER(COALESCE({$prefix}user_agent,'')) LIKE '%petalbot%' THEN '华为'
             WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%quark.cn%' THEN '夸克'
+            WHEN LOWER(COALESCE({$prefix}referrer,'')) LIKE '%wkbrowser.com%' THEN '悟空'
             ELSE '其他'
         END";
     }
@@ -6100,7 +6103,7 @@ private function getExternalLinks(int $siteId, string $range): array
             $domains = $this->getAllSiteDomains($siteId);
             
             // 加入 'yahoo.com', 'duckduckgo.com', 'douyin.com'
-            $blocked = ['baidu', 'google', 'bing.', 'sm.cn', 'quark.cn', 'so.com', 'sogou', 'bytedance', 'toutiao', 'yahoo.com', 'duckduckgo.com', 'douyin.com'];
+            $blocked = ['baidu', 'google', 'bing.', 'sm.cn', 'quark.cn', 'so.com', 'sogou', 'bytedance', 'toutiao', 'yahoo.com', 'duckduckgo.com', 'douyin.com', 'wkbrowser.com'];
             $span = $this->rollupSpanForRange($siteId, $start, $end);
             if (!$span) {
                 return [];
@@ -6492,7 +6495,7 @@ public function getRegionStats(int $siteId, string $range, int $limit = 50): arr
         parse_str($refererQuery, $query);
 
         $allowedHosts = [
-            'baidu.com', 'google', 'bing.com', 'so.com', 'toutiao.com', 'sogou.com', 'sm.cn', 'quark.cn'
+            'baidu.com', 'google', 'bing.com', 'so.com', 'toutiao.com', 'sogou.com', 'sm.cn', 'quark.cn', 'wkbrowser.com'
         ];
 
         $matchedHost = null;
@@ -6534,7 +6537,7 @@ public function getRegionStats(int $siteId, string $range, int $limit = 50): arr
         $paramKeyword = !empty($query['keyword']) ? $query['keyword'] : null;
         $paramWord = !empty($query['word']) ? $query['word'] : null;
 
-        if (str_contains($refererHost, 'google') || str_contains($refererHost, 'bing.com') || str_contains($refererHost, 'so.com') || str_contains($refererHost, 'sm.cn') || str_contains($refererHost, 'quark.cn')) {
+        if (str_contains($refererHost, 'google') || str_contains($refererHost, 'bing.com') || str_contains($refererHost, 'so.com') || str_contains($refererHost, 'sm.cn') || str_contains($refererHost, 'quark.cn') || str_contains($refererHost, 'wkbrowser.com')) {
             return $paramQ ?: $paramKeyword ?: $paramWord;
         }
 
