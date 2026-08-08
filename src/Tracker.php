@@ -123,7 +123,7 @@ public function warmupDashboardCache(int $siteId): void
                 $this->getRegionData($siteId, $range);
                 $this->getIspData($siteId, $range);
                 $this->getAudienceData($siteId, $range);
-                $this->getContentAnalysisData($siteId, $range, 100);
+                $this->getContentAnalysisData($siteId, $range, 50);
                 $this->getPageData($siteId, $range);
                 $this->getEntryData($siteId, $range);
                 $this->getReferrerData($siteId, $range);
