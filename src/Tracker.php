@@ -211,8 +211,8 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
         if (str_contains($key, ':yesterday') || str_contains($key, ':day_before')) {
             $computedTtl = max($this->cacheTtl, strtotime('tomorrow') - time()); 
         } else {
-            // 修复：使用传入的 $ttlSeconds，或者在需要时结合 $this->cacheTtl
-            $computedTtl = $ttlSeconds; 
+            // 【终极修复】：强制结合全局长效 cacheTtl，拒绝 20 秒短效存活，确保 100% 覆盖 Worker 空窗期
+            $computedTtl = max($this->cacheTtl, $ttlSeconds); 
         }
 
         $this->redis->setex($key, $computedTtl, json_encode($result));
