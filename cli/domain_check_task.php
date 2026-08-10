@@ -22,6 +22,11 @@ echo "[Domain Check] Starting batch domain GFW check...\n";
 // 引入网页端的文件，直接使用里面已经封装好的纯血UDP探针
 require_once __DIR__ . '/../public/domain_check.php';
 
+// === 【新增】配置不需要检测的域名白名单 ===
+$skipDomains = [
+    '123.cc'
+];
+
 try {
     $batchSize = 200;
     $offset = 0;
@@ -38,6 +43,12 @@ try {
             $domainId = $row['id'];
             $siteId = $row['site_id'];
             $domain = $row['domain'];
+            
+            // === 【新增】判断域名是否在不检测的白名单中 ===
+            // 提示：如果你希望涵盖所有子域名(如 www.fby8.cc)，可以将判断改为 strpos($domain, 'fby8.cc') !== false
+            if (in_array($domain, $skipDomains)) {
+                continue; // 直接跳过，不进行探测和数据库状态更新
+            }
             
             // 调用重构后的最精准的方法
             $res = check_mainland_accessibility($domain);
