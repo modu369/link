@@ -119,7 +119,7 @@ render_topbar($branding);
                 </div>
                 <div style="color: #cf1322;">
                     <strong style="font-size: 15px; display: block; margin-bottom: 2px;">域名连通性异常</strong>
-                    <span style="font-size: 13px; opacity: 0.9;">你的域名 <?= $abnormalText ?> 可能已被 GFW 阻断或 SNI 阻断，建议立即前往检测并更换！</span>
+                    <span style="font-size: 13px; opacity: 0.9;">你的域名 <?= $abnormalText ?> 可能已被 GFW 阻断或 SNI 阻断（墙），建议立即前往检测并更换！</span>
                 </div>
             </div>
             <div style="display: flex; gap: 10px; align-items: center;">
