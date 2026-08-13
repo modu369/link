@@ -356,7 +356,7 @@ render_topbar($branding);
             <div class="section-title" style="margin-bottom: 24px;">
                 <h2 style="margin:0; font-size: 18px; color: #17233d;">GFW 防火墙深度检测引擎</h2>
                 <span class="muted" style="display:block; margin-top: 6px;">
-                    结合UDP 探针与跨海分布式节点，深度拦截 DNS 污染及隐藏的SNI 阻断。<br>
+                    结合UDP 探针与跨海分布式节点，深度检测 DNS 污染及隐藏的SNI 阻断。<br>
                     <span style="color:#ff9900;font-size:12px;">※ 注：深度检测会调用分布式三网节点回传，过程可能需要 15-20 秒，请耐心等待。</span><br>
                     <?= $isAdmin ? '<span style="color:#2d8cf0;font-size:12px;">[管理员特权] 无冷却时间限制。</span>' : '<span style="font-size:12px;">(批量冷却时间：10分钟)</span>' ?>
                 </span>
