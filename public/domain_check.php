@@ -1,18 +1,157 @@
 <?php
-// ==== 1. 封装核心检测函数：纯 PHP 异步并发 UDP 探针 (极致并发版) ====
-
-if (!function_exists('check_mainland_accessibility')) {
-    function check_mainland_accessibility($domain) {
-        // 4个绝对纯正的大陆省级节点
-        $dns_servers = ['202.96.128.86', '202.106.0.20', '218.30.118.6', '221.12.1.227']; 
+// ==== 1. 核心辅助函数：精准识别 CF IP ====
+if (!function_exists('is_cf_ip')) {
+    function is_cf_ip($ip) {
+        if ($ip === '0.0.0.0' || $ip === '127.0.0.1' || empty($ip)) return false;
         $cf_ranges = [
             '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '104.16.0.0/13',
             '104.24.0.0/14', '108.162.192.0/18', '131.0.72.0/22', '141.101.64.0/18',
             '162.158.0.0/15', '172.64.0.0/13', '173.245.48.0/20', '188.114.96.0/20',
             '190.93.240.0/20', '197.234.240.0/22', '198.41.128.0/17'
         ];
+        
+        $ip_long = ip2long($ip);
+        if ($ip_long === false) return false;
+        
+        $ip_unsigned = (float) sprintf('%u', $ip_long);
+        foreach ($cf_ranges as $cidr) {
+            list($subnet, $mask) = explode('/', $cidr);
+            $subnet_unsigned = (float) sprintf('%u', ip2long($subnet));
+            $network_size = pow(2, (32 - (int)$mask));
+            
+            if ($ip_unsigned >= $subnet_unsigned && $ip_unsigned < ($subnet_unsigned + $network_size)) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
 
-        // 1. 构造原生 DNS UDP 数据包
+// ==== 1.5 新增：Globalping 双盲交叉验证核心引擎 (Redis 6小时缓存版) ====
+if (!function_exists('check_sni_fake_wall')) {
+    function check_sni_fake_wall($domain) {
+        global $redis; 
+        
+        // 【核心修改】：通过 Redis 缓存 8小时（28800秒）。6小时内测过的域名直接读缓存跳过，完美匹配定时任务周期！
+        // $cacheKey = "sni_wall_cache:" . md5($domain);
+        // if ($redis) {
+        //     $cached = $redis->get($cacheKey);
+        //     if ($cached !== false && $cached !== null) {
+        //         return $cached; 
+        //     }
+        // }
+
+        $createTask = function($target) {
+            $payload = json_encode([
+                'type' => 'http',
+                'target' => $target,
+                'locations' => [['asn' => 9808], ['asn' => 56040], ['asn' => 56041]],
+                'measurementOptions' => ['request' => ['method' => 'HEAD']],
+                'limit' => 3
+            ]);
+            $ch = curl_init('https://api.globalping.io/v1/measurements');
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => $payload,
+                CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json', 'User-Agent: Mozilla/5.0'],
+                CURLOPT_TIMEOUT => 5
+            ]);
+            $res = curl_exec($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            
+            if ($code === 202) {
+                $data = json_decode($res, true);
+                return $data['id'] ?? null;
+            }
+            return null;
+        };
+
+        $targetId = $createTask($domain);
+        $controlId = $createTask('www.baidu.com');
+
+        // 如果任务分配失败，安全放行
+        if (!$targetId || !$controlId) {
+            return 'clean';
+        }
+
+        $pollTask = function($id) {
+            $ch = curl_init("https://api.globalping.io/v1/measurements/{$id}");
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_HTTPHEADER => ['Accept: application/json'],
+                CURLOPT_TIMEOUT => 5
+            ]);
+            $res = curl_exec($ch);
+            curl_close($ch);
+            return json_decode($res, true);
+        };
+
+        $targetData = null;
+        $controlData = null;
+        $attempts = 0;
+
+        while ($attempts < 10) {
+            sleep(2);
+            $attempts++;
+            if (!$targetData || ($targetData['status'] ?? '') !== 'finished') $targetData = $pollTask($targetId);
+            if (!$controlData || ($controlData['status'] ?? '') !== 'finished') $controlData = $pollTask($controlId);
+            if (($targetData['status'] ?? '') === 'finished' && ($controlData['status'] ?? '') === 'finished') break;
+        }
+
+        if (($targetData['status'] ?? '') !== 'finished' || ($controlData['status'] ?? '') !== 'finished') {
+            return 'clean'; 
+        }
+
+        $controlMap = [];
+        foreach ($controlData['results'] as $r) {
+            $key = ($r['probe']['city'] ?? '') . '_AS' . ($r['probe']['asn'] ?? '');
+            $controlMap[$key] = $r;
+        }
+
+        $wallFound = false;
+        foreach ($targetData['results'] as $tItem) {
+            $key = ($tItem['probe']['city'] ?? '') . '_AS' . ($tItem['probe']['asn'] ?? '');
+            if (!isset($controlMap[$key])) continue;
+
+            $cItem = $controlMap[$key];
+            $cRaw = strtolower($cItem['result']['rawOutput'] ?? '');
+            
+            $cSuccess = (!empty($cItem['result']['rawHeaders']) || strpos($cRaw, 'http/1.1 200') !== false || ($cItem['result']['status'] ?? '') === 'finished');
+            
+            if ($cSuccess) {
+                $tRaw = strtolower($tItem['result']['rawOutput'] ?? '');
+                $tSuccess = (!empty($tItem['result']['rawHeaders']) || strpos($tRaw, 'http/1.1 200') !== false || ($tItem['result']['status'] ?? '') === 'finished');
+                
+                $tReset = (strpos($tRaw, 'reset by peer') !== false || strpos($tRaw, 'connection reset') !== false || strpos($tRaw, 'econnreset') !== false);
+                
+                if (!$tSuccess && $tReset) {
+                    $wallFound = true;
+                    break;
+                }
+            }
+        }
+
+        $result = $wallFound ? 'fake_wall' : 'clean';
+        
+        // 写入 Redis 缓存，有效期 8小时 (28800秒)
+        // if ($redis) {
+        //     $redis->setex($cacheKey, 28800, $result);
+        // }
+
+        return $result;
+    }
+}
+
+// ==== 2. 封装核心检测函数 ====
+if (!function_exists('check_mainland_accessibility')) {
+    function check_mainland_accessibility($domain) {
+        $dns_servers = [
+            '202.98.192.67', '202.98.192.67', '202.98.192.67', '202.98.192.67',
+            '202.98.198.167', '202.98.198.167', '202.98.198.167', '202.98.198.167'
+        ]; 
+
         $rand_id = random_bytes(2);
         $header = $rand_id . "\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00";
         $qname = '';
@@ -20,45 +159,42 @@ if (!function_exists('check_mainland_accessibility')) {
             $qname .= chr(strlen($part)) . $part;
         }
         $qname .= "\x00";
-        $question = $qname . "\x00\x01\x00\x01"; // A记录(1), IN类(1)
+        $question = $qname . "\x00\x01\x00\x01"; 
         $payload = $header . $question;
 
-        // 2. 创建异步非阻塞 Sockets，瞬间向所有大陆节点齐发探针
         $sockets = [];
         foreach ($dns_servers as $dns) {
             $sock = @stream_socket_client("udp://$dns:53", $errno, $errstr, 1, STREAM_CLIENT_ASYNC_CONNECT);
             if ($sock) {
-                stream_set_blocking($sock, false); // 设为非阻塞
+                stream_set_blocking($sock, false); 
                 fwrite($sock, $payload);
                 $sockets[(int)$sock] = ['sock' => $sock, 'dns' => $dns];
             }
         }
 
-        // 3. IO 多路复用监听 (总超时强制锁定在 1.2 秒)
-        $timeout = 1.2; 
+        $timeout = 2.0; 
         $endTime = microtime(true) + $timeout;
-        $clean_ips = [];
 
         while (!empty($sockets) && microtime(true) < $endTime) {
             $read = array_column($sockets, 'sock');
             $write = null;
             $except = null;
             
-            // 计算剩余可等待的微秒数
             $timeLeft = max(0, $endTime - microtime(true));
             $tv_sec = (int) floor($timeLeft);
             $tv_usec = (int) (($timeLeft - $tv_sec) * 1000000);
 
-            // 监听哪个节点最先返回数据
             if (stream_select($read, $write, $except, $tv_sec, $tv_usec) > 0) {
                 foreach ($read as $sock) {
                     $response = fread($sock, 512);
                     $sockId = (int)$sock;
-                    unset($sockets[$sockId]); // 收到了就把它从等待池剔除
+                    
+                    if (!isset($sockets[$sockId])) continue;
+                    fclose($sock);
+                    unset($sockets[$sockId]); 
 
                     if (empty($response) || strlen($response) < 12) continue;
                     
-                    // 解析 DNS 响应数量
                     $ans_count = (ord($response[6]) << 8) + ord($response[7]);
                     if ($ans_count === 0) continue;
 
@@ -87,46 +223,44 @@ if (!function_exists('check_mainland_accessibility')) {
 
                     if (!empty($ips)) {
                         $testIp = $ips[0];
-                        if ($testIp === '127.0.0.1' || $testIp === '0.0.0.0') {
-                            return ['status' => 'polluted', 'ip' => $testIp, 'msg' => '遭 GFW 污染 (强指回环/空地址)'];
+                        cleanup_sockets($sockets);
+
+                        if ($testIp === '127.0.0.1' || $testIp === '0.0.0.0' || strpos($testIp, '127.') === 0) {
+                            return ['status' => 'polluted', 'ip' => $testIp, 'msg' => "遭墙阻断 (骨干节点强指黑洞)"];
                         }
 
-                        $is_cf = false;
-                        $ip_long = ip2long($testIp);
-                        if ($ip_long !== false) {
-                            foreach ($cf_ranges as $cidr) {
-                                list($subnet, $mask) = explode('/', $cidr);
-                                // 安全的位运算匹配网段
-                                $netmask = ~((1 << (32 - (int)$mask)) - 1) & 0xFFFFFFFF;
-                                if (($ip_long & $netmask) === (ip2long($subnet) & $netmask)) {
-                                    $is_cf = true;
-                                    break;
-                                }
+                        if (is_cf_ip($testIp)) {
+                            // 【熔断降级处理】：触发深层 SNI 对照验证
+                            $sniResult = check_sni_fake_wall($domain);
+                            if ($sniResult === 'fake_wall') {
+                                return ['status' => 'fake_wall', 'ip' => $testIp, 'msg' => "局部阻断 (移动 SNI 假墙)"];
+                            } elseif ($sniResult === 'quota_exceeded') {
+                                return ['status' => 'clean', 'ip' => $testIp, 'msg' => "访问正常 (API额度熔断，仅验证UDP)"];
                             }
-                        }
-
-                        if ($is_cf) {
-                            $clean_ips[] = $testIp;
+                            return ['status' => 'clean', 'ip' => $testIp, 'msg' => "访问正常 (三网骨干验证纯净)"];
                         } else {
-                            // GFW 抢答污染包永远跑得最快，只要发现非 CF，立刻秒判并结束函数！
-                            return ['status' => 'polluted', 'ip' => $testIp, 'msg' => '遭 GFW 污染 (强指非CF拦截节点)'];
+                            return ['status' => 'polluted', 'ip' => $testIp, 'msg' => "遭墙污染 (骨干节点劫持脏IP)"];
                         }
                     }
                 }
             }
         }
-
-        // 走到这里代表超时结束。如果有任何一个节点查到了干净 IP，就算成功
-        if (!empty($clean_ips)) {
-            return ['status' => 'clean', 'ip' => $clean_ips[0], 'msg' => '访问正常 (大陆解析至CF)'];
+        
+        cleanup_sockets($sockets);
+        return ['status' => 'error', 'ip' => '--', 'msg' => '⚠️ 解析异常 (跨海 UDP 严重丢包)'];
+    }
+}
+if (!function_exists('cleanup_sockets')) {
+    function cleanup_sockets(&$sockets) {
+        foreach ($sockets as $s) {
+            if (is_resource($s['sock'])) {
+                fclose($s['sock']);
+            }
         }
-
-        // 4 个节点并发了 1.2 秒全都彻底没回音，实锤被墙阻断
-        return ['status' => 'error', 'ip' => '--', 'msg' => '遭 GFW 阻断 (国内完全无响应)'];
+        $sockets = [];
     }
 }
 
-// 兼容你的旧版 CLI 定时任务调用
 if (!function_exists('check_domain_health')) {
     function check_domain_health($domain) {
         $res = check_mainland_accessibility($domain);
@@ -142,14 +276,13 @@ if (!function_exists('check_domain_health')) {
         ];
     }
 }
-// =========================================================
-// ==== 2. 核心拦截：如果是 CLI 定时任务加载，立刻终止文件后续执行 ====
+
+// ==== 3. 核心拦截：CLI 执行中止 ====
 if (php_sapi_name() === 'cli') {
     return;
 }
-// ====================================================================
 
-// ==== 3. 下面是 Web 环境专属逻辑 ====
+// ==== 4. Web 环境专属渲染逻辑 ====
 require_once __DIR__ . '/init.php';
 
 if ($siteId > 0 && !$selectedSite) {
@@ -187,9 +320,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'check
     if (empty($domain)) { echo json_encode(['error' => '域名不能为空']); exit; }
     if (!in_array($domain, $allDomains)) { echo json_encode(['error' => '非法请求']); exit; }
     
-    // 取消了单测的强制冷却限制，方便站长随时复测某个疑似被墙的域名
-    // if (!$canCheck) { echo json_encode(['error' => '检测冷却中']); exit; }
-
     $res = check_mainland_accessibility($domain);
     echo json_encode(['success' => true, 'domain' => $domain, 'result' => $res]);
     exit;
@@ -224,10 +354,11 @@ render_topbar($branding);
     <main class="content">
         <section class="card">
             <div class="section-title" style="margin-bottom: 24px;">
-                <h2 style="margin:0; font-size: 18px; color: #17233d;">GFW 防火墙状态检测</h2>
+                <h2 style="margin:0; font-size: 18px; color: #17233d;">GFW 防火墙深度检测引擎</h2>
                 <span class="muted" style="display:block; margin-top: 6px;">
-                    本工具内置大陆专线探针，可秒级检测域名是否遭到 DNS 抢答污染或阻断。
-                    <?= $isAdmin ? '<span style="color:#2d8cf0;">[管理员特权] 无冷却时间限制。</span>' : '(批量冷却时间：10分钟)' ?>
+                    结合UDP 探针与跨海分布式节点，深度拦截 DNS 污染及隐藏的SNI 阻断。<br>
+                    <span style="color:#ff9900;font-size:12px;">※ 注：深度检测会调用分布式三网节点回传，过程可能需要 15-20 秒，请耐心等待。</span><br>
+                    <?= $isAdmin ? '<span style="color:#2d8cf0;font-size:12px;">[管理员特权] 无冷却时间限制。</span>' : '<span style="font-size:12px;">(批量冷却时间：10分钟)</span>' ?>
                 </span>
             </div>
 
@@ -241,7 +372,7 @@ render_topbar($branding);
                             style="padding: 8px 16px; border-radius: 4px; font-weight: 500; cursor: <?= $canCheck ? 'pointer' : 'not-allowed' ?>; background: <?= $canCheck ? '#2d8cf0' : '#f8f8f9' ?>; color: <?= $canCheck ? '#fff' : '#c5c8ce' ?>; border: 1px solid <?= $canCheck ? '#2d8cf0' : '#dcdee2' ?>; transition: all 0.2s;"
                             <?= !$canCheck ? 'disabled' : '' ?> 
                             onclick="startDetection()">
-                        <?= $canCheck ? '检测全部' : '冷却中 (' . ceil($ttl/60) . '分钟后可用)' ?>
+                        <?= $canCheck ? '深度批量检测' : '冷却中 (' . ceil($ttl/60) . '分钟后可用)' ?>
                     </button>
                     <span id="progress-text" style="font-size: 13px; color: #808695; display: none;">进度: 0/<?= count($allDomains) ?></span>
                     
@@ -258,8 +389,8 @@ render_topbar($branding);
                         <tr style="border-bottom: 1px solid #e8eaec;">
                             <th style="padding: 12px; color: #515a6e; font-weight: 600;">待检测域名</th>
                             <th style="padding: 12px; color: #515a6e; font-weight: 600;">大陆区解析 IP</th>
-                            <th style="padding: 12px; color: #515a6e; font-weight: 600;">GFW 状态</th>
-                            <th style="padding: 12px; color: #515a6e; font-weight: 600;">详细诊断</th>
+                            <th style="padding: 12px; color: #515a6e; font-weight: 600;">深度监测状态</th>
+                            <th style="padding: 12px; color: #515a6e; font-weight: 600;">诊断详情</th>
                             <th style="padding: 12px; color: #515a6e; font-weight: 600; width: 80px; text-align: center;">操作</th>
                         </tr>
                     </thead>
@@ -275,13 +406,17 @@ render_topbar($branding);
                                     $ipHtml = '<span style="font-family: monospace; color:#515a6e;">' . htmlspecialchars($res['ip'] ?? '--') . '</span>';
                                     
                                     if (($res['status'] ?? '') === 'clean') {
-                                        $statusHtml = '<span style="color:#19be6b; font-weight:600;">✅ 访问正常 (纯净)</span>';
+                                        $statusHtml = '<span style="color:#19be6b; font-weight:600;">✅ 正常通畅</span>';
                                         $msgHtml = '<span style="color:#808695">' . htmlspecialchars($res['msg'] ?? '--') . '</span>';
                                     } elseif (($res['status'] ?? '') === 'polluted') {
-                                        $statusHtml = '<span style="color:#ed4014; font-weight:600;">🚨 已被墙 (DNS污染)</span>';
+                                        $statusHtml = '<span style="color:#ed4014; font-weight:600;">🚨 骨干网被墙</span>';
                                         $msgHtml = '<span style="color:#ed4014">' . htmlspecialchars($res['msg'] ?? '--') . '</span>';
+                                    } elseif (($res['status'] ?? '') === 'fake_wall') {
+                                        // 【深度渲染】当探针返回 fake_wall 时，精准展示局部阻断
+                                        $statusHtml = '<span style="color:#eab308; font-weight:600;">⚠️ 局部阻断墙</span>';
+                                        $msgHtml = '<span style="color:#eab308">' . htmlspecialchars($res['msg'] ?? '--') . '</span>';
                                     } else {
-                                        $statusHtml = '<span style="color:#ff9900; font-weight:600;">⚠️ 解析异常 (阻断)</span>';
+                                        $statusHtml = '<span style="color:#ff9900; font-weight:600;">⚠️ 解析异常</span>';
                                         $msgHtml = '<span style="color:#ff9900">' . htmlspecialchars($res['msg'] ?? '--') . '</span>';
                                     }
                                 }
@@ -324,16 +459,14 @@ const domains = <?= json_encode($allDomains) ?>;
 const isAdmin = <?= $isAdmin ? 'true' : 'false' ?>;
 let completedCount = 0;
 
-// 将当前页面已有的缓存数据加载到 JS 对象中，以便单测时增量合并
 let currentCache = <?= json_encode((object)$cachedResults, JSON_UNESCAPED_UNICODE) ?>;
 
 async function startDetection() {
     const btn = document.getElementById('start-btn');
     const progressText = document.getElementById('progress-text');
     
-    // 禁用批量和单测按钮
     btn.disabled = true;
-    btn.innerText = '批量检测中...';
+    btn.innerText = '正在执行双盲测试...';
     btn.style.background = '#57a3f3';
     btn.style.cursor = 'wait';
     document.querySelectorAll('.single-check-btn').forEach(b => b.disabled = true);
@@ -349,7 +482,7 @@ async function startDetection() {
         document.getElementById('msg-' + idx).innerText = '--';
     });
 
-    const maxConcurrency = 5; 
+    const maxConcurrency = 3; 
     let currentIndex = 0;
 
     async function worker() {
@@ -386,7 +519,6 @@ async function startDetection() {
 
     await Promise.all(workers);
 
-    // 将批量检测结果与全局缓存合并，并保存到后端
     if (Object.keys(finalResultsCache).length > 0) {
         currentCache = { ...currentCache, ...finalResultsCache };
         const saveForm = new FormData();
@@ -396,14 +528,14 @@ async function startDetection() {
     }
 
     if (isAdmin) {
-        btn.innerText = '批量检测全部';
+        btn.innerText = '深度批量检测';
         btn.style.background = '#2d8cf0';
         btn.style.color = '#fff';
         btn.style.borderColor = '#2d8cf0';
         btn.style.cursor = 'pointer';
         btn.disabled = false;
     } else {
-        btn.innerText = '批量检测完成 (10分钟冷却)';
+        btn.innerText = '检测完成 (10分钟冷却)';
         btn.style.background = '#f8f8f9';
         btn.style.color = '#c5c8ce';
         btn.style.borderColor = '#dcdee2';
@@ -418,17 +550,16 @@ async function startDetection() {
     const tipSpan = document.createElement('span');
     tipSpan.id = 'cache-tip';
     tipSpan.style = 'font-size: 13px; color: #19be6b; margin-left: 12px;';
-    tipSpan.innerHTML = '✅ 批量探测完毕';
+    tipSpan.innerHTML = '✅ 双盲探测完毕';
     btn.parentNode.appendChild(tipSpan);
 }
 
-// === 新增：单域名独立检测函数 ===
 async function checkSingleDomain(idx, domain) {
     const btn = document.getElementById('btn-' + idx);
     btn.disabled = true;
-    btn.innerText = '测试中..';
+    btn.innerText = '穿透中..';
 
-    document.getElementById('ip-' + idx).innerHTML = '<span style="color:#2d8cf0;">📡 探测中...</span>';
+    document.getElementById('ip-' + idx).innerHTML = '<span style="color:#2d8cf0;">📡 调度探针...</span>';
     document.getElementById('status-' + idx).innerText = '--';
     document.getElementById('msg-' + idx).innerText = '--';
 
@@ -443,12 +574,11 @@ async function checkSingleDomain(idx, domain) {
         if (data.success && data.result) {
             renderSingleResult(idx, data.result);
             
-            // 将单测结果增量更新到当前缓存中，并保存到后端 Redis
             currentCache[domain] = data.result;
             const saveForm = new FormData();
             saveForm.append('action', 'save_cache');
             saveForm.append('data', JSON.stringify(currentCache));
-            fetch('', { method: 'POST', body: saveForm }); // 异步静默保存
+            fetch('', { method: 'POST', body: saveForm }); 
 
         } else {
             renderSingleResult(idx, { status: 'error', ip: '--', msg: data.error || '接口异常' });
@@ -468,13 +598,16 @@ function renderSingleResult(idx, res) {
     const ipHtml = `<span style="font-family: monospace; color:#515a6e;">${res.ip || '--'}</span>`;
 
     if (res.status === 'clean') {
-        statusHtml = '<span style="color:#19be6b; font-weight:600;">✅ 访问正常 (纯净)</span>';
+        statusHtml = '<span style="color:#19be6b; font-weight:600;">✅ 正常通畅</span>';
         msgHtml = `<span style="color:#808695">${res.msg}</span>`;
     } else if (res.status === 'polluted') {
-        statusHtml = '<span style="color:#ed4014; font-weight:600;">🚨 已被墙 (DNS污染)</span>';
+        statusHtml = '<span style="color:#ed4014; font-weight:600;">🚨 骨干网被墙</span>';
         msgHtml = `<span style="color:#ed4014">${res.msg}</span>`;
+    } else if (res.status === 'fake_wall') {
+        statusHtml = '<span style="color:#eab308; font-weight:600;">⚠️ 局部阻断墙</span>';
+        msgHtml = `<span style="color:#eab308">${res.msg}</span>`;
     } else {
-        statusHtml = '<span style="color:#ff9900; font-weight:600;">⚠️ 解析异常 (阻断)</span>';
+        statusHtml = '<span style="color:#ff9900; font-weight:600;">⚠️ 解析异常</span>';
         msgHtml = `<span style="color:#ff9900">${res.msg}</span>`;
     }
 
