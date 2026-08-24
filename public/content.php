@@ -24,6 +24,7 @@ $detailRange = in_array($range, ['today', 'yesterday', 'day_before', '7d'], true
     ? $range
     : (str_starts_with($range, 'custom:') ? $range : '7d');
 $data = $selectedSite ? $tracker->getContentData($siteId, $detailRange, $filters, $page, $perPage) : null;
+$engineOptions = $tracker->getSearchEngineList();
 if ($selectedSite && $data) {
     $totalSessions = (int) ($data['total_sessions'] ?? 0);
     $totalPages = max(1, (int) ceil($totalSessions / $perPage));
@@ -133,16 +134,16 @@ render_topbar($branding);
                             </select>
                         </div>
                         <div class="form-control">
-                            <label>搜索引擎</label>
-                            <select name="engine">
-                                <option value="" <?= empty($filters['engine'])?'selected':''; ?>>全部引擎</option>
-                                <option value="baidu" <?= $filters['engine']==='baidu'?'selected':''; ?>>百度</option>
-                                <option value="sm" <?= $filters['engine']==='sm'?'selected':''; ?>>神马/夸克</option>
-                                <option value="so" <?= $filters['engine']==='so'?'selected':''; ?>>360</option>
-                                <option value="bing" <?= $filters['engine']==='bing'?'selected':''; ?>>必应</option>
-                                <option value="sogou" <?= $filters['engine']==='sogou'?'selected':''; ?>>搜狗</option>
-                            </select>
-                        </div>
+    <label>搜索引擎</label>
+    <select name="engine">
+        <option value="" <?= empty($filters['engine']) ? 'selected' : ''; ?>>全部引擎</option>
+        <?php foreach ($engineOptions as $eng): ?>
+            <option value="<?= htmlspecialchars($eng, ENT_QUOTES, 'UTF-8') ?>" <?= $filters['engine'] === $eng ? 'selected' : ''; ?>>
+                <?= htmlspecialchars($eng, ENT_QUOTES, 'UTF-8') ?>
+            </option>
+        <?php endforeach; ?>
+    </select>
+</div>
                         <div class="form-control">
                             <label>IP 地址</label>
                             <input type="text" name="ip" placeholder="输入搜索 IP" value="<?= htmlspecialchars($filters['ip'], ENT_QUOTES, 'UTF-8') ?>">
@@ -203,14 +204,7 @@ render_topbar($branding);
                         <?php foreach ($data['details'] as $row): ?>
                             <?php
                                 $ua = $row['user_agent'] ?? '';
-                                $browser = '未知';
-                                if (stripos($ua, 'Chrome') !== false && stripos($ua, 'Edg') === false) $browser = 'Chrome';
-                                elseif (stripos($ua, 'Edg') !== false) $browser = 'Edge';
-                                elseif (stripos($ua, 'Firefox') !== false) $browser = 'Firefox';
-                                elseif (stripos($ua, 'Safari') !== false && stripos($ua, 'Chrome') === false) $browser = 'Safari';
-                                elseif (stripos($ua, 'Opera') !== false || stripos($ua, 'OPR') !== false) $browser = 'Opera';
-                                elseif (stripos($ua, 'MSIE') !== false || stripos($ua, 'Trident') !== false) $browser = 'IE';
-                                elseif (stripos($ua, 'micromessenger') !== false) $browser = 'WeChat';
+                                $browser = $tracker->detectBrowser($ua);
                                 
                                 $status = (strtotime($row['updated_at'] ?? $row['occurred_at']) > time() - 180) ? 'live' : 'done';
                                 $entryPath = $row['entry_path'] ?? '-';
