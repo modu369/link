@@ -3408,7 +3408,7 @@ private function markVisitorAudienceState(int $siteId, string $visitorId): array
 
         return [$uvToday, $audienceLabel];
     }
-    private function detectBrowser(string $userAgent): string
+    public function detectBrowser(string $userAgent): string
     {
         $ua = strtolower($userAgent);
         return match (true) {
@@ -3499,7 +3499,13 @@ private function detectSearchEngine(string $referrer, string $userAgent): string
             default => '其他',
         };
     }
-
+public function getSearchEngineList(): array
+{
+    return [
+        '百度', '谷歌', '必应', '360', '头条', '搜狗', 
+        '神马', '雅虎', 'DuckDuckGo', '华为', '夸克', '悟空'
+    ];
+}
     private function referrerHost(?string $referrer): ?string
     {
         if (!$referrer) {
