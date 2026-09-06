@@ -4,10 +4,14 @@ if (!function_exists('is_cf_ip')) {
     function is_cf_ip($ip) {
         if ($ip === '0.0.0.0' || $ip === '127.0.0.1' || empty($ip)) return false;
         $cf_ranges = [
+            // Cloudflare 官方核心 CDN IP 段
             '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '104.16.0.0/13',
             '104.24.0.0/14', '108.162.192.0/18', '131.0.72.0/22', '141.101.64.0/18',
             '162.158.0.0/15', '172.64.0.0/13', '173.245.48.0/20', '188.114.96.0/20',
-            '190.93.240.0/20', '197.234.240.0/22', '198.41.128.0/17'
+            '190.93.240.0/20', '197.234.240.0/22', '198.41.128.0/17',
+            
+            // 额外补充的 Cloudflare 企业/特殊服务 IP 段
+            '141.193.213.0/24','172.64.145.0/24'
         ];
         
         $ip_long = ip2long($ip);
@@ -27,6 +31,91 @@ if (!function_exists('is_cf_ip')) {
     }
 }
 
+// ==== 1.4 新增：动态获取可用的中国移动探测节点 ====
+if (!function_exists('get_active_cm_locations')) {
+    function get_active_cm_locations() {
+        // 第一层缓存：当前 PHP 进程内存，避免单次批量查询时重复请求
+        static $memoryCache = null;
+        if ($memoryCache !== null) {
+            return $memoryCache;
+        }
+
+        global $redis;
+        $cacheKey = "globalping_cm_asns_cache";
+        
+        // 第二层缓存：Redis 缓存 10 分钟
+        if (isset($redis) && $redis) {
+            $cached = $redis->get($cacheKey);
+            if ($cached) {
+                $memoryCache = json_decode($cached, true);
+                if (is_array($memoryCache) && !empty($memoryCache)) {
+                    return $memoryCache;
+                }
+            }
+        }
+
+        // 纯中国移动 ASN 列表
+        $pureCmAsns = [
+            9808, 9314, 24311, 24400, 24445, 56040, 56041, 56042, 
+            56043, 56044, 56045, 56046, 56047, 56048, 137539
+        ];
+
+        // 请求节点列表
+        $ch = curl_init('https://api.globalping.io/v1/probes');
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 3,
+            CURLOPT_HTTPHEADER => ['Accept: application/json', 'User-Agent: Globalping-Scanner/1.0']
+        ]);
+        $res = curl_exec($ch);
+        curl_close($ch);
+
+        $activeAsns = [];
+        if ($res) {
+            $probes = json_decode($res, true);
+            if (is_array($probes)) {
+                foreach ($probes as $probe) {
+                    $loc = $probe['location'] ?? [];
+                    $asn = (int)($loc['asn'] ?? 0);
+                    $country = strtoupper($loc['country'] ?? '');
+                    $ready = $probe['ready'] ?? false;
+                    
+                    if ($country === 'CN' && $ready && in_array($asn, $pureCmAsns)) {
+                        $activeAsns[$asn] = true; // 去重
+                    }
+                }
+            }
+        }
+
+        $asnList = array_keys($activeAsns);
+
+        // 如果 API 失败或者没有可用的节点，提供硬编码的兜底方案（移动骨干及常见省网）
+        if (empty($asnList)) {
+            $asnList = [9808, 24400, 56041, 24445, 56046];
+        }
+
+        // 随机打乱，避免只盯着几个固定节点薅
+        shuffle($asnList);
+        
+        // 最多取 3 个可用节点
+        $selected = array_slice($asnList, 0, 3);
+        
+        // 格式化为 API 需要的 locations 结构
+        $locations = array_map(function($asn) {
+            return ['asn' => $asn];
+        }, $selected);
+
+        $memoryCache = $locations;
+
+        // 写入 Redis 缓存，存活时间 10 分钟 (600秒)
+        if (isset($redis) && $redis) {
+            $redis->setex($cacheKey, 600, json_encode($locations));
+        }
+
+        return $locations;
+    }
+}
+
 // ==== 1.5 新增：Globalping 双盲交叉验证核心引擎 (Redis 6小时缓存版) ====
 if (!function_exists('check_sni_fake_wall')) {
     function check_sni_fake_wall($domain) {
@@ -41,13 +130,17 @@ if (!function_exists('check_sni_fake_wall')) {
         //     }
         // }
 
-        $createTask = function($target) {
+        // 获取动态的有效移动探测节点
+        $dynamicLocations = get_active_cm_locations();
+
+        // 引入外层变量 dynamicLocations
+        $createTask = function($target) use ($dynamicLocations) {
             $payload = json_encode([
                 'type' => 'http',
                 'target' => $target,
-                'locations' => [['asn' => 9808], ['asn' => 56040], ['asn' => 56041]],
+                'locations' => $dynamicLocations,
                 'measurementOptions' => ['request' => ['method' => 'HEAD']],
-                'limit' => 3
+                'limit' => count($dynamicLocations) // 动态限制总数量，避免请求量超载报错
             ]);
             $ch = curl_init('https://api.globalping.io/v1/measurements');
             curl_setopt_array($ch, [
@@ -282,9 +375,8 @@ if (php_sapi_name() === 'cli') {
     return;
 }
 
-// ==== 4. Web 环境专属渲染逻辑 ====
+// ==== 以下保持您原有的 Web 渲染、AJAX 请求等逻辑不变 ====
 require_once __DIR__ . '/init.php';
-
 if ($siteId > 0 && !$selectedSite) {
     die('您无权访问该站点的数据。');
 }
