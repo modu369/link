@@ -138,8 +138,10 @@ public function warmupShareCache(int $workerIndex = 1, int $workerCount = 1): vo
         $this->rollupCoverageCache = [];
         $this->rollupSpanCache = [];
         try {
-            // 获取所有创建的分享页
-            $shares = $this->getSharePages();
+            // [修改这里] 绕过 getSharePages 的 user_id 限制，获取所有的 share 页面
+            $stmt = $this->db->query('SELECT id, token, site_ids FROM share_pages ORDER BY id DESC');
+            $shares = $stmt->fetchAll();
+            
             if (empty($shares)) {
                 return;
             }
@@ -150,13 +152,11 @@ public function warmupShareCache(int $workerIndex = 1, int $workerCount = 1): vo
                     continue;
                 }
                 
-                // 👇 新增分片逻辑：根据分享页 ID 分配给对应的 Worker
+                // 基于 ID 和 Worker 数量的分布式处理逻辑保持不变
                 if ($workerCount > 1 && ((($share['id'] - 1) % $workerCount) !== ($workerIndex - 1))) {
                     continue;
                 }
-
                 foreach ($ranges as $range) {
-                    // 主动调用，将结果刷入 Redis
                     $this->getShareReport($share['token'], $range);
                 }
             }
@@ -2103,10 +2103,14 @@ private function cleanupProxyIpData(string $ip): bool
                         GROUP BY session_id
                     ) s ON p.session_id = s.session_id
                     WHERE p.site_id = ? AND p.is_proxy_risk = 0 AND p.occurred_at >= ? AND p.occurred_at < ?
-                    GROUP BY path
+                    GROUP BY 1
                     ORDER BY ips DESC
                     LIMIT 500
-                 ) t"
+                 ) t
+                 ON DUPLICATE KEY UPDATE 
+                    pv = pv + VALUES(pv), uv = uv + VALUES(uv), ip_count = ip_count + VALUES(ip_count), 
+                    session_count = session_count + VALUES(session_count), duration_sum = duration_sum + VALUES(duration_sum), 
+                    page_sum = page_sum + VALUES(page_sum), bounce_count = bounce_count + VALUES(bounce_count)"
             );
             $pageStmt->execute([$siteId, $bucketKey, $siteId, $start, $end, $siteId, $start, $end]);
 
@@ -2135,10 +2139,14 @@ private function cleanupProxyIpData(string $ip): bool
                         GROUP BY session_id
                     ) s
                     JOIN pageviews entry ON entry.id = s.first_id
-                    GROUP BY path
+                    GROUP BY 1
                     ORDER BY ips DESC
                     LIMIT 500
-                 ) t"
+                 ) t
+                 ON DUPLICATE KEY UPDATE 
+                    pv = pv + VALUES(pv), uv = uv + VALUES(uv), ip_count = ip_count + VALUES(ip_count), 
+                    session_count = session_count + VALUES(session_count), duration_sum = duration_sum + VALUES(duration_sum), 
+                    page_sum = page_sum + VALUES(page_sum), bounce_count = bounce_count + VALUES(bounce_count)"
             );
             $entryStmt->execute([$siteId, $bucketKey, $siteId, $start, $end]);
 
