@@ -4620,8 +4620,9 @@ private function applyBotFilters(?string $engine, ?string $domain, array &$param
             $params[':engine'] = $engine;
         }
         if ($domain !== null && $domain !== '' && $domain !== 'all') {
-            $sql .= " AND domain = :domain";
-            $params[':domain'] = $domain;
+            $sql .= " AND domain IN (:domain_raw, :domain_www)";
+            $params[':domain_raw'] = $domain;
+            $params[':domain_www'] = 'www.' . $domain;
         }
         return $sql;
     }
@@ -5271,11 +5272,13 @@ private function isSearchEngineSpider(string $ua): bool
     {
         $host = $fallbackDomain ? $this->canonicalHost($fallbackDomain) : null;
         $canonical = $host;
-        $path = $url ?? '';
+        
+        $url = trim((string) $url);
+        $path = $url !== '' ? $url : '/';
 
-        if ($url && str_starts_with($url, 'http')) {
-            $parsed = parse_url($url);
-            if (!empty($parsed['host'])) {
+        if ($url !== '' && stripos($url, 'http') === 0) {
+            $parsed = @parse_url($url);
+            if ($parsed && !empty($parsed['host'])) {
                 $host = strtolower($parsed['host']);
                 $canonical = $this->canonicalHost($host);
             }
@@ -5437,295 +5440,6 @@ private function isSearchEngineSpider(string $ua): bool
         return true;
     }
 
-    private function ensureSiteDomainSchema(): void
-    {
-        $this->db->exec(
-            "CREATE TABLE IF NOT EXISTS site_domains (
-                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                site_id INT UNSIGNED NOT NULL,
-                domain VARCHAR(255) NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE KEY uniq_site_domain (site_id, domain),
-                CONSTRAINT fk_site_domains_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
-        );
-    }
-
-    private function ensureBlockedDomainSchema(): void
-    {
-        $this->db->exec(
-            "CREATE TABLE IF NOT EXISTS site_blocked_domains (
-                site_id INT UNSIGNED NOT NULL,
-                domain VARCHAR(255) NOT NULL,
-                log_date DATE NOT NULL,
-                pv BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                PRIMARY KEY (site_id, domain, log_date),
-                INDEX idx_site_date (site_id, log_date)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
-        );
-    }
-
-    private function ensureHashPartitioned(string $table, int $partitions = 64): void
-    {
-        $method = null;
-        $probe = $this->db->prepare(
-            'SELECT PARTITION_METHOD FROM information_schema.PARTITIONS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table LIMIT 1'
-        );
-        $probe->execute([':table' => $table]);
-        $method = $probe->fetchColumn();
-
-        if ($method === 'HASH') {
-            return;
-        }
-
-        try {
-            $quoted = str_replace('`', '``', $table);
-            $this->db->exec("ALTER TABLE `{$quoted}` PARTITION BY HASH (site_id) PARTITIONS {$partitions}");
-        } catch (PDOException $e) {
-            // If partitioning is unsupported or privileges are missing, continue with the non-partitioned table.
-        }
-    }
-
-    private function ensurePageviewSchema(): void
-    {
-        $this->db->exec(
-            "CREATE TABLE IF NOT EXISTS pageviews (
-                id BIGINT UNSIGNED AUTO_INCREMENT,
-                site_id INT UNSIGNED NOT NULL,
-                host VARCHAR(255),
-                canonical_host VARCHAR(255),
-                path VARCHAR(2048) NOT NULL,
-                referrer VARCHAR(2048),
-                user_agent VARCHAR(1024),
-                ip_address VARCHAR(45),
-                ip_hash CHAR(64),
-                session_id VARCHAR(64),
-                duration_seconds INT DEFAULT 0,
-                page_count INT DEFAULT 1,
-                keyword VARCHAR(255),
-                is_mobile TINYINT(1) DEFAULT 0,
-                is_unique TINYINT(1) DEFAULT 0,
-                is_proxy_risk TINYINT(1) DEFAULT 0,
-                occurred_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (id, site_id),
-                INDEX idx_site_time (site_id, occurred_at),
-                INDEX idx_site_mobile (site_id, is_mobile, occurred_at),
-                INDEX idx_site_host (site_id, canonical_host, occurred_at),
-                INDEX idx_site_ip (site_id, ip_hash, occurred_at),
-                INDEX idx_site_session (site_id, session_id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
-        );
-
-        $columnExists = function (string $column): bool {
-            $query = $this->db->prepare(
-                "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pageviews' AND COLUMN_NAME = :column"
-            );
-            $query->execute([':column' => $column]);
-
-            return (int) $query->fetchColumn() > 0;
-        };
-
-        $ensureColumn = function (string $column, string $definition, ?string $position = null) use ($columnExists) {
-            if ($columnExists($column)) {
-                return;
-            }
-
-            $posClause = $position ? " {$position}" : '';
-            $this->db->exec("ALTER TABLE pageviews ADD COLUMN {$column} {$definition}{$posClause}");
-        };
-
-        $ensureIndex = function (string $index, string $definition) {
-            $query = $this->db->prepare(
-                "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pageviews' AND INDEX_NAME = :index"
-            );
-            $query->execute([':index' => $index]);
-
-            if ((int) $query->fetchColumn() === 0) {
-                $this->db->exec("ALTER TABLE pageviews ADD INDEX {$index} ({$definition})");
-            }
-        };
-
-        $ensureColumn('host', 'VARCHAR(255)', 'AFTER site_id');
-        $ensureColumn('canonical_host', 'VARCHAR(255)', $columnExists('host') ? 'AFTER host' : 'AFTER site_id');
-        $ensureColumn('title', 'VARCHAR(255)', 'AFTER canonical_host');
-        $ensureColumn('path', 'VARCHAR(2048)');
-        $ensureColumn('referrer', 'VARCHAR(2048)');
-        $ensureColumn('user_agent', 'VARCHAR(1024)');
-        $ensureColumn('session_id', 'VARCHAR(64)');
-        $ensureColumn('visitor_id', 'VARCHAR(128)', 'AFTER session_id');
-        $ensureColumn('duration_seconds', 'INT DEFAULT 0');
-        $ensureColumn('page_count', 'INT DEFAULT 1');
-        $ensureColumn('keyword', 'VARCHAR(255)');
-        $ensureColumn('is_mobile', 'TINYINT(1) DEFAULT 0');
-        $ensureColumn('is_unique', 'TINYINT(1) DEFAULT 0');
-        $ensureColumn('is_proxy_risk', 'TINYINT(1) DEFAULT 0');
-        $ensureColumn('country_name', 'VARCHAR(128)');
-        $ensureColumn('region_name', 'VARCHAR(128)');
-        $ensureColumn('city_name', 'VARCHAR(128)');
-        $ensureColumn('isp_domain', 'VARCHAR(128)');
-        $ensureColumn('country_code', 'VARCHAR(16)');
-        $ensureColumn('occurred_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
-        $ensureColumn('ip_address', 'VARCHAR(45)');
-        $ensureColumn('ip_hash', 'CHAR(64)');
-
-        $ensureIndex('idx_site_host', 'site_id, canonical_host, occurred_at');
-        $ensureIndex('idx_site_mobile', 'site_id, is_mobile, occurred_at');
-        $ensureIndex('idx_site_ip', 'site_id, ip_hash, occurred_at');
-        $ensureIndex('idx_site_ref', 'site_id, referrer(120), occurred_at');
-
-        $this->hasIpHashColumn = $columnExists('ip_hash');
-        $this->hasGeoColumns = $columnExists('region_name') && $columnExists('city_name');
-
-        // If the column is missing (or inaccessible), attempt to add it and gracefully fall back.
-        if (!$this->hasIpHashColumn) {
-            try {
-                $this->db->exec('ALTER TABLE pageviews ADD COLUMN ip_hash CHAR(64)');
-                $this->hasIpHashColumn = $columnExists('ip_hash');
-            } catch (PDOException $inner) {
-                $this->hasIpHashColumn = false;
-            }
-        }
-
-        if ($this->hasIpHashColumn) {
-            $needsBackfill = $this->db->query(
-                "SELECT 1 FROM pageviews WHERE (ip_hash IS NULL OR ip_hash = '') LIMIT 1"
-            )->fetchColumn();
-
-            if ($needsBackfill !== false) {
-                $this->db->exec(
-                    "UPDATE pageviews SET ip_hash = SHA2(COALESCE(ip_address, ''), 256)
-                    WHERE (ip_hash IS NULL OR ip_hash = '') LIMIT 50000"
-                );
-            }
-        }
-
-        if ($this->hasGeoColumns) {
-            $geoBackfill = $this->db->query(
-                "SELECT 1 FROM pageviews WHERE (region_name IS NULL OR region_name = '') AND ip_address IS NOT NULL AND ip_address != '' LIMIT 1"
-            )->fetchColumn();
-            if ($geoBackfill !== false) {
-                $rows = $this->db->query(
-                    "SELECT id, ip_address FROM pageviews
-                     WHERE (region_name IS NULL OR region_name = '') AND ip_address IS NOT NULL AND ip_address != ''
-                     ORDER BY id DESC LIMIT 2000"
-                )->fetchAll();
-                foreach ($rows as $row) {
-                    $meta = $this->resolveIpMeta($row['ip_address'] ?? '');
-                    $stmt = $this->db->prepare(
-                        'UPDATE pageviews
-                         SET country_name = :country, region_name = :region, city_name = :city, isp_domain = :isp, country_code = :code
-                         WHERE id = :id'
-                    );
-                    $stmt->execute([
-                        ':country' => $meta['country_name'] ?? null,
-                        ':region' => $meta['region_name'] ?? null,
-                        ':city' => $meta['city_name'] ?? null,
-                        ':isp' => $meta['isp_domain'] ?? null,
-                        ':code' => $meta['country_code'] ?? null,
-                        ':id' => $row['id'],
-                    ]);
-                }
-            }
-        }
-
-        $this->ensureHashPartitioned('pageviews');
-
-$this->db->exec(
-            "CREATE TABLE IF NOT EXISTS site_visitor_audience (
-                site_id INT UNSIGNED NOT NULL,
-                visitor_id VARCHAR(128) NOT NULL,
-                first_seen DATETIME NOT NULL,
-                last_seen_date DATE NOT NULL,
-                PRIMARY KEY (site_id, visitor_id),
-                INDEX idx_last_seen_date (last_seen_date)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
-        );
-
-        $this->ensureHashPartitioned('site_visitor_audience');
-    }
-
-    private function ensureRollupSchema(): void
-    {
-        $this->db->exec(
-            "CREATE TABLE IF NOT EXISTS pageview_rollups (
-                site_id INT UNSIGNED NOT NULL,
-                bucket_start DATETIME NOT NULL,
-                pv BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                uv BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                ip_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                session_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                duration_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                PRIMARY KEY (site_id, bucket_start),
-                INDEX idx_bucket_time (bucket_start)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
-        );
-
-        $this->db->exec(
-            "CREATE TABLE IF NOT EXISTS pageview_dimension_rollups (
-                site_id INT UNSIGNED NOT NULL,
-                bucket_start DATETIME NOT NULL,
-                dimension_type VARCHAR(64) NOT NULL,
-                dimension_value VARCHAR(255) NOT NULL,
-                pv BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                uv BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                ip_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                session_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                duration_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                PRIMARY KEY (site_id, bucket_start, dimension_type, dimension_value),
-                INDEX idx_dimension_type (dimension_type, dimension_value),
-                INDEX idx_dimension_time (bucket_start),
-                INDEX idx_query_perf (site_id, dimension_type, bucket_start),
-                INDEX idx_share_perf (dimension_type, bucket_start, site_id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
-        );
-
-        $this->db->exec(
-            "CREATE TABLE IF NOT EXISTS pageview_page_rollups (
-                site_id INT UNSIGNED NOT NULL,
-                bucket_start DATETIME NOT NULL,
-                path VARCHAR(512) NOT NULL,
-                pv BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                uv BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                ip_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                session_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                duration_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                PRIMARY KEY (site_id, bucket_start, path),
-                INDEX idx_page_time (bucket_start),
-                INDEX idx_query_perf (site_id, bucket_start)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
-        );
-
-        $this->db->exec(
-            "CREATE TABLE IF NOT EXISTS pageview_entry_rollups (
-                site_id INT UNSIGNED NOT NULL,
-                bucket_start DATETIME NOT NULL,
-                path VARCHAR(512) NOT NULL,
-                pv BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                uv BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                ip_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                session_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                duration_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                page_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                bounce_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                PRIMARY KEY (site_id, bucket_start, path),
-                INDEX idx_entry_time (bucket_start),
-                INDEX idx_query_perf (site_id, bucket_start)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
-        );
-
-        $this->ensureHashPartitioned('pageview_rollups');
-        $this->ensureHashPartitioned('pageview_dimension_rollups');
-        $this->ensureHashPartitioned('pageview_page_rollups');
-        $this->ensureHashPartitioned('pageview_entry_rollups');
-    }
-
     private function ensureIpDbExists(): void
     {
         $dir = dirname($this->ipdbPath);
@@ -5818,29 +5532,8 @@ $this->db->exec(
         @shell_exec($cmd);
     }
 
-    private function ensureShareSchema(): void
-    {
-        $this->db->exec(
-            "CREATE TABLE IF NOT EXISTS share_pages (
-                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                token VARCHAR(64) NOT NULL UNIQUE,
-                site_ids TEXT NOT NULL,
-                user_id INT UNSIGNED NOT NULL DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
-        );
-    }
     private function ensureSettingsSchema(): void
     {
-        $this->db->exec(
-            "CREATE TABLE IF NOT EXISTS settings (
-                setting_key VARCHAR(64) PRIMARY KEY,
-                setting_value TEXT NOT NULL,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
-        );
-
         // 种子管理员账号
         $existingAdmin = $this->getSetting('admin');
         if (!$existingAdmin && !empty($this->adminDefaults['user'])) {
@@ -5859,6 +5552,7 @@ $this->db->exec(
             ]);
         }
 
+        // 种子防刷过滤规则
         if (!$this->getSetting('ingest_filters')) {
             $this->setSetting('ingest_filters', $this->ingestFilterDefaults);
         }
