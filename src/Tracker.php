@@ -2106,11 +2106,7 @@ private function cleanupProxyIpData(string $ip): bool
                     GROUP BY 1
                     ORDER BY ips DESC
                     LIMIT 500
-                 ) t
-                 ON DUPLICATE KEY UPDATE 
-                    pv = pv + VALUES(pv), uv = uv + VALUES(uv), ip_count = ip_count + VALUES(ip_count), 
-                    session_count = session_count + VALUES(session_count), duration_sum = duration_sum + VALUES(duration_sum), 
-                    page_sum = page_sum + VALUES(page_sum), bounce_count = bounce_count + VALUES(bounce_count)"
+                 ) t"
             );
             $pageStmt->execute([$siteId, $bucketKey, $siteId, $start, $end, $siteId, $start, $end]);
 
@@ -2142,11 +2138,7 @@ private function cleanupProxyIpData(string $ip): bool
                     GROUP BY 1
                     ORDER BY ips DESC
                     LIMIT 500
-                 ) t
-                 ON DUPLICATE KEY UPDATE 
-                    pv = pv + VALUES(pv), uv = uv + VALUES(uv), ip_count = ip_count + VALUES(ip_count), 
-                    session_count = session_count + VALUES(session_count), duration_sum = duration_sum + VALUES(duration_sum), 
-                    page_sum = page_sum + VALUES(page_sum), bounce_count = bounce_count + VALUES(bounce_count)"
+                 ) t"
             );
             $entryStmt->execute([$siteId, $bucketKey, $siteId, $start, $end]);
 
