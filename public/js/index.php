@@ -53,13 +53,22 @@ if (preg_match('/(baiduspider|googlebot|bingbot|sogou web spider|360spider|yisou
                 $redis->expire($dedupKey, 60);
 
                 $domain = '';
-                if ($referer !== '') {
-                    $domain = parse_url($referer, PHP_URL_HOST) ?? '';
-                }
+                $path = '/'; 
 
+                if ($referer !== '') {
+                    $parsed = @parse_url($referer);
+                    $domain = $parsed['host'] ?? '';
+                    $path = $parsed['path'] ?? '/';
+                    if (isset($parsed['query']) && $parsed['query'] !== '') {
+                        $path .= '?' . $parsed['query'];
+                    }
+                }
+                if ($path === '' || !str_starts_with($path, '/')) {
+                    $path = '/' . ltrim($path, '/');
+                }
                 $botPayload = [
                     'site_id' => $siteId,
-                    'path' => $referer,
+                    'path' => $path,
                     'referrer' => '', 
                     'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? '',
                     'ip_address' => $clientIp,
