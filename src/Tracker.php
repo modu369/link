@@ -208,10 +208,16 @@ private function cacheAggregate(string $key, int $ttlSeconds, callable $builder)
         $result = $builder();
 
      // 【动态 TTL 策略】
-        if (str_contains($key, ':yesterday') || str_contains($key, ':day_before')) {
+        // 1. 如果是明细日志类数据（如蜘蛛列表、实时访客明细等），直接使用短效缓存，不搞一刀切
+        if (str_starts_with($key, 'bots:') || str_starts_with($key, 'bots_total:') || str_starts_with($key, 'bot_engines:')) {
+            $computedTtl = $ttlSeconds;
+        } 
+        // 2. 如果是昨天/前天这种历史聚合大盘，缓存到明天
+        elseif (str_contains($key, ':yesterday') || str_contains($key, ':day_before')) {
             $computedTtl = max($this->cacheTtl, strtotime('tomorrow') - time()); 
-        } else {
-            // 【终极修复】：强制结合全局长效 cacheTtl，拒绝 20 秒短效存活，确保 100% 覆盖 Worker 空窗期
+        } 
+        // 3. 今日的核心聚合大盘，强制结合全局长效 cacheTtl，拒绝短效穿透
+        else {
             $computedTtl = max($this->cacheTtl, $ttlSeconds); 
         }
 
@@ -5274,16 +5280,29 @@ private function isSearchEngineSpider(string $ua): bool
         $canonical = $host;
         
         $url = trim((string) $url);
-        $path = $url !== '' ? $url : '/';
-
-        if ($url !== '' && stripos($url, 'http') === 0) {
+        if ($url === '') {
+            return ['host' => $host, 'canonical' => $canonical, 'path' => '/'];
+        }
+        if (stripos($url, 'http://') === 0 || stripos($url, 'https://') === 0) {
             $parsed = @parse_url($url);
-            if ($parsed && !empty($parsed['host'])) {
-                $host = strtolower($parsed['host']);
-                $canonical = $this->canonicalHost($host);
+            if ($parsed) {
+                if (!empty($parsed['host'])) {
+                    $host = strtolower($parsed['host']);
+                    $canonical = $this->canonicalHost($host);
+                }
+                $path = $parsed['path'] ?? '/';
+                if (isset($parsed['query']) && $parsed['query'] !== '') {
+                    $path .= '?' . $parsed['query'];
+                }
+            } else {
+                $path = $url;
             }
+        } else {
+            $path = $url;
+        }
 
-            $path = ($parsed['path'] ?? '/') . (isset($parsed['query']) ? '?' . $parsed['query'] : '');
+        if ($path === '' || !str_starts_with($path, '/')) {
+            $path = '/' . ltrim($path, '/');
         }
 
         if ($host && !$canonical) {
