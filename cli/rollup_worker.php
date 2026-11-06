@@ -56,13 +56,15 @@ function truncateBucketStart(DateTimeImmutable $time): DateTimeImmutable
     return $time->setTime((int) $time->format('H'), 0, 0);
 }
 
-function processRiskRecoveries(PDO $db, Redis $redis, int $hoursBack, int $batch = 200): void
+function processRiskRecoveries(PDO $db, Redis $redis, int $hoursBack, int $workerIndex = 1, int $workerCount = 1, int $batch = 200): void
 {
     $hoursBack = max(1, $hoursBack);
     $batch = max(1, $batch);
     $queueKey = 'proxy:risk_recover';
     try {
-        $targets = $redis->zRange($queueKey, 0, $batch - 1, true);
+        // 多 Worker 模式下适当放大扫描窗口，确保每个分片都能拿到充足任务
+        $fetchLimit = ($batch * max(1, $workerCount)) - 1;
+        $targets = $redis->zRange($queueKey, 0, $fetchLimit, true);
     } catch (Throwable $e) {
         return;
     }
@@ -71,25 +73,31 @@ function processRiskRecoveries(PDO $db, Redis $redis, int $hoursBack, int $batch
         return;
     }
 
+    // 按 ip_hash 进行哈希分片，不同 Worker 处理完全正交的 IP 集合，零锁冲突
+    $ipHashes = [];
+    foreach (array_keys($targets) as $ipHash) {
+        if ($workerCount > 1 && ((abs(crc32((string) $ipHash)) % $workerCount) !== ($workerIndex - 1))) {
+            continue;
+        }
+        $ipHashes[] = (string) $ipHash;
+        if (count($ipHashes) >= $batch) {
+            break;
+        }
+    }
+
+    if (empty($ipHashes)) {
+        return;
+    }
+
     $since = (new DateTimeImmutable('now'))->modify("-{$hoursBack} hours")->format('Y-m-d H:i:s');
-    
-    // 提取所有的 ip_hash
-    $ipHashes = array_keys($targets);
-    
-    // 构建批量 IN 的占位符 (?, ?, ?)
     $placeholders = implode(',', array_fill(0, count($ipHashes), '?'));
-    
-    // 将单一变量 $since 放在数组开头，拼接上所有的 ipHashes 构成绑定参数
     $params = array_merge([$since], $ipHashes);
-    
-    // 使用 IN (...) 批量更新，极大减少锁竞争次数和通信开销
     $sql = "UPDATE pageviews SET is_proxy_risk = 0 WHERE occurred_at >= ? AND ip_hash IN ($placeholders)";
 
     try {
         $stmt = $db->prepare($sql);
         $stmt->execute($params);
 
-        // 数据库更新成功后，再批量从 Redis 队列中移除
         foreach ($ipHashes as $ipHash) {
             try {
                 $redis->zRem($queueKey, (string) $ipHash);
@@ -98,7 +106,6 @@ function processRiskRecoveries(PDO $db, Redis $redis, int $hoursBack, int $batch
             }
         }
     } catch (PDOException $e) {
-        // 捕获锁超时或死锁异常，只记录日志不中断进程，等待下一轮 loop 自动重试
         if (function_exists('logError')) {
             logError("[processRiskRecoveries] Batch update failed (Lock timeout?): " . $e->getMessage());
         }
@@ -124,9 +131,9 @@ do {
 
     // 【修改点3】将整个核心聚合逻辑包裹进异常捕获中
     try {
-        processRiskRecoveries($db, $redis, $hoursBack);
+        processRiskRecoveries($db, $redis, $hoursBack, $workerIndex, $workerCount);
         try {
-            $cleanedProxies = $tracker->cleanupProxyHistory(10);
+            $cleanedProxies = $tracker->cleanupProxyHistory(10, $workerIndex, $workerCount);
             if ($cleanedProxies > 0) {
                 logLine(sprintf("[rollup worker %d/%d] 🧹 Purged historical dirty data for %d proxy IPs.", $workerIndex, $workerCount, $cleanedProxies));
             }
