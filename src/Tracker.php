@@ -1702,13 +1702,14 @@ private function getNetworkIdentifier(string $ip): string
     }
 
 
-    public function cleanupProxyHistory(int $batch = 100): int
+    public function cleanupProxyHistory(int $batch = 100, int $workerIndex = 1, int $workerCount = 1): int
     {
         $batch = max(1, $batch);
         $queueKey = 'proxy:cleanup_queue';
 
         try {
-            $targets = $this->redis->zRange($queueKey, 0, $batch - 1, true);
+            $fetchLimit = ($batch * max(1, $workerCount)) - 1;
+            $targets = $this->redis->zRange($queueKey, 0, $fetchLimit, true);
         } catch (Throwable $e) {
             return 0;
         }
@@ -1719,14 +1720,21 @@ private function getNetworkIdentifier(string $ip): string
 
         $processed = 0;
         foreach ($targets as $ip => $detectedAt) {
-            // 【核心防御】：只有明确返回 true（无锁冲突且事务成功），才从 Redis 队列移除
-            // 如果返回 false，保留在队列中，下一轮 Worker 唤醒时自动无损接管
+            // 按 IP 哈希分片，多 Worker 并行清洗不同 IP，互不撞锁
+            if ($workerCount > 1 && ((abs(crc32((string) $ip)) % $workerCount) !== ($workerIndex - 1))) {
+                continue;
+            }
+
             if ($this->cleanupProxyIpData((string) $ip) === true) {
                 try {
                     $this->redis->zRem($queueKey, (string) $ip);
                     $processed++;
                 } catch (Throwable $e) {
                 }
+            }
+
+            if ($processed >= $batch) {
+                break;
             }
         }
         return $processed;
@@ -6444,7 +6452,7 @@ public function getRegionStats(int $siteId, string $range, int $limit = 50): arr
         } catch (Throwable $e) {
             return [null, null];
         }
-        if ($end < $start) {
+        if ($end < $start || $start->diff($end)->days > 15) {
             return [null, null];
         }
         $endExclusive = $end->modify('+1 day');
