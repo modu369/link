@@ -112,7 +112,6 @@ CREATE TABLE IF NOT EXISTS `pageviews` (
   `canonical_host` varchar(255) DEFAULT NULL,
   `title` varchar(255) DEFAULT NULL,
   PRIMARY KEY (`id`,`site_id`),
-  KEY `idx_site_time` (`site_id`,`occurred_at`),
   KEY `idx_site_session` (`site_id`,`session_id`),
   KEY `idx_site_ip` (`site_id`,`ip_hash`,`occurred_at`),
   KEY `idx_site_host` (`site_id`,`canonical_host`,`occurred_at`),
@@ -181,7 +180,6 @@ CREATE TABLE IF NOT EXISTS `pageview_rollups` (
   `bounce_count` bigint UNSIGNED NOT NULL DEFAULT '0',
   PRIMARY KEY (`site_id`,`bucket_start`),
   KEY `idx_bucket_time` (`bucket_start`),
-  KEY `idx_cover_totals` (`site_id`,`bucket_start`,`pv`,`uv`,`ip_count`,`session_count`,`duration_sum`,`page_sum`,`bounce_count`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 PARTITION BY HASH (`site_id`) PARTITIONS 64;
 
